@@ -122,6 +122,11 @@ COMMON_DATA u8 gLocalLinkPlayerId = 0;
 COMMON_DATA u8 gFieldLinkPlayerCount = 0;
 
 static u8 sPlayerLinkStates[MAX_LINK_PLAYERS];
+// POKEPVP (ADR-064): see CB2_Overworld's own comment. No explicit `= 0`
+// initializer -- this ROM's linker script has no output section for
+// .data (only whitelisted symbol tables/COMMON), and every other static
+// in this file relies on the same zero-by-default .bss placement.
+static u16 sPokePvPDebugSelectHoldFrames;
 static KeyInterCB sPlayerKeyInterceptCallback;
 static bool8 sReceivingFromLink;
 static u8 sRfuKeepAliveTimer;
@@ -1487,18 +1492,36 @@ static void CB2_Overworld(void)
     if (fading)
         SetFieldVBlankCallback();
 
-    // POKEPVP (ADR-063): debug-only trigger for StartPokePvPDebugBattle
+    // POKEPVP (ADR-064): debug-only trigger for StartPokePvPDebugBattle
     // (battle_setup.c), reachable only from ordinary overworld play (this
     // callback), never mid-script, mid-transition, or from any menu --
     // matching the same caution real wild-encounter checks use before
-    // calling StartWildBattle. L+R held, Select newly pressed: a combo
-    // that does nothing in stock FireRed and is unlikely to be hit by
-    // accident.
-    if (!fading && !ScriptContext_IsEnabled()
-     && (gMain.heldKeys & (L_BUTTON | R_BUTTON)) == (L_BUTTON | R_BUTTON)
-     && JOY_NEW(SELECT_BUTTON))
+    // calling StartWildBattle.
+    //
+    // A single button (Select), held continuously for ~1.5 real seconds
+    // (90 frames), rather than a multi-button combo -- ADR-063's original
+    // L+R+Select combo turned out unreliable for a human tester on a
+    // real keyboard, almost certainly keyboard ghosting/rollover limits
+    // (most keyboards cannot reliably register 3+ simultaneous keys,
+    // especially specific combinations sharing a matrix row/column) --
+    // a hardware limitation no amount of correct GBA-side logic works
+    // around. One key, held, sidesteps it entirely. Select alone still
+    // does its normal "use registered item" thing on the frame it's first
+    // pressed (harmless with nothing registered); this counter only
+    // triggers well after that, once held continuously.
+    if (fading || ScriptContext_IsEnabled())
     {
-        StartPokePvPDebugBattle();
+        sPokePvPDebugSelectHoldFrames = 0;
+    }
+    else if (gMain.heldKeys & SELECT_BUTTON)
+    {
+        sPokePvPDebugSelectHoldFrames++;
+        if (sPokePvPDebugSelectHoldFrames == 90)
+            StartPokePvPDebugBattle();
+    }
+    else
+    {
+        sPokePvPDebugSelectHoldFrames = 0;
     }
 }
 
