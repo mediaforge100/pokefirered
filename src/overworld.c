@@ -122,11 +122,13 @@ COMMON_DATA u8 gLocalLinkPlayerId = 0;
 COMMON_DATA u8 gFieldLinkPlayerCount = 0;
 
 static u8 sPlayerLinkStates[MAX_LINK_PLAYERS];
-// POKEPVP (ADR-065): see CB2_Overworld's own comment. No explicit `= 0`
-// initializer -- this ROM's linker script has no output section for
-// .data (only whitelisted symbol tables/COMMON), and every other static
-// in this file relies on the same zero-by-default .bss placement.
+// POKEPVP (ADR-066): see CB2_Overworld's own comment. No explicit `= 0`/
+// `= FALSE` initializer -- this ROM's linker script has no output
+// section for .data (only whitelisted symbol tables/COMMON), and every
+// other static in this file relies on the same zero-by-default .bss
+// placement.
 static u16 sPokePvPDebugTriggerHoldFrames;
+static bool8 sPokePvPDebugTriggered;
 static KeyInterCB sPlayerKeyInterceptCallback;
 static bool8 sReceivingFromLink;
 static u8 sRfuKeepAliveTimer;
@@ -1492,38 +1494,39 @@ static void CB2_Overworld(void)
     if (fading)
         SetFieldVBlankCallback();
 
-    // POKEPVP (ADR-065): debug-only trigger for StartPokePvPDebugBattle
-    // (battle_setup.c), reachable only from ordinary overworld play (this
-    // callback), never mid-script, mid-transition, or from any menu --
-    // matching the same caution real wild-encounter checks use before
-    // calling StartWildBattle.
-    //
-    // A single button, held continuously for ~1.5 real seconds (90
-    // frames) -- ADR-063's original L+R+Select combo failed for a real
-    // tester (keyboard ghosting), and ADR-064's follow-up (Select alone)
-    // *also* failed: Select has a built-in "use registered item" handler
-    // in ProcessPlayerFieldInput (field_control_avatar.c) that fires
-    // instantly on press, and whatever it opens holds
-    // ScriptContext_IsEnabled() true while displayed -- resetting this
-    // counter to 0 every single frame, so it could never reach 90.
-    // L_BUTTON, checked directly: ProcessPlayerFieldInput reads newKeys
-    // for START/SELECT/A/B/R explicitly but never L at all (grep-verified
-    // against the real source, not assumed) -- genuinely unbound in
-    // vanilla FRLG's default control scheme, so holding it alone does
-    // nothing else to interfere.
-    if (fading || ScriptContext_IsEnabled())
+    // POKEPVP (ADR-066): debug-only, one-shot, automatic trigger for
+    // StartPokePvPDebugBattle (battle_setup.c). Three rounds of a real
+    // human trying to trigger this by holding a button all failed for
+    // three different real reasons (ADR-063: keyboard ghosting on a
+    // 3-button combo; ADR-064: Select has a built-in "use registered
+    // item" handler that fires instantly and blocks the hold counter;
+    // ADR-065: even a single supposedly-inert button turned out to be
+    // ambiguous across real keyboard/emulator key-mapping setups) -- no
+    // amount of picking a "better" button fixes a fundamentally unreliable
+    // approach. Firing automatically, once, ~1 real second after the
+    // player first reaches genuine free-roam overworld control (not
+    // mid-script, mid-transition, or from any menu -- the same guard
+    // conditions as before, which already skip past any new-game intro
+    // sequence for free, since that runs as a script) removes the input
+    // question entirely. sPokePvPDebugTriggered is never reset once set,
+    // so this only ever fires once per boot -- without that guard, the
+    // moment the debug battle ends and control returns to CB2_Overworld,
+    // the same idle-timer would fire again a second later, forever.
+    if (!sPokePvPDebugTriggered)
     {
-        sPokePvPDebugTriggerHoldFrames = 0;
-    }
-    else if (gMain.heldKeys & L_BUTTON)
-    {
-        sPokePvPDebugTriggerHoldFrames++;
-        if (sPokePvPDebugTriggerHoldFrames == 90)
-            StartPokePvPDebugBattle();
-    }
-    else
-    {
-        sPokePvPDebugTriggerHoldFrames = 0;
+        if (fading || ScriptContext_IsEnabled())
+        {
+            sPokePvPDebugTriggerHoldFrames = 0;
+        }
+        else
+        {
+            sPokePvPDebugTriggerHoldFrames++;
+            if (sPokePvPDebugTriggerHoldFrames == 60)
+            {
+                sPokePvPDebugTriggered = TRUE;
+                StartPokePvPDebugBattle();
+            }
+        }
     }
 }
 
