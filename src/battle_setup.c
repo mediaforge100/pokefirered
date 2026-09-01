@@ -31,6 +31,7 @@
 #include "constants/heal_locations.h"
 #include "constants/items.h"
 #include "constants/maps.h"
+#include "constants/map_groups.h"
 #include "constants/songs.h"
 #include "constants/pokemon.h"
 #include "constants/trainers.h"
@@ -300,12 +301,11 @@ void StartPokePvPDebugBattle(void)
     CreateBattleStartTask(GetWildBattleTransition(), 0);
 }
 
-// POKEPVP (ADR-079/080, D7 step 1): reached from main_menu.c's
-// PokePvP-menu "Start Match" selection instead of StartNewGameScene's
-// full Oak-intro/character-creation task chain -- deliberately skips
-// straight to a real, valid overworld state via the exact mechanism a
-// White Out or Fly landing already uses (SetWarpDestinationToHealLocation
-// + CB2_LoadMap), not a from-scratch boot path. Safe because
+// POKEPVP (ADR-079/080, D7 step 1; warp target corrected ADR-082):
+// reached from main_menu.c's PokePvP-menu "Start Match" selection
+// instead of StartNewGameScene's full Oak-intro/character-creation task
+// chain -- deliberately skips straight to a real, valid overworld state
+// via CB2_LoadMap, not a from-scratch boot path. Safe because
 // gSaveBlock1Ptr/gSaveBlock2Ptr are already guaranteed non-garbage by
 // this point regardless of which menu option is chosen --
 // title_screen.c's own CB2_TitleScreenMain already calls
@@ -315,14 +315,26 @@ void StartPokePvPDebugBattle(void)
 // save state, only the first to skip Oak's *scripted intro*.
 // StartPokePvPDebugBattle's own gPlayerPartyCount == 0 synthesis
 // (ADR-067) already covers a fresh/defaulted save having no starter.
+//
+// ADR-082: originally warped to HEAL_LOCATION_PALLET_TOWN (the same
+// indoor spot a White Out/Fly landing uses) -- a real, human-confirmed
+// mistake, not a timing bug (ADR-081's generous margin fix made no
+// difference). The corruption was the warp *target*, not the timing:
+// GetWildBattleTransition (this file) picks a battle-intro animation
+// via GetBattleTransitionTypeByMap, which -- like every wild encounter
+// in this game -- assumes outdoor route/town terrain, not a house
+// interior's tileset/graphics setup. Now warps to the exact spot
+// PalletTown_PlayersHouse_1F's own front-door warp events lead to
+// (data/maps/PalletTown_PlayersHouse_1F/map.json's warp_events, all
+// pointing to MAP_PALLET_TOWN warp id 0) -- a real, already-tested,
+// guaranteed-safe outdoor landing spot, not a guessed x/y.
+//
 // The actual battle trigger is still overworld.c's existing
-// CB2_Overworld auto-trigger (ADR-066) -- reduced from a 60-frame guess
-// to a near-immediate one for this menu-driven, deterministic path
-// (see that file's own comment) -- not duplicated here.
+// CB2_Overworld auto-trigger (ADR-066) -- not duplicated here.
 void StartPokePvPMenuMatch(void)
 {
     DebugPrintf("POKEPVP: StartPokePvPMenuMatch (menu-selected, skips Oak's intro)");
-    SetWarpDestinationToHealLocation(HEAL_LOCATION_PALLET_TOWN);
+    SetWarpDestinationToMapWarp(MAP_GROUP(MAP_PALLET_TOWN), MAP_NUM(MAP_PALLET_TOWN), 0);
     SetMainCallback2(CB2_LoadMap);
 }
 
