@@ -107,7 +107,14 @@ static void InitSinglePlayerBtlControllers(void)
         gBattleMainFunc = BeginBattleIntro;
         gBattlerControllerFuncs[0] = SetControllerToPokePvP;
         gBattlerPositions[0] = B_POSITION_PLAYER_LEFT;
-        gBattlerControllerFuncs[1] = SetControllerToOpponent;
+        // ADR-071: was SetControllerToOpponent verbatim (ADR-068) --
+        // now the choice-answering wrapper's own installer, so this
+        // battler's CONTROLLER_CHOOSEACTION/CHOOSEMOVE come from the
+        // mailbox instead of BattleAI/Random(). Everything else about
+        // this battler (rendering, sprite loading) is still
+        // OpponentBufferRunCommand, reused verbatim -- see
+        // SetControllerToPokePvPOpponent's own comment.
+        gBattlerControllerFuncs[1] = SetControllerToPokePvPOpponent;
         gBattlerPositions[1] = B_POSITION_OPPONENT_LEFT;
         gBattlersCount = 2;
         return;

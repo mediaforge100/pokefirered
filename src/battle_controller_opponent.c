@@ -79,7 +79,7 @@ static void OpponentHandleResetActionMoveSelection(void);
 static void OpponentHandleCmd55(void);
 static void OpponentCmdEnd(void);
 
-static void OpponentBufferRunCommand(void);
+void OpponentBufferRunCommand(void); // POKEPVP: exported (was static) so battle_controller_pokepvp.c can reuse this dispatcher verbatim -- see ADR-071, same precedent as PlayerBufferRunCommand (ADR-061).
 static u32 GetOpponentMonData(u8 monId, u8 *dst);
 static void SetOpponentMonData(u8 monId);
 static void DoSwitchOutAnimation(void);
@@ -163,7 +163,7 @@ void SetControllerToOpponent(void)
     gBattlerControllerFuncs[gActiveBattler] = OpponentBufferRunCommand;
 }
 
-static void OpponentBufferRunCommand(void)
+void OpponentBufferRunCommand(void)
 {
     if (gBattleControllerExecFlags & gBitTable[gActiveBattler])
     {
