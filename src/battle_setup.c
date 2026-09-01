@@ -33,6 +33,8 @@
 #include "constants/songs.h"
 #include "constants/pokemon.h"
 #include "constants/trainers.h"
+#include "constants/species.h"
+#include "constants/moves.h"
 
 enum {
     TRANSITION_TYPE_NORMAL,
@@ -242,6 +244,36 @@ void StartWildBattle(void)
         DoGhostBattle();
     else
         DoStandardWildBattle();
+}
+
+// POKEPVP (ADR-063, Execution Plan Phase 4's live-trigger gap named in
+// ADR-061/062): the smallest safe way found to reach a real, on-screen
+// BATTLE_TYPE_POKEPVP battle -- reuses DoStandardWildBattle's exact,
+// already-proven transition sequence (lock controls, freeze objects,
+// stop the avatar, the same screen-transition task) verbatim, changing
+// only two things: the battle type flag, and a synthetic one-Pokemon
+// enemy party instead of a rolled wild encounter. The player's own party
+// (gPlayerParty) is untouched -- whatever the save file already has.
+//
+// This is a debug/verification tool, not a shipped feature: triggered by
+// a deliberate key combo (see overworld.c's CB2_Overworld hook), not
+// reachable from any menu or map interaction. Its only purpose is
+// letting a human actually see a PvP battle start and confirming the
+// controller/mailbox seam (ADR-061/062) renders something real, before
+// any of the actual matchmaking/lobby UI (Phase 8) exists.
+void StartPokePvPDebugBattle(void)
+{
+    ZeroMonData(&gEnemyParty[0]);
+    CreateMon(&gEnemyParty[0], SPECIES_RATTATA, 5, 0, FALSE, 0, OT_ID_PLAYER_ID, 0);
+    GiveMoveToMon(&gEnemyParty[0], MOVE_TACKLE);
+    gEnemyPartyCount = 1;
+
+    LockPlayerFieldControls();
+    FreezeObjectEvents();
+    StopPlayerAvatar();
+    gMain.savedCallback = CB2_EndWildBattle;
+    gBattleTypeFlags = BATTLE_TYPE_POKEPVP;
+    CreateBattleStartTask(GetWildBattleTransition(), 0);
 }
 
 static void DoStandardWildBattle(void)

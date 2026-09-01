@@ -1,5 +1,6 @@
 #include "global.h"
 #include "gflib.h"
+#include "battle_setup.h"
 #include "bg_regs.h"
 #include "cable_club.h"
 #include "credits.h"
@@ -1485,6 +1486,20 @@ static void CB2_Overworld(void)
     OverworldBasic();
     if (fading)
         SetFieldVBlankCallback();
+
+    // POKEPVP (ADR-063): debug-only trigger for StartPokePvPDebugBattle
+    // (battle_setup.c), reachable only from ordinary overworld play (this
+    // callback), never mid-script, mid-transition, or from any menu --
+    // matching the same caution real wild-encounter checks use before
+    // calling StartWildBattle. L+R held, Select newly pressed: a combo
+    // that does nothing in stock FireRed and is unlikely to be hit by
+    // accident.
+    if (!fading && !ScriptContext_IsEnabled()
+     && (gMain.heldKeys & (L_BUTTON | R_BUTTON)) == (L_BUTTON | R_BUTTON)
+     && JOY_NEW(SELECT_BUTTON))
+    {
+        StartPokePvPDebugBattle();
+    }
 }
 
 void SetMainCallback1(MainCallback cb)

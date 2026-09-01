@@ -5,6 +5,10 @@
 
 void StartWildBattle(void);
 void StartRoamerBattle(void);
+// POKEPVP (ADR-063): debug-only trigger for a BATTLE_TYPE_POKEPVP battle,
+// reusing DoStandardWildBattle's exact transition machinery. See its own
+// doc comment in battle_setup.c for the safety/scope of this hook.
+void StartPokePvPDebugBattle(void);
 void StartOldManTutorialBattle(void);
 void StartScriptedWildBattle(void);
 void StartMarowakBattle(void);
