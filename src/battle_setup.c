@@ -28,6 +28,7 @@
 #include "battle_controllers.h"
 #include "constants/battle_setup.h"
 #include "constants/event_objects.h"
+#include "constants/heal_locations.h"
 #include "constants/items.h"
 #include "constants/maps.h"
 #include "constants/songs.h"
@@ -297,6 +298,32 @@ void StartPokePvPDebugBattle(void)
     gBattleTypeFlags = BATTLE_TYPE_POKEPVP;
     DebugPrintf("POKEPVP: calling CreateBattleStartTask, gBattleTypeFlags=0x%x", gBattleTypeFlags);
     CreateBattleStartTask(GetWildBattleTransition(), 0);
+}
+
+// POKEPVP (ADR-079/080, D7 step 1): reached from main_menu.c's
+// PokePvP-menu "Start Match" selection instead of StartNewGameScene's
+// full Oak-intro/character-creation task chain -- deliberately skips
+// straight to a real, valid overworld state via the exact mechanism a
+// White Out or Fly landing already uses (SetWarpDestinationToHealLocation
+// + CB2_LoadMap), not a from-scratch boot path. Safe because
+// gSaveBlock1Ptr/gSaveBlock2Ptr are already guaranteed non-garbage by
+// this point regardless of which menu option is chosen --
+// title_screen.c's own CB2_TitleScreenMain already calls
+// Sav2_ClearSetDefault() for an empty/invalid save before CB2_InitMainMenu
+// is ever reached (verified by reading title_screen.c:725-744 this
+// session), so this menu selection is never the first thing to touch
+// save state, only the first to skip Oak's *scripted intro*.
+// StartPokePvPDebugBattle's own gPlayerPartyCount == 0 synthesis
+// (ADR-067) already covers a fresh/defaulted save having no starter.
+// The actual battle trigger is still overworld.c's existing
+// CB2_Overworld auto-trigger (ADR-066) -- reduced from a 60-frame guess
+// to a near-immediate one for this menu-driven, deterministic path
+// (see that file's own comment) -- not duplicated here.
+void StartPokePvPMenuMatch(void)
+{
+    DebugPrintf("POKEPVP: StartPokePvPMenuMatch (menu-selected, skips Oak's intro)");
+    SetWarpDestinationToHealLocation(HEAL_LOCATION_PALLET_TOWN);
+    SetMainCallback2(CB2_LoadMap);
 }
 
 static void DoStandardWildBattle(void)

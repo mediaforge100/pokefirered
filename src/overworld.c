@@ -1495,24 +1495,33 @@ static void CB2_Overworld(void)
     if (fading)
         SetFieldVBlankCallback();
 
-    // POKEPVP (ADR-066): debug-only, one-shot, automatic trigger for
-    // StartPokePvPDebugBattle (battle_setup.c). Three rounds of a real
-    // human trying to trigger this by holding a button all failed for
-    // three different real reasons (ADR-063: keyboard ghosting on a
-    // 3-button combo; ADR-064: Select has a built-in "use registered
-    // item" handler that fires instantly and blocks the hold counter;
-    // ADR-065: even a single supposedly-inert button turned out to be
-    // ambiguous across real keyboard/emulator key-mapping setups) -- no
-    // amount of picking a "better" button fixes a fundamentally unreliable
-    // approach. Firing automatically, once, ~1 real second after the
-    // player first reaches genuine free-roam overworld control (not
-    // mid-script, mid-transition, or from any menu -- the same guard
-    // conditions as before, which already skip past any new-game intro
-    // sequence for free, since that runs as a script) removes the input
-    // question entirely. sPokePvPDebugTriggered is never reset once set,
+    // POKEPVP (ADR-066, threshold reduced ADR-079/080): debug-only,
+    // one-shot, automatic trigger for StartPokePvPDebugBattle
+    // (battle_setup.c). Three rounds of a real human trying to trigger
+    // this by holding a button all failed for three different real
+    // reasons (ADR-063: keyboard ghosting on a 3-button combo; ADR-064:
+    // Select has a built-in "use registered item" handler that fires
+    // instantly and blocks the hold counter; ADR-065: even a single
+    // supposedly-inert button turned out to be ambiguous across real
+    // keyboard/emulator key-mapping setups) -- no amount of picking a
+    // "better" button fixes a fundamentally unreliable approach. Firing
+    // automatically once genuine free-roam overworld control is reached
+    // (not mid-script, mid-transition, or from any menu) removes the
+    // input question entirely.
+    //
+    // Threshold dropped from 60 frames (~1 real second -- a deliberate
+    // margin against firing mid-fade, from when this was reached only
+    // via Oak's real intro/overworld entry, which itself takes a moment
+    // to settle) to 2 (effectively immediate) now that
+    // StartPokePvPMenuMatch (battle_setup.c, D7 step 1) offers a second,
+    // *deliberate* way to reach free-roam control -- a human explicitly
+    // choosing "Start Match" from the PokePvP menu wants the battle
+    // right away, not a second's pause. The `fading`/`ScriptContext_IsEnabled`
+    // guard below still protects against firing before the screen has
+    // actually settled. sPokePvPDebugTriggered is never reset once set,
     // so this only ever fires once per boot -- without that guard, the
     // moment the debug battle ends and control returns to CB2_Overworld,
-    // the same idle-timer would fire again a second later, forever.
+    // the same idle-timer would fire again immediately, forever.
     if (!sPokePvPDebugTriggered)
     {
         if (fading || ScriptContext_IsEnabled())
@@ -1522,7 +1531,7 @@ static void CB2_Overworld(void)
         else
         {
             sPokePvPDebugTriggerHoldFrames++;
-            if (sPokePvPDebugTriggerHoldFrames == 60)
+            if (sPokePvPDebugTriggerHoldFrames == 2)
             {
                 sPokePvPDebugTriggered = TRUE;
                 DebugPrintf("POKEPVP: CB2_Overworld auto-trigger firing");

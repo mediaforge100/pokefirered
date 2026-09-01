@@ -9,6 +9,9 @@ void StartRoamerBattle(void);
 // reusing DoStandardWildBattle's exact transition machinery. See its own
 // doc comment in battle_setup.c for the safety/scope of this hook.
 void StartPokePvPDebugBattle(void);
+// POKEPVP (ADR-079/080, D7 step 1): called from main_menu.c's PokePvP
+// menu "Start Match" option -- see battle_setup.c's own doc comment.
+void StartPokePvPMenuMatch(void);
 void StartOldManTutorialBattle(void);
 void StartScriptedWildBattle(void);
 void StartMarowakBattle(void);
