@@ -154,6 +154,14 @@ void AgbMain()
     InitHeap(gHeap, HEAP_SIZE);
     SetDefaultFontsPointer();
 
+    // POKEPVP (Execution Plan Phase 3.5/4, ADR-062): the EWRAM mailbox is
+    // owned by the ROM (mailbox.h's contract), so it is initialized once
+    // here at boot, unconditionally -- not only when a PvP battle starts.
+    // This is deliberate: a launcher needs to reach the mailbox (HELLO,
+    // for compatibility checking) before any battle exists, and there is
+    // exactly one boot path to hook regardless.
+    PokePvPMailbox_InitGlobal();
+
     gSoftResetDisabled = FALSE;
     gHelpSystemEnabled = FALSE;
 
@@ -213,6 +221,14 @@ void AgbMain()
 
         PlayTimeCounter_Update();
         MapMusicMain();
+        // POKEPVP (ADR-062): pumps at most one mailbox record per real
+        // frame, unconditionally -- this is the actual "host-side pump
+        // driven at defined frame boundaries" (Phase 3.5) live-wiring;
+        // safe regardless of game state, since it only ever touches
+        // PokePvP's own EWRAM region and, for a presentation-type record,
+        // a specific bufferId's gBattleBufferA (harmless outside a battle,
+        // since nothing reads that buffer unless a controller is running).
+        PokePvPMailbox_PumpPresentation();
         WaitForVBlank();
     }
 }

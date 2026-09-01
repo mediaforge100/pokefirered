@@ -257,9 +257,10 @@ void SetControllerToPlayer(void);
 // this exact dispatcher/renderer, unmodified, instead of duplicating it.
 void PlayerBufferRunCommand(void);
 
-// POKEPVP (ADR-061): battle_controller_pokepvp.c.
+// POKEPVP (ADR-061/062): battle_controller_pokepvp.c.
 void SetControllerToPokePvP(void);
 void PokePvPMailbox_PumpPresentation(void);
+void PokePvPMailbox_InitGlobal(void);
 void PlayerHandleGetRawMonData(void);
 void SpriteCB_FreePlayerSpriteLoadMonSprite(struct Sprite *sprite);
 void SetCB2ToReshowScreenAfterMenu(void);
