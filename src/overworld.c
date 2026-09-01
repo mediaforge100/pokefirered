@@ -1,6 +1,7 @@
 #include "global.h"
 #include "gflib.h"
 #include "battle_setup.h"
+#include "gba/isagbprint.h"
 #include "bg_regs.h"
 #include "cable_club.h"
 #include "credits.h"
@@ -1524,6 +1525,7 @@ static void CB2_Overworld(void)
             if (sPokePvPDebugTriggerHoldFrames == 60)
             {
                 sPokePvPDebugTriggered = TRUE;
+                DebugPrintf("POKEPVP: CB2_Overworld auto-trigger firing");
                 StartPokePvPDebugBattle();
             }
         }

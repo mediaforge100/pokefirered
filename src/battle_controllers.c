@@ -83,20 +83,31 @@ void InitBattleControllers(void)
 
 static void InitSinglePlayerBtlControllers(void)
 {
-    // POKEPVP (ADR-061): both battler slots render through the exact same
-    // PlayerBufferRunCommand FireRed already uses for the human player --
-    // reused verbatim, not duplicated. What differs is who populates
+    // POKEPVP (ADR-061, fixed in ADR-068): both battler slots render
+    // through FireRed's own existing controller machinery -- reused
+    // verbatim, not duplicated. What differs is who populates
     // gBattleBufferA: battle_controller_pokepvp.c's mailbox pump, not this
     // ROM's own local battle engine (Guide's "do not run FireRed's local
     // resolution loop"). Checked first and returns early -- PvP is
     // singles-only for now (D2-D4), so this never falls into the
     // DOUBLE/POKEDUDE/SAFARI/link branches below.
+    //
+    // ADR-068: slot 0 (this side's own Pokemon) uses the player-style
+    // controller (back sprite, own-mon HUD conventions); slot 1 (the
+    // opponent) uses SetControllerToOpponent verbatim -- the exact same
+    // split every existing FireRed battle already makes. The original
+    // version of this code assigned SetControllerToPokePvP (player-style,
+    // back-sprite loading) to *both* slots, which a real playtest showed
+    // as a missing enemy sprite: slot 1's Rattata was being loaded with
+    // back-sprite logic meant for the local player's own mon, not
+    // OpponentHandleLoadMonSprite's front-sprite logic a battler shown as
+    // the opponent actually needs.
     if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
     {
         gBattleMainFunc = BeginBattleIntro;
         gBattlerControllerFuncs[0] = SetControllerToPokePvP;
         gBattlerPositions[0] = B_POSITION_PLAYER_LEFT;
-        gBattlerControllerFuncs[1] = SetControllerToPokePvP;
+        gBattlerControllerFuncs[1] = SetControllerToOpponent;
         gBattlerPositions[1] = B_POSITION_OPPONENT_LEFT;
         gBattlersCount = 2;
         return;

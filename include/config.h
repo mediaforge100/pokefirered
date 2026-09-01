@@ -37,7 +37,13 @@
 //       Some emulators or real hardware might (and is allowed to) crash if they are used.
 //       AGB_PRINT is supported on respective debug units.
 
-#define LOG_HANDLER (LOG_HANDLER_AGB_PRINT)
+// POKEPVP (ADR-068): switched from the stock default (LOG_HANDLER_AGB_PRINT,
+// which needs a debug-unit-specific harness this project has none of) to
+// mGBA's own log output -- visible live in mgba-qt's Tools > View Logs
+// for a human tester, and independently capturable by this project's own
+// headless launcher via mGBA's C log-callback API, so a test session no
+// longer depends solely on a human's verbal description of what happened.
+#define LOG_HANDLER (LOG_HANDLER_MGBA_PRINT)
 #endif // NDEBUG
 
 // Define the game version for use elsewhere
