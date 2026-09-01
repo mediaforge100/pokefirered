@@ -1,0 +1,1 @@
+../../../pvp-gen3/battle_controller_pokepvp.c

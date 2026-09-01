@@ -253,6 +253,13 @@ void BtlController_EmitEndLinkBattle(u8 bufferId, u8 battleOutcome);
 // player controller
 void BattleControllerDummy(void);
 void SetControllerToPlayer(void);
+// POKEPVP (ADR-061): exported so battle_controller_pokepvp.c can reuse
+// this exact dispatcher/renderer, unmodified, instead of duplicating it.
+void PlayerBufferRunCommand(void);
+
+// POKEPVP (ADR-061): battle_controller_pokepvp.c.
+void SetControllerToPokePvP(void);
+void PokePvPMailbox_PumpPresentation(void);
 void PlayerHandleGetRawMonData(void);
 void SpriteCB_FreePlayerSpriteLoadMonSprite(struct Sprite *sprite);
 void SetCB2ToReshowScreenAfterMenu(void);

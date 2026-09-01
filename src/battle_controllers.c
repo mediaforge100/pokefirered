@@ -83,6 +83,25 @@ void InitBattleControllers(void)
 
 static void InitSinglePlayerBtlControllers(void)
 {
+    // POKEPVP (ADR-061): both battler slots render through the exact same
+    // PlayerBufferRunCommand FireRed already uses for the human player --
+    // reused verbatim, not duplicated. What differs is who populates
+    // gBattleBufferA: battle_controller_pokepvp.c's mailbox pump, not this
+    // ROM's own local battle engine (Guide's "do not run FireRed's local
+    // resolution loop"). Checked first and returns early -- PvP is
+    // singles-only for now (D2-D4), so this never falls into the
+    // DOUBLE/POKEDUDE/SAFARI/link branches below.
+    if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+    {
+        gBattleMainFunc = BeginBattleIntro;
+        gBattlerControllerFuncs[0] = SetControllerToPokePvP;
+        gBattlerPositions[0] = B_POSITION_PLAYER_LEFT;
+        gBattlerControllerFuncs[1] = SetControllerToPokePvP;
+        gBattlerPositions[1] = B_POSITION_OPPONENT_LEFT;
+        gBattlersCount = 2;
+        return;
+    }
+
     if (!(gBattleTypeFlags & BATTLE_TYPE_DOUBLE))
     {
         gBattleMainFunc = BeginBattleIntro;

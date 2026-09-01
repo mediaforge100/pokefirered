@@ -81,7 +81,7 @@ static void PlayerHandleResetActionMoveSelection(void);
 static void PlayerHandleCmd55(void);
 static void PlayerCmdEnd(void);
 
-static void PlayerBufferRunCommand(void);
+void PlayerBufferRunCommand(void); // POKEPVP: exported (was static) so battle_controller_pokepvp.c can reuse this dispatcher verbatim -- see ADR-061.
 static void HandleInputChooseTarget(void);
 static void MoveSelectionDisplayPpNumber(void);
 static void MoveSelectionDisplayPpString(void);
@@ -199,7 +199,7 @@ static void PlayerBufferExecCompleted(void)
     }
 }
 
-static void PlayerBufferRunCommand(void)
+void PlayerBufferRunCommand(void)
 {
     if (gBattleControllerExecFlags & gBitTable[gActiveBattler])
     {
