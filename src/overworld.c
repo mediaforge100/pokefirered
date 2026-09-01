@@ -1539,7 +1539,7 @@ static void CB2_Overworld(void)
         else
         {
             sPokePvPDebugTriggerHoldFrames++;
-            if (sPokePvPDebugTriggerHoldFrames == 40)
+            if (sPokePvPDebugTriggerHoldFrames == 300)
             {
                 sPokePvPDebugTriggered = TRUE;
                 DebugPrintf("POKEPVP: CB2_Overworld auto-trigger firing");
