@@ -13,6 +13,19 @@ SECTIONS {
     ewram 0x2000000 (NOLOAD) :
     ALIGN(4)
     {
+        /* POKEPVP (Execution Plan Phase 3, ADR-060): the EWRAM mailbox
+         * (rom/pvp-gen3/mailbox.h's PokePvPMailbox, sizeof == 2728 bytes
+         * as of this reservation -- see mailbox.c's compile-time size
+         * assertion) lives here, at the very start of EWRAM, before the
+         * heap. 0x1000 bytes reserved (generous headroom over the
+         * struct's real size). This shrinks the heap by exactly 0x1000
+         * -- see include/malloc.h's HEAP_SIZE, which must move with this
+         * value -- rather than growing total EWRAM usage, since the
+         * stock build already uses all 256K with zero free bytes. */
+        . = ALIGN(4);
+        gPokePvPMailbox = .;
+        . += 0x1000;
+
         gHeap = .;
 
         . = 0x1C000;
