@@ -263,6 +263,23 @@ void StartWildBattle(void)
 // any of the actual matchmaking/lobby UI (Phase 8) exists.
 void StartPokePvPDebugBattle(void)
 {
+    // POKEPVP (ADR-067): real-play feedback found the battle screen
+    // itself works (BATTLE_TYPE_POKEPVP genuinely reaches native
+    // rendering, the actual thing this whole trigger exists to prove),
+    // but the player's side showed no Pokemon -- this function only ever
+    // populated the *enemy* party, and a fresh save has no starter yet
+    // (gPlayerPartyCount == 0). Made fully self-contained: synthesize a
+    // player Pokemon too whenever the real party is empty, so this never
+    // again depends on what state the save file happens to be in. A save
+    // with a real party is left untouched.
+    if (gPlayerPartyCount == 0)
+    {
+        ZeroMonData(&gPlayerParty[0]);
+        CreateMon(&gPlayerParty[0], SPECIES_CHARMANDER, 5, 0, FALSE, 0, OT_ID_PLAYER_ID, 0);
+        GiveMoveToMon(&gPlayerParty[0], MOVE_SCRATCH);
+        gPlayerPartyCount = 1;
+    }
+
     ZeroMonData(&gEnemyParty[0]);
     CreateMon(&gEnemyParty[0], SPECIES_RATTATA, 5, 0, FALSE, 0, OT_ID_PLAYER_ID, 0);
     GiveMoveToMon(&gEnemyParty[0], MOVE_TACKLE);
