@@ -1512,16 +1512,24 @@ static void CB2_Overworld(void)
     // Threshold dropped from 60 frames (~1 real second -- a deliberate
     // margin against firing mid-fade, from when this was reached only
     // via Oak's real intro/overworld entry, which itself takes a moment
-    // to settle) to 2 (effectively immediate) now that
-    // StartPokePvPMenuMatch (battle_setup.c, D7 step 1) offers a second,
-    // *deliberate* way to reach free-roam control -- a human explicitly
-    // choosing "Start Match" from the PokePvP menu wants the battle
-    // right away, not a second's pause. The `fading`/`ScriptContext_IsEnabled`
-    // guard below still protects against firing before the screen has
-    // actually settled. sPokePvPDebugTriggered is never reset once set,
-    // so this only ever fires once per boot -- without that guard, the
-    // moment the debug battle ends and control returns to CB2_Overworld,
-    // the same idle-timer would fire again immediately, forever.
+    // to settle) to 2 in ADR-080's first attempt, on the theory that
+    // StartPokePvPMenuMatch's warp (CB2_LoadMap -> DoMapLoadLoop, which
+    // only ever hands off to CB2_Overworld once map data is fully
+    // loaded -- read in ADR-081's investigation) meant the map was
+    // already fully settled by the time this code ever runs, so the
+    // original margin was unnecessary here. **That theory was wrong**:
+    // a real human hit it (ADR-081) -- a corrupted starting room, not
+    // just an unfamiliar one, immediately after the deterministic
+    // Start Match trigger. `gPaletteFade.active` going false is
+    // necessary but evidently not sufficient proof the screen has
+    // actually finished settling this soon after a fresh map load (the
+    // real fade-in this guard is meant to wait out may not have even
+    // started yet at frame 1-2, indistinguishable from "already
+    // finished" by this flag alone) -- firing a second transition
+    // (the battle start) that early collides with it. Set to 40 (~2/3
+    // real second) as a real, deliberately generous margin rather than
+    // another single-digit guess -- still far faster than the original
+    // 60-frame/~1s value, but not cutting it as close. See ADR-081.
     if (!sPokePvPDebugTriggered)
     {
         if (fading || ScriptContext_IsEnabled())
@@ -1531,7 +1539,7 @@ static void CB2_Overworld(void)
         else
         {
             sPokePvPDebugTriggerHoldFrames++;
-            if (sPokePvPDebugTriggerHoldFrames == 2)
+            if (sPokePvPDebugTriggerHoldFrames == 40)
             {
                 sPokePvPDebugTriggered = TRUE;
                 DebugPrintf("POKEPVP: CB2_Overworld auto-trigger firing");
