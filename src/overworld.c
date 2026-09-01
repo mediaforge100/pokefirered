@@ -122,11 +122,11 @@ COMMON_DATA u8 gLocalLinkPlayerId = 0;
 COMMON_DATA u8 gFieldLinkPlayerCount = 0;
 
 static u8 sPlayerLinkStates[MAX_LINK_PLAYERS];
-// POKEPVP (ADR-064): see CB2_Overworld's own comment. No explicit `= 0`
+// POKEPVP (ADR-065): see CB2_Overworld's own comment. No explicit `= 0`
 // initializer -- this ROM's linker script has no output section for
 // .data (only whitelisted symbol tables/COMMON), and every other static
 // in this file relies on the same zero-by-default .bss placement.
-static u16 sPokePvPDebugSelectHoldFrames;
+static u16 sPokePvPDebugTriggerHoldFrames;
 static KeyInterCB sPlayerKeyInterceptCallback;
 static bool8 sReceivingFromLink;
 static u8 sRfuKeepAliveTimer;
@@ -1492,36 +1492,38 @@ static void CB2_Overworld(void)
     if (fading)
         SetFieldVBlankCallback();
 
-    // POKEPVP (ADR-064): debug-only trigger for StartPokePvPDebugBattle
+    // POKEPVP (ADR-065): debug-only trigger for StartPokePvPDebugBattle
     // (battle_setup.c), reachable only from ordinary overworld play (this
     // callback), never mid-script, mid-transition, or from any menu --
     // matching the same caution real wild-encounter checks use before
     // calling StartWildBattle.
     //
-    // A single button (Select), held continuously for ~1.5 real seconds
-    // (90 frames), rather than a multi-button combo -- ADR-063's original
-    // L+R+Select combo turned out unreliable for a human tester on a
-    // real keyboard, almost certainly keyboard ghosting/rollover limits
-    // (most keyboards cannot reliably register 3+ simultaneous keys,
-    // especially specific combinations sharing a matrix row/column) --
-    // a hardware limitation no amount of correct GBA-side logic works
-    // around. One key, held, sidesteps it entirely. Select alone still
-    // does its normal "use registered item" thing on the frame it's first
-    // pressed (harmless with nothing registered); this counter only
-    // triggers well after that, once held continuously.
+    // A single button, held continuously for ~1.5 real seconds (90
+    // frames) -- ADR-063's original L+R+Select combo failed for a real
+    // tester (keyboard ghosting), and ADR-064's follow-up (Select alone)
+    // *also* failed: Select has a built-in "use registered item" handler
+    // in ProcessPlayerFieldInput (field_control_avatar.c) that fires
+    // instantly on press, and whatever it opens holds
+    // ScriptContext_IsEnabled() true while displayed -- resetting this
+    // counter to 0 every single frame, so it could never reach 90.
+    // L_BUTTON, checked directly: ProcessPlayerFieldInput reads newKeys
+    // for START/SELECT/A/B/R explicitly but never L at all (grep-verified
+    // against the real source, not assumed) -- genuinely unbound in
+    // vanilla FRLG's default control scheme, so holding it alone does
+    // nothing else to interfere.
     if (fading || ScriptContext_IsEnabled())
     {
-        sPokePvPDebugSelectHoldFrames = 0;
+        sPokePvPDebugTriggerHoldFrames = 0;
     }
-    else if (gMain.heldKeys & SELECT_BUTTON)
+    else if (gMain.heldKeys & L_BUTTON)
     {
-        sPokePvPDebugSelectHoldFrames++;
-        if (sPokePvPDebugSelectHoldFrames == 90)
+        sPokePvPDebugTriggerHoldFrames++;
+        if (sPokePvPDebugTriggerHoldFrames == 90)
             StartPokePvPDebugBattle();
     }
     else
     {
-        sPokePvPDebugSelectHoldFrames = 0;
+        sPokePvPDebugTriggerHoldFrames = 0;
     }
 }
 
