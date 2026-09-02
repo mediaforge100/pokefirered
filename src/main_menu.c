@@ -124,6 +124,7 @@ static void OpenPokePvPList(u8 taskId, u16 count, bool8 withMoveInfo);
 // POKEPVP (ADR-096): the move info panel -- Type/Power/Accuracy/PP for the
 // currently-hovered row, in the unused ~80px right of the move-slot and
 // movepool lists (not shown for the member/species list).
+static void LoadPokePvPExtraTypeColors(void);
 static void DrawPokePvPMoveInfo(u8 windowId, u16 move);
 static u16 GetHoveredMoveId(u8 taskId, bool8 isMoveSlotList);
 static void UpdatePokePvPMoveInfo(u8 taskId, bool8 isMoveSlotList);
@@ -349,6 +350,16 @@ static const u8 sTextColor2[] = { 10,  1, 12 };
 #define POKEPVP_PAL_MINT   7
 #define POKEPVP_PAL_BLUE   8
 #define POKEPVP_PAL_SKY    9
+// POKEPVP (ADR-100): indices 13-14 are "0 0 0" (black) in the source
+// textbox.pal -- true black is otherwise unused as a *color* anywhere on
+// this screen (every existing dark tone here is the mid-gray at index 11,
+// see sTextColor1), so repurposing these two adds two more real hues
+// without touching anything already relied on. Loaded once when the move
+// info panel opens (LoadPokePvPExtraTypeColors below), the same dynamic-
+// override-of-one-bank-15-slot pattern Task_PrintMainMenuText already
+// uses for index 1 (the gendered logo color) -- not a new technique.
+#define POKEPVP_PAL_BROWN  13
+#define POKEPVP_PAL_PURPLE 14
 
 static const u8 sTypeColorFire[]     = { 10, POKEPVP_PAL_RED, 12 };
 static const u8 sTypeColorWater[]    = { 10, POKEPVP_PAL_BLUE, 12 };
@@ -356,6 +367,8 @@ static const u8 sTypeColorElectric[] = { 10, POKEPVP_PAL_ORANGE, 12 };
 static const u8 sTypeColorGrass[]    = { 10, POKEPVP_PAL_GREEN, 12 };
 static const u8 sTypeColorPoison[]   = { 10, POKEPVP_PAL_MINT, 12 };
 static const u8 sTypeColorSky[]      = { 10, POKEPVP_PAL_SKY, 12 };
+static const u8 sTypeColorBrown[]    = { 10, POKEPVP_PAL_BROWN, 12 };
+static const u8 sTypeColorPurple[]   = { 10, POKEPVP_PAL_PURPLE, 12 };
 // White-on-blue for the panel's own header stripe (FillWindowPixelRect
 // below) -- shadow equals the fill color so it disappears rather than
 // showing a mismatched gray shadow on a colored background.
@@ -380,6 +393,17 @@ static const u8 *const sTypeTextColors[NUMBER_OF_MON_TYPES] = {
     [TYPE_FLYING]   = sTypeColorSky,
     [TYPE_STEEL]    = sTypeColorSky,
     [TYPE_DRAGON]   = sTypeColorSky,
+    // POKEPVP (ADR-100): the two extra colors indices 13/14 add.
+    [TYPE_FIGHTING] = sTypeColorBrown,
+    [TYPE_GROUND]   = sTypeColorBrown,
+    [TYPE_ROCK]     = sTypeColorBrown,
+    [TYPE_GHOST]    = sTypeColorPurple,
+    [TYPE_PSYCHIC]  = sTypeColorPurple,
+    [TYPE_DARK]     = sTypeColorPurple,
+    // TYPE_NORMAL and TYPE_MYSTERY are left out deliberately, not
+    // forgotten -- eight distinct hues is what this bank can hold at all
+    // (see the constants above), and Normal reading as the plain
+    // colorless gray fallback is thematically apt anyway.
 };
 
 static const struct BgTemplate sBgTemplate[] = {
@@ -1501,6 +1525,7 @@ static void OpenPokePvPList(u8 taskId, u16 count, bool8 withMoveInfo)
     gTasks[taskId].tLastInfoMoveId = -1;
     if (withMoveInfo)
     {
+        LoadPokePvPExtraTypeColors();
         gTasks[taskId].tMoveInfoWindowId = AddWindow(&sPokePvPMoveInfoWindowTemplate);
         FillWindowPixelBuffer(gTasks[taskId].tMoveInfoWindowId, PIXEL_FILL(10));
         MainMenu_DrawWindow(&sPokePvPMoveInfoWindowTemplate);
@@ -1537,6 +1562,24 @@ static void ClosePokePvPList(u8 taskId)
         RemoveWindow(gTasks[taskId].tMoveInfoWindowId);
         gTasks[taskId].tMoveInfoWindowId = WINDOW_NONE;
     }
+}
+
+// POKEPVP (ADR-100): loads the two extra type-color hues (brown, purple)
+// into bank 15's otherwise-black indices 13/14 -- the same dynamic
+// single-slot override Task_PrintMainMenuText already does for index 1
+// (the gendered logo color) every time it runs, not a new technique.
+// Called every time the move info panel opens rather than once, since
+// CB2_InitMainMenu's own full LoadPalette(sTextbox_Pal, ...) resets bank
+// 15 back to the source .pal file's black whenever it re-runs (e.g.
+// returning from the Team Builder's PC box) -- a one-time load at boot
+// would silently stop holding after the first such return.
+static void LoadPokePvPExtraTypeColors(void)
+{
+    u16 pal[2];
+
+    pal[0] = RGB(22, 14, 3);
+    pal[1] = RGB(16, 4, 20);
+    LoadPalette(pal, BG_PLTT_ID(15) + POKEPVP_PAL_BROWN, PLTT_SIZEOF(2));
 }
 
 // POKEPVP (ADR-096): Type/Power/Accuracy/PP for one move, or three-hyphen
