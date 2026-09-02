@@ -95,4 +95,25 @@ void RunBattleScriptCommands_PopCallbacksStack(void);
 void RunBattleScriptCommands(void);
 bool8 TryRunFromBattle(u8 battler);
 
+/* POKEPVP (ADR-104): PokePvP_WaitForMailboxTurnResolution is defined in
+ * rom/pvp-gen3/battle_controller_pokepvp.c and installed as
+ * gBattleMainFunc in place of RunTurnActionsFunctions for a
+ * BATTLE_TYPE_POKEPVP battle (battle_main.c's
+ * CheckFocusPunch_ClearVarsBeforeTurnStarts). PokePvP_SetBattleOutcomeAndEndTurn
+ * is defined here in battle_main.c and called from that same PvP
+ * controller file's POKEPVP_MSG_BATTLE_OUTCOME handler, to end the
+ * battle via FireRed's own real sEndTurnFuncsTable dispatch without ever
+ * running RunTurnActionsFunctions. */
+void PokePvP_WaitForMailboxTurnResolution(void);
+void PokePvP_SetBattleOutcomeAndEndTurn(u8 outcome);
+/* ADR-106: defined in battle_controller_pokepvp.c. TRUE once this battle
+ * has actually consumed a real mailbox CHOICE_ACTION/CHOICE_MOVE record
+ * (a fixture, or eventually a real server) -- FALSE (every new battle's
+ * default) means plain local play (no fixture, no server) runs FireRed's
+ * own real RunTurnActionsFunctions unmodified, same as before ADR-104.
+ * Checked in CheckFocusPunch_ClearVarsBeforeTurnStarts instead of just
+ * BATTLE_TYPE_POKEPVP, so a real button press in the FIGHT menu doesn't
+ * hang forever waiting on a mailbox nothing is driving yet. */
+bool8 PokePvP_ShouldSkipLocalResolution(void);
+
 #endif // GUARD_BATTLE_MAIN_H

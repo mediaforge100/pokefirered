@@ -590,6 +590,21 @@ static void (*const sEndTurnFuncsTable[])(void) =
     [B_OUTCOME_NO_SAFARI_BALLS]   = HandleEndTurn_FinishBattle,
 };
 
+/* POKEPVP (ADR-104): exported one-line upstream-patch addition, same
+ * precedent as OpponentBufferRunCommand's export (ADR-072) -- lets
+ * rom/pvp-gen3/battle_controller_pokepvp.c end a BATTLE_TYPE_POKEPVP
+ * battle via FireRed's own real, unmodified end-of-battle presentation
+ * (sEndTurnFuncsTable, same table RunTurnActionsFunctions itself
+ * dispatches through when gBattleOutcome becomes non-zero) without ever
+ * calling RunTurnActionsFunctions. `outcome` is a B_OUTCOME_* value
+ * (constants/battle.h) carried over the mailbox's new
+ * POKEPVP_MSG_BATTLE_OUTCOME record. */
+void PokePvP_SetBattleOutcomeAndEndTurn(u8 outcome)
+{
+    gBattleOutcome = outcome;
+    gBattleMainFunc = sEndTurnFuncsTable[gBattleOutcome & 0x7F];
+}
+
 const u8 gStatusConditionString_PoisonJpn[] = _("どく$$$$$");
 const u8 gStatusConditionString_SleepJpn[] = _("ねむり$$$$");
 const u8 gStatusConditionString_ParalysisJpn[] = _("まひ$$$$$");
@@ -3694,7 +3709,24 @@ static void CheckFocusPunch_ClearVarsBeforeTurnStarts(void)
     }
     gDynamicBasePower = 0;
     gBattleStruct->dynamicMoveType = 0;
-    gBattleMainFunc = RunTurnActionsFunctions;
+    /* POKEPVP (Phase 4 gate item 1, ADR-104, refined ADR-106):
+     * RunTurnActionsFunctions is where FireRed's own local damage/script
+     * engine (sTurnActionsFuncsTable, battle_script_commands.c) runs --
+     * exactly the "local resolution loop" the Guide's rule 9.1 and this
+     * project's own gate criterion #1 ("the ROM calculating nothing")
+     * forbid once a match is really server/fixture-driven. But gating
+     * this on BATTLE_TYPE_POKEPVP alone (ADR-104's original version)
+     * broke plain interactive play outright: with no real server and no
+     * live sender for a mailbox choice outside a scripted fixture, a
+     * real button press in the FIGHT menu had nothing to answer it and
+     * nothing to drive the turn after. PokePvP_ShouldSkipLocalResolution
+     * (rom/pvp-gen3/battle_controller_pokepvp.c) is FALSE until this
+     * battle has actually consumed a real mailbox choice -- until then,
+     * this runs exactly like plain FireRed. */
+    if ((gBattleTypeFlags & BATTLE_TYPE_POKEPVP) && PokePvP_ShouldSkipLocalResolution())
+        gBattleMainFunc = PokePvP_WaitForMailboxTurnResolution;
+    else
+        gBattleMainFunc = RunTurnActionsFunctions;
     gBattleCommunication[3] = 0;
     gBattleCommunication[4] = 0;
     gBattleScripting.multihitMoveEffect = 0;
