@@ -294,22 +294,22 @@ static const struct WindowTemplate sPokePvPListWindowTemplate = {
 // Rows visible at once: two tiles per row over an 18-tile-tall window.
 #define POKEPVP_LIST_ROWS 9
 
-// POKEPVP (ADR-096): the move info panel, in the ~80px (tilemapLeft
-// 20..29) the list window's own 18-tile width leaves unused on the right.
-// Deliberately NOT the list's own 18-tile height -- an 18x10 window here
-// (180 tiles) stacked on top of the list window's 324 (baseBlock 0x241)
-// pushed the total past this background's real tile budget: verified by
-// actually capturing a frame (tools/golden-frames) and finding the
-// bottom third of the panel rendering as the raw backdrop color instead
-// of the drawn text, i.e. those tiles silently aliased back to a
-// low/reused index rather than getting real space. 10x11 (110 tiles,
-// baseBlock 0x385..0x3F3) stays comfortably clear of that; the four
-// stat lines this panel actually needs fit in 11 tiles with room to
-// spare. Same on-demand Add/RemoveWindow lifetime as the list window,
-// opened only for the move-slot and movepool lists (not the species
-// list, which has no move stats to show).
+// POKEPVP (ADR-096/097): the move info panel, in the ~80px (tilemapLeft
+// 20..29) the list window's own 18-tile width leaves unused on the
+// right. Deliberately NOT the list's own 18-tile height -- an 18-tall
+// window here (180 tiles) stacked on top of the list window's 324
+// (baseBlock 0x241) pushed the total past this background's real tile
+// budget (ADR-096): confirmed by capturing a frame and finding the
+// bottom third rendering as the raw backdrop color instead of drawn
+// text. 10x9 (90 tiles, baseBlock 0x385..0x3DF) stays comfortably clear
+// of that. Height dropped further from ADR-096's original 11 once
+// DrawPokePvPMoveInfo moved to one line per field instead of two
+// (ADR-097) -- four 16px-tall lines is all this needs now. Same
+// on-demand Add/RemoveWindow lifetime as the list window, opened only
+// for the move-slot and movepool lists (not the species list, which has
+// no move stats to show).
 static const struct WindowTemplate sPokePvPMoveInfoWindowTemplate = {
-    .bg = 0, .tilemapLeft = 20, .tilemapTop = 1, .width = 10, .height = 11,
+    .bg = 0, .tilemapLeft = 20, .tilemapTop = 1, .width = 10, .height = 9,
     .paletteNum = 15, .baseBlock = 0x385
 };
 
@@ -1500,43 +1500,65 @@ static void DrawPokePvPMoveInfo(u8 windowId, u16 move)
 {
     u8 buf[8];
     u8 *dest;
+    u8 typeValueX;
+    u8 statValueX;
 
     FillWindowPixelBuffer(windowId, PIXEL_FILL(10));
 
+    // POKEPVP (ADR-097, fixes a real bug in ADR-096): FONT_NORMAL's real
+    // line height is 16px (two tiles), the same "two tiles per row" the
+    // move list itself already accounts for (POKEPVP_LIST_ROWS above) --
+    // stacking a label directly above its value only 9-16px apart, as the
+    // first version of this panel did, let each value's own draw call
+    // overwrite the bottom of the label above it before it finished
+    // rendering. Bisected by actually zooming into a captured frame's
+    // real pixels (not the 2x-scaled thumbnail this session first judged
+    // it from) and finding every *label* corrupted while every *value*
+    // rendered perfectly -- exactly the signature of "drawn first, then
+    // partially overwritten by the next line down", not a tile-budget or
+    // charmap problem. Fixed by putting each label and its value on the
+    // *same* line, side by side, so there is only one line per field
+    // (four total) with a full 16px of clearance between them -- cheaper
+    // on window height than stacking would need at the correct spacing,
+    // which is what keeps this inside the tile budget ADR-096 already
+    // had to fix once.
+    typeValueX = 2 + GetStringWidth(FONT_NORMAL, sText_MoveInfoType, 0) + 4;
+    statValueX = 2 + GetStringWidth(FONT_NORMAL, sText_MoveInfoPower, 0) + 4;
+
     AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_MoveInfoType);
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 24, sTextColor1, -1, sText_MoveInfoPower);
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 46, sTextColor1, -1, sText_MoveInfoAcc);
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 68, sTextColor1, -1, sText_MoveInfoPP);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 18, sTextColor1, -1, sText_MoveInfoPower);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 34, sTextColor1, -1, sText_MoveInfoAcc);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 50, sTextColor1, -1, sText_MoveInfoPP);
 
     if (move == MOVE_NONE)
     {
-        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 11, sTextColor1, -1, gText_ThreeHyphens);
-        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 33, sTextColor1, -1, gText_ThreeHyphens);
-        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 55, sTextColor1, -1, gText_ThreeHyphens);
-        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 77, sTextColor1, -1, gText_ThreeHyphens);
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, typeValueX, 2, sTextColor1, -1, gText_ThreeHyphens);
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 18, sTextColor1, -1, gText_ThreeHyphens);
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 34, sTextColor1, -1, gText_ThreeHyphens);
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 50, sTextColor1, -1, gText_ThreeHyphens);
         CopyWindowToVram(windowId, COPYWIN_GFX);
         return;
     }
 
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 11, sTextColor1, -1, gTypeNames[gBattleMoves[move].type]);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, typeValueX, 2, sTextColor1, -1, gTypeNames[gBattleMoves[move].type]);
 
     if (gBattleMoves[move].power < 2)
         dest = StringCopy(buf, gText_ThreeHyphens);
     else
         dest = ConvertIntToDecimalStringN(buf, gBattleMoves[move].power, STR_CONV_MODE_LEFT_ALIGN, 3);
     *dest = EOS;
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 33, sTextColor1, -1, buf);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 18, sTextColor1, -1, buf);
 
     if (gBattleMoves[move].accuracy == 0)
         dest = StringCopy(buf, gText_ThreeHyphens);
     else
         dest = ConvertIntToDecimalStringN(buf, gBattleMoves[move].accuracy, STR_CONV_MODE_LEFT_ALIGN, 3);
     *dest = EOS;
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 55, sTextColor1, -1, buf);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 34, sTextColor1, -1, buf);
 
     dest = ConvertIntToDecimalStringN(buf, gBattleMoves[move].pp, STR_CONV_MODE_LEFT_ALIGN, 2);
     *dest = EOS;
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 77, sTextColor1, -1, buf);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 50, sTextColor1, -1, buf);
 
     CopyWindowToVram(windowId, COPYWIN_GFX);
 }
