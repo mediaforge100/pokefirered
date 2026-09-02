@@ -12,6 +12,8 @@
 #include "pokepvp_team_builder.h" // POKEPVP (ADR-093): TEAM BUILDER
 #include "list_menu.h" // POKEPVP (ADR-093): the move editor's scrolling lists
 #include "data.h"        // POKEPVP (ADR-093): gSpeciesNames, gMoveNames
+#include "pokemon.h"     // POKEPVP (ADR-096): gBattleMoves, for the move info panel
+#include "battle_main.h" // POKEPVP (ADR-096): gTypeNames, for the move info panel
 #include "constants/moves.h"
 #include "quest_log.h"
 #include "mystery_gift_menu.h"
@@ -70,6 +72,15 @@ enum MainMenuWindow
 #define tMGErrorMsgState data[9]
 #define tMGErrorType     data[10]
 
+// POKEPVP (ADR-096): the move info panel shown alongside the move-slot and
+// movepool lists. tMoveInfoWindowId is WINDOW_NONE when no panel is open
+// (the species/member lists don't get one) -- ClosePokePvPList checks this
+// to know whether there is a second window to tear down. tLastInfoMoveId
+// starts at -1 (no real move id is negative) so the first frame after
+// opening always draws, then only redraws on an actual hover change.
+#define tMoveInfoWindowId data[11]
+#define tLastInfoMoveId   data[12]
+
 static bool32 MainMenuGpuInit(u8 a0);
 static void Task_SetWin0BldRegsAndCheckSaveFile(u8 taskId);
 static void PrintSaveErrorStatus(u8 taskId, const u8 *str);
@@ -109,7 +120,13 @@ static void Task_PokePvPEmptyTeamMessage(u8 taskId);
 static void Task_PokePvPPickMoveSlot(u8 taskId);
 static void Task_PokePvPPickMove(u8 taskId);
 static bool8 AllocPokePvPList(void);
-static void OpenPokePvPList(u8 taskId, u16 count);
+static void OpenPokePvPList(u8 taskId, u16 count, bool8 withMoveInfo);
+// POKEPVP (ADR-096): the move info panel -- Type/Power/Accuracy/PP for the
+// currently-hovered row, in the unused ~80px right of the move-slot and
+// movepool lists (not shown for the member/species list).
+static void DrawPokePvPMoveInfo(u8 windowId, u16 move);
+static u16 GetHoveredMoveId(u8 taskId, bool8 isMoveSlotList);
+static void UpdatePokePvPMoveInfo(u8 taskId, bool8 isMoveSlotList);
 static void ClosePokePvPList(u8 taskId);
 static void ReturnToSlotMenu(u8 taskId);
 static void BuildMemberList(u8 taskId);
@@ -179,6 +196,11 @@ static const u8 sText_TeamIsEmpty[] = _("This team has no POKéMON yet.");
 // The empty move slot, and the "clear this slot" row. One dash, used as
 // both -- a slot showing "-" and a choice reading "-" are the same idea.
 static const u8 sText_NoMove[] = _("-");
+// POKEPVP (ADR-096): the move info panel's field labels.
+static const u8 sText_MoveInfoType[] = _("TYPE");
+static const u8 sText_MoveInfoPower[] = _("POWER");
+static const u8 sText_MoveInfoAcc[] = _("ACC.");
+static const u8 sText_MoveInfoPP[] = _("PP");
 static const u8 sText_AutoMatch[] = _("AUTO-MATCH");
 static const u8 sText_InviteMatch[] = _("INVITE MATCH");
 
@@ -271,6 +293,25 @@ static const struct WindowTemplate sPokePvPListWindowTemplate = {
 
 // Rows visible at once: two tiles per row over an 18-tile-tall window.
 #define POKEPVP_LIST_ROWS 9
+
+// POKEPVP (ADR-096): the move info panel, in the ~80px (tilemapLeft
+// 20..29) the list window's own 18-tile width leaves unused on the right.
+// Deliberately NOT the list's own 18-tile height -- an 18x10 window here
+// (180 tiles) stacked on top of the list window's 324 (baseBlock 0x241)
+// pushed the total past this background's real tile budget: verified by
+// actually capturing a frame (tools/golden-frames) and finding the
+// bottom third of the panel rendering as the raw backdrop color instead
+// of the drawn text, i.e. those tiles silently aliased back to a
+// low/reused index rather than getting real space. 10x11 (110 tiles,
+// baseBlock 0x385..0x3F3) stays comfortably clear of that; the four
+// stat lines this panel actually needs fit in 11 tiles with room to
+// spare. Same on-demand Add/RemoveWindow lifetime as the list window,
+// opened only for the move-slot and movepool lists (not the species
+// list, which has no move stats to show).
+static const struct WindowTemplate sPokePvPMoveInfoWindowTemplate = {
+    .bg = 0, .tilemapLeft = 20, .tilemapTop = 1, .width = 10, .height = 11,
+    .paletteNum = 15, .baseBlock = 0x385
+};
 
 // POKEPVP (ADR-093): the move editor's working memory, on the heap rather
 // than in EWRAM_DATA -- EWRAM is at 99.2% and this is needed only while
@@ -1250,7 +1291,7 @@ static void Task_PokePvPSlotMenu(u8 taskId)
             {
                 gTasks[taskId].tMemberIndex = 0;
                 BuildMemberList(taskId);
-                OpenPokePvPList(taskId, PokePvPTeamBuilder_MemberCount(gTasks[taskId].tTeamSlot));
+                OpenPokePvPList(taskId, PokePvPTeamBuilder_MemberCount(gTasks[taskId].tTeamSlot), FALSE);
                 gTasks[taskId].func = Task_PokePvPPickMember;
             }
             // Out of heap: stay on the submenu rather than opening a list
@@ -1355,7 +1396,15 @@ static bool8 AllocPokePvPList(void)
 // WIN0 is opened to the whole screen for the duration: this menu normally
 // uses it to darken everything except the selected row, which is exactly
 // wrong over a list that draws its own cursor.
-static void OpenPokePvPList(u8 taskId, u16 count)
+//
+// POKEPVP (ADR-096): `withMoveInfo` additionally opens the move info panel
+// in the unused space to the list window's right -- TRUE for the
+// move-slot and movepool lists, FALSE for the species/member list, which
+// has no move stats to show. tLastInfoMoveId is reset to -1 either way so
+// the first per-frame update after opening always draws (or, when
+// withMoveInfo is FALSE, so a stale value from a previous screen can
+// never be read).
+static void OpenPokePvPList(u8 taskId, u16 count, bool8 withMoveInfo)
 {
     ClearWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
     ClearWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
@@ -1399,6 +1448,20 @@ static void OpenPokePvPList(u8 taskId, u16 count)
 
     gTasks[taskId].tListTaskId = ListMenuInit(&gMultiuseListMenuTemplate, 0, 0);
     CopyWindowToVram(gTasks[taskId].tListWindowId, COPYWIN_FULL);
+
+    gTasks[taskId].tLastInfoMoveId = -1;
+    if (withMoveInfo)
+    {
+        gTasks[taskId].tMoveInfoWindowId = AddWindow(&sPokePvPMoveInfoWindowTemplate);
+        FillWindowPixelBuffer(gTasks[taskId].tMoveInfoWindowId, PIXEL_FILL(10));
+        MainMenu_DrawWindow(&sPokePvPMoveInfoWindowTemplate);
+        PutWindowTilemap(gTasks[taskId].tMoveInfoWindowId);
+        CopyWindowToVram(gTasks[taskId].tMoveInfoWindowId, COPYWIN_FULL);
+    }
+    else
+    {
+        gTasks[taskId].tMoveInfoWindowId = WINDOW_NONE;
+    }
 }
 
 // POKEPVP (ADR-093): tears the list down and hands the screen back to the
@@ -1413,6 +1476,110 @@ static void ClosePokePvPList(u8 taskId)
     MainMenu_EraseWindow(&sPokePvPListWindowTemplate);
     CopyWindowToVram(gTasks[taskId].tListWindowId, COPYWIN_FULL);
     RemoveWindow(gTasks[taskId].tListWindowId);
+
+    // POKEPVP (ADR-096): the info panel only exists when OpenPokePvPList
+    // was called with withMoveInfo -- WINDOW_NONE means there is nothing
+    // here to tear down.
+    if (gTasks[taskId].tMoveInfoWindowId != WINDOW_NONE)
+    {
+        ClearWindowTilemap(gTasks[taskId].tMoveInfoWindowId);
+        MainMenu_EraseWindow(&sPokePvPMoveInfoWindowTemplate);
+        CopyWindowToVram(gTasks[taskId].tMoveInfoWindowId, COPYWIN_FULL);
+        RemoveWindow(gTasks[taskId].tMoveInfoWindowId);
+        gTasks[taskId].tMoveInfoWindowId = WINDOW_NONE;
+    }
+}
+
+// POKEPVP (ADR-096): Type/Power/Accuracy/PP for one move, or three-hyphen
+// placeholders for MOVE_NONE (an empty move slot, or the movepool list's
+// own "clear this slot" row) -- the same "read gBattleMoves[0] as if it
+// were a real move" mistake would otherwise be silent and wrong rather
+// than a crash, so MOVE_NONE is handled explicitly instead of falling
+// through.
+static void DrawPokePvPMoveInfo(u8 windowId, u16 move)
+{
+    u8 buf[8];
+    u8 *dest;
+
+    FillWindowPixelBuffer(windowId, PIXEL_FILL(10));
+
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_MoveInfoType);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 24, sTextColor1, -1, sText_MoveInfoPower);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 46, sTextColor1, -1, sText_MoveInfoAcc);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 68, sTextColor1, -1, sText_MoveInfoPP);
+
+    if (move == MOVE_NONE)
+    {
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 11, sTextColor1, -1, gText_ThreeHyphens);
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 33, sTextColor1, -1, gText_ThreeHyphens);
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 55, sTextColor1, -1, gText_ThreeHyphens);
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 77, sTextColor1, -1, gText_ThreeHyphens);
+        CopyWindowToVram(windowId, COPYWIN_GFX);
+        return;
+    }
+
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 11, sTextColor1, -1, gTypeNames[gBattleMoves[move].type]);
+
+    if (gBattleMoves[move].power < 2)
+        dest = StringCopy(buf, gText_ThreeHyphens);
+    else
+        dest = ConvertIntToDecimalStringN(buf, gBattleMoves[move].power, STR_CONV_MODE_LEFT_ALIGN, 3);
+    *dest = EOS;
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 33, sTextColor1, -1, buf);
+
+    if (gBattleMoves[move].accuracy == 0)
+        dest = StringCopy(buf, gText_ThreeHyphens);
+    else
+        dest = ConvertIntToDecimalStringN(buf, gBattleMoves[move].accuracy, STR_CONV_MODE_LEFT_ALIGN, 3);
+    *dest = EOS;
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 55, sTextColor1, -1, buf);
+
+    dest = ConvertIntToDecimalStringN(buf, gBattleMoves[move].pp, STR_CONV_MODE_LEFT_ALIGN, 2);
+    *dest = EOS;
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 77, sTextColor1, -1, buf);
+
+    CopyWindowToVram(windowId, COPYWIN_GFX);
+}
+
+// POKEPVP (ADR-096): resolves the currently-highlighted row into a real
+// move id. BuildLegalMoveList's own .index field already *is* the move id
+// (or MOVE_NONE for the clear-slot row), since that list's row order
+// (alphabetical) doesn't match move-id order -- but BuildMoveSlotList's
+// .index is just the slot position 0-3 in list order, so the move-slot
+// list needs a second lookup through the team record to reach an actual
+// move id.
+static u16 GetHoveredMoveId(u8 taskId, bool8 isMoveSlotList)
+{
+    u16 cursorPos, itemsAbove;
+    u16 position;
+
+    ListMenuGetScrollAndRow(gTasks[taskId].tListTaskId, &cursorPos, &itemsAbove);
+    position = cursorPos + itemsAbove;
+
+    if (isMoveSlotList)
+        return PokePvPTeamBuilder_MemberMove(gTasks[taskId].tTeamSlot, gTasks[taskId].tMemberIndex, position);
+
+    return sPokePvPList->items[position].index;
+}
+
+// POKEPVP (ADR-096): called once per active frame from the move-slot and
+// movepool list tasks, after ListMenu_ProcessInput so a same-frame D-pad
+// move is already reflected. Only actually redraws on a real hover
+// change, not every frame -- text redraws are cheap here, but there is no
+// reason to touch VRAM every frame for an unchanging screen either.
+static void UpdatePokePvPMoveInfo(u8 taskId, bool8 isMoveSlotList)
+{
+    u16 move;
+
+    if (gTasks[taskId].tMoveInfoWindowId == WINDOW_NONE)
+        return;
+
+    move = GetHoveredMoveId(taskId, isMoveSlotList);
+    if (move == gTasks[taskId].tLastInfoMoveId)
+        return;
+
+    gTasks[taskId].tLastInfoMoveId = move;
+    DrawPokePvPMoveInfo(gTasks[taskId].tMoveInfoWindowId, move);
 }
 
 static void ReturnToSlotMenu(u8 taskId)
@@ -1533,10 +1700,15 @@ static void Task_PokePvPPickMember(u8 taskId)
     gTasks[taskId].tMemberIndex = chosen;
     ClosePokePvPList(taskId);
     BuildMoveSlotList(taskId);
-    OpenPokePvPList(taskId, 4);
+    OpenPokePvPList(taskId, 4, TRUE);
     gTasks[taskId].func = Task_PokePvPPickMoveSlot;
 }
 
+// POKEPVP (ADR-096): the info panel update runs after ListMenu_ProcessInput
+// so a same-frame D-pad move is already reflected, and only in the
+// LIST_NOTHING_CHOSEN branch -- on A/B this list is about to close anyway,
+// so there is nothing worth redrawing into a window that is torn down the
+// same frame.
 static void Task_PokePvPPickMoveSlot(u8 taskId)
 {
     s32 chosen;
@@ -1547,14 +1719,17 @@ static void Task_PokePvPPickMoveSlot(u8 taskId)
 
     chosen = ListMenu_ProcessInput(gTasks[taskId].tListTaskId);
     if (chosen == LIST_NOTHING_CHOSEN)
+    {
+        UpdatePokePvPMoveInfo(taskId, TRUE);
         return;
+    }
     if (chosen == LIST_CANCEL)
     {
         PlaySE(SE_SELECT);
         ClosePokePvPList(taskId);
         BuildMemberList(taskId);
         OpenPokePvPList(taskId,
-                        PokePvPTeamBuilder_MemberCount(gTasks[taskId].tTeamSlot));
+                        PokePvPTeamBuilder_MemberCount(gTasks[taskId].tTeamSlot), FALSE);
         gTasks[taskId].func = Task_PokePvPPickMember;
         return;
     }
@@ -1563,7 +1738,7 @@ static void Task_PokePvPPickMoveSlot(u8 taskId)
     gTasks[taskId].tMoveSlot = chosen;
     ClosePokePvPList(taskId);
     rows = BuildLegalMoveList(taskId);
-    OpenPokePvPList(taskId, rows);
+    OpenPokePvPList(taskId, rows, TRUE);
     gTasks[taskId].func = Task_PokePvPPickMove;
 }
 
@@ -1576,13 +1751,16 @@ static void Task_PokePvPPickMove(u8 taskId)
 
     chosen = ListMenu_ProcessInput(gTasks[taskId].tListTaskId);
     if (chosen == LIST_NOTHING_CHOSEN)
+    {
+        UpdatePokePvPMoveInfo(taskId, FALSE);
         return;
+    }
     if (chosen == LIST_CANCEL)
     {
         PlaySE(SE_SELECT);
         ClosePokePvPList(taskId);
         BuildMoveSlotList(taskId);
-        OpenPokePvPList(taskId, 4);
+        OpenPokePvPList(taskId, 4, TRUE);
         gTasks[taskId].func = Task_PokePvPPickMoveSlot;
         return;
     }
@@ -1597,7 +1775,7 @@ static void Task_PokePvPPickMove(u8 taskId)
                                      (u16)chosen);
     ClosePokePvPList(taskId);
     BuildMoveSlotList(taskId);
-    OpenPokePvPList(taskId, 4);
+    OpenPokePvPList(taskId, 4, TRUE);
     gTasks[taskId].func = Task_PokePvPPickMoveSlot;
 }
 
