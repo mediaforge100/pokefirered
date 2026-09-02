@@ -39,6 +39,15 @@ u8 PokePvPTeamBuilder_BuildRosterStep(void);
 // this returns -- exactly the sequence StartPokePvPAutoMatch already uses.
 void PokePvPTeamBuilder_Open(u8 slot, MainCallback returnCallback);
 
+// POKEPVP (ADR-095): loads `slot`'s stored team into gPlayerParty without
+// opening the PC screen -- for the AUTO-MATCH team-selector, which needs
+// the chosen team's real Pokemon in the party before the battle starts, not
+// a UI to edit them. A no-op (party left untouched) if `slot` is
+// out-of-range or empty; the caller (main_menu.c's selector) already
+// refuses to let a player pick an empty slot, so this is a second,
+// fail-closed guard rather than the only one.
+void PokePvPTeamBuilder_LoadTeamForBattle(u8 slot);
+
 // --- Move editing -------------------------------------------------------
 //
 // A team slot *is* the team document (see team_builder.c), so moves are

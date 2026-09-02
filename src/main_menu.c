@@ -89,6 +89,11 @@ static void DrawStartMatchSubmenuItems(void);
 static void Task_PokePvPStartMatchSubmenu(u8 taskId);
 static void Task_PokePvPInviteMatchStub(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId);
+// POKEPVP (ADR-095): AUTO-MATCH -> team-selector screen, a deliberately
+// separate picker from TEAM BUILDER's own team-slot list below -- no
+// EDIT TEAM/EDIT MOVES submenu, A here starts the match directly.
+static void DrawTeamSelectorItems(void);
+static void Task_PokePvPTeamSelector(u8 taskId);
 // POKEPVP (ADR-093): TEAM BUILDER -> team-slot list.
 static void DrawTeamListItems(void);
 static void Task_PokePvPTeamList(u8 taskId);
@@ -159,6 +164,10 @@ static const u8 sText_NotYetImplemented[] = _("Not yet implemented.");
 // ADR-091's submenu safe.
 static const u8 sText_Team[] = _("TEAM ");
 static const u8 sText_TeamEmpty[] = _("EMPTY");
+// POKEPVP (ADR-095): the selector's own row label -- deliberately not the
+// builder's exact "x/6" member count. A picker only needs to say whether a
+// team can be used at all.
+static const u8 sText_TeamReady[] = _("READY");
 // POKEPVP (ADR-093): shown while the legal-species roster is built into
 // the PC boxes -- see PokePvPTeamBuilder_BuildRosterStep for why that is
 // not instantaneous and must not be done in one frame.
@@ -859,13 +868,15 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
         PlaySE(SE_SELECT);
         if (gTasks[taskId].tSubCursorPos == 0)
         {
-            // AUTO-MATCH: real server-integration path (battle_setup.c),
-            // no in-world overworld scene per the owner's explicit
-            // direction -- see StartPokePvPAutoMatch's own doc comment.
-            gExitStairsMovementDisabled = FALSE;
-            FreeAllWindowBuffers();
-            DestroyTask(taskId);
-            StartPokePvPAutoMatch();
+            // POKEPVP (ADR-095): AUTO-MATCH now opens a team-selector
+            // screen first instead of firing StartPokePvPAutoMatch()
+            // directly -- until now there was no way to choose which
+            // built team entered the match at all. Live redraw within the
+            // same still-faded-in menu CB2, same as Task_PokePvPTeamList's
+            // own transition into its slot submenu -- no palette fade.
+            DrawTeamSelectorItems();
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPTeamSelector;
         }
         else
         {
@@ -938,6 +949,96 @@ static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId)
     BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
     gTasks[taskId].tCursorPos = 0;
     gTasks[taskId].func = Task_UpdateVisualSelection;
+}
+
+// POKEPVP (ADR-095): one team-selector row. Deliberately terser than the
+// builder's own row below (exact "x/6" member count) -- this screen is a
+// picker, not an editor, so READY/EMPTY is all a player needs to decide.
+static void DrawOneSelectorRow(u8 windowId, u8 slot)
+{
+    u8 buf[24];
+    u8 *dest;
+
+    FillWindowPixelBuffer(windowId, PIXEL_FILL(10));
+    dest = StringCopy(buf, sText_Team);
+    dest = ConvertIntToDecimalStringN(dest, slot + 1, STR_CONV_MODE_LEFT_ALIGN, 1);
+    *dest++ = CHAR_SPACE;
+    *dest++ = CHAR_SPACE;
+    *dest++ = CHAR_SPACE;
+    if (PokePvPTeamBuilder_MemberCount(slot) == 0)
+        dest = StringCopy(dest, sText_TeamEmpty);
+    else
+        dest = StringCopy(dest, sText_TeamReady);
+    *dest = EOS;
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+    MainMenu_DrawWindow(&sWindowTemplate[windowId]);
+    PutWindowTilemap(windowId);
+}
+
+// POKEPVP (ADR-095): five-row team picker opened from AUTO-MATCH, in place
+// of firing StartPokePvPAutoMatch() directly -- there was previously no way
+// to choose which built team entered the match. Deliberately a different
+// screen from Task_PokePvPTeamList (TEAM BUILDER, menu cursor 1) below, not
+// a mode of it: A here starts a match with the highlighted team immediately
+// (or does nothing on an empty one); there is no EDIT TEAM/EDIT MOVES
+// submenu here at all, so a player can't confuse "pick a team to play" with
+// "edit a team".
+static void DrawTeamSelectorItems(void)
+{
+    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_0, 0);
+    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_1, 1);
+    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_2, 2);
+    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_3, 3);
+    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_4, 4);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+}
+
+// POKEPVP (ADR-095): drives the team-selector list. Same D-pad/32px-slot
+// input shape as every other list in this file. A on an empty slot is
+// silently ignored -- an unselectable row is expected UI here, not a
+// mistake worth a dialog. A on a populated slot loads that team's real
+// Pokemon into gPlayerParty (PokePvPTeamBuilder_LoadTeamForBattle) before
+// handing off to StartPokePvPAutoMatch, so gPlayerPartyCount is non-zero by
+// the time StartPokePvPDebugBattle runs and its own gPlayerPartyCount == 0
+// synthesis (ADR-067) never overwrites it.
+static void Task_PokePvPTeamSelector(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        if (PokePvPTeamBuilder_MemberCount(gTasks[taskId].tSubCursorPos) == 0)
+            return;
+
+        PlaySE(SE_SELECT);
+        PokePvPTeamBuilder_LoadTeamForBattle(gTasks[taskId].tSubCursorPos);
+        gExitStairsMovementDisabled = FALSE;
+        FreeAllWindowBuffers();
+        DestroyTask(taskId);
+        StartPokePvPAutoMatch();
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        DrawStartMatchSubmenuItems();
+        gTasks[taskId].tSubCursorPos = 0;
+        gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < POKEPVP_TEAM_SLOTS - 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+    }
 }
 
 // POKEPVP (ADR-093): one team-slot row. Shows the slot number and how many

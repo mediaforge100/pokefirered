@@ -26,6 +26,7 @@
 #include "battle.h"
 #include "battle_transition.h"
 #include "battle_controllers.h"
+#include "main_menu.h" // POKEPVP (ADR-094): CB2_InitMainMenu, post-battle return target
 #include "constants/battle_setup.h"
 #include "constants/event_objects.h"
 #include "constants/heal_locations.h"
@@ -67,6 +68,7 @@ static void DoSafariBattle(void);
 static void DoGhostBattle(void);
 static void DoStandardWildBattle(void);
 static void CB2_EndWildBattle(void);
+static void CB2_EndPokePvPBattle(void); // POKEPVP (ADR-094)
 static u8 GetWildBattleTransition(void);
 static u8 GetTrainerBattleTransition(void);
 static void CB2_EndScriptedWildBattle(void);
@@ -295,7 +297,13 @@ void StartPokePvPDebugBattle(void)
     LockPlayerFieldControls();
     FreezeObjectEvents();
     StopPlayerAvatar();
-    gMain.savedCallback = CB2_EndWildBattle;
+    // POKEPVP (ADR-094): CB2_EndWildBattle routes to CB2_WhiteOut (loss) or
+    // CB2_ReturnToField (win) -- both land the player back in the normal
+    // overworld, a real regression against D7 ("never show the normal
+    // overworld flow"). A PvP match has no Pokemon Center to white out to
+    // and no map tile to return to that means anything; every outcome
+    // should return to the PokePvP menu instead.
+    gMain.savedCallback = CB2_EndPokePvPBattle;
     gBattleTypeFlags = BATTLE_TYPE_POKEPVP;
     DebugPrintf("POKEPVP: calling CreateBattleStartTask, gBattleTypeFlags=0x%x", gBattleTypeFlags);
     CreateBattleStartTask(GetWildBattleTransition(), 0);
@@ -599,6 +607,19 @@ static void CB2_EndWildBattle(void)
         SetMainCallback2(CB2_ReturnToField);
         gFieldCallback = FieldCB_SafariZoneRanOutOfBalls;
     }
+}
+
+// POKEPVP (ADR-094): the PvP equivalent of CB2_EndWildBattle above, minus
+// the win/loss branch into CB2_WhiteOut/CB2_ReturnToField -- neither means
+// anything for a PvP match (no Pokemon Center, no map tile worth landing
+// on), so every outcome goes straight back to the PokePvP menu via
+// CB2_InitMainMenu, the same full self-contained re-init the Team Builder's
+// PC handoff already uses to return from a foreign CB2 (main_menu.c).
+static void CB2_EndPokePvPBattle(void)
+{
+    CpuFill16(0, (void *)BG_PLTT, BG_PLTT_SIZE);
+    ResetOamRange(0, 128);
+    SetMainCallback2(CB2_InitMainMenu);
 }
 
 static void CB2_EndScriptedWildBattle(void)
