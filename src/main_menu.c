@@ -201,6 +201,8 @@ static const u8 sText_MoveInfoType[] = _("TYPE");
 static const u8 sText_MoveInfoPower[] = _("POWER");
 static const u8 sText_MoveInfoAcc[] = _("ACC.");
 static const u8 sText_MoveInfoPP[] = _("PP");
+// POKEPVP (ADR-099): the panel's header stripe.
+static const u8 sText_MoveInfoHeader[] = _("MOVE INFO");
 static const u8 sText_AutoMatch[] = _("AUTO-MATCH");
 static const u8 sText_InviteMatch[] = _("INVITE MATCH");
 
@@ -309,7 +311,7 @@ static const struct WindowTemplate sPokePvPListWindowTemplate = {
 // for the move-slot and movepool lists (not the species list, which has
 // no move stats to show).
 static const struct WindowTemplate sPokePvPMoveInfoWindowTemplate = {
-    .bg = 0, .tilemapLeft = 20, .tilemapTop = 1, .width = 10, .height = 9,
+    .bg = 0, .tilemapLeft = 20, .tilemapTop = 1, .width = 10, .height = 11,
     .paletteNum = 15, .baseBlock = 0x385
 };
 
@@ -332,6 +334,53 @@ static const u16 sTextbox_Pal[] = INCBIN_U16("graphics/main_menu/textbox.gbapal"
 static const u8 sTextColor1[] = { 10, 11, 12 };
 
 static const u8 sTextColor2[] = { 10,  1, 12 };
+
+// POKEPVP (ADR-099): six extra accent colors already sit loaded and
+// unused at indices 4-9 of this same bank-15 palette (bright red/orange/
+// green/light-green/blue/light-blue -- see graphics/main_menu/textbox.pal)
+// -- LoadPalette(sTextbox_Pal, BG_PLTT_ID(15), ...) at CB2_InitMainMenu
+// time loads all 16 of its colors regardless of whether anything uses
+// them, and nothing on this custom PokePvP screen did before this.
+// Reusing them needs no new LoadPalette call and no new palette bank, so
+// there is no risk of stepping on whatever else shares bank 15.
+#define POKEPVP_PAL_RED    4
+#define POKEPVP_PAL_ORANGE 5
+#define POKEPVP_PAL_GREEN  6
+#define POKEPVP_PAL_MINT   7
+#define POKEPVP_PAL_BLUE   8
+#define POKEPVP_PAL_SKY    9
+
+static const u8 sTypeColorFire[]     = { 10, POKEPVP_PAL_RED, 12 };
+static const u8 sTypeColorWater[]    = { 10, POKEPVP_PAL_BLUE, 12 };
+static const u8 sTypeColorElectric[] = { 10, POKEPVP_PAL_ORANGE, 12 };
+static const u8 sTypeColorGrass[]    = { 10, POKEPVP_PAL_GREEN, 12 };
+static const u8 sTypeColorPoison[]   = { 10, POKEPVP_PAL_MINT, 12 };
+static const u8 sTypeColorSky[]      = { 10, POKEPVP_PAL_SKY, 12 };
+// White-on-blue for the panel's own header stripe (FillWindowPixelRect
+// below) -- shadow equals the fill color so it disappears rather than
+// showing a mismatched gray shadow on a colored background.
+static const u8 sTextColorHeader[] = { POKEPVP_PAL_BLUE, 10, POKEPVP_PAL_BLUE };
+
+// POKEPVP (ADR-099): only six distinct accent hues are actually available
+// (above) for eighteen real Pokemon types, so several share one family
+// color rather than each getting something unique -- a real palette-size
+// ceiling (one 4bpp bank has 16 slots total, most already spoken for by
+// this screen's own chrome), not an oversight; see ADR-099's own doc for
+// the reasoning behind each grouping. Any type left out of this table
+// falls through the designated-initializer default of NULL, resolved to
+// the plain sTextColor1 gray by DrawPokePvPMoveInfo below.
+static const u8 *const sTypeTextColors[NUMBER_OF_MON_TYPES] = {
+    [TYPE_FIRE]     = sTypeColorFire,
+    [TYPE_WATER]    = sTypeColorWater,
+    [TYPE_ICE]      = sTypeColorWater,
+    [TYPE_ELECTRIC] = sTypeColorElectric,
+    [TYPE_GRASS]    = sTypeColorGrass,
+    [TYPE_BUG]      = sTypeColorGrass,
+    [TYPE_POISON]   = sTypeColorPoison,
+    [TYPE_FLYING]   = sTypeColorSky,
+    [TYPE_STEEL]    = sTypeColorSky,
+    [TYPE_DRAGON]   = sTypeColorSky,
+};
 
 static const struct BgTemplate sBgTemplate[] = {
     {
@@ -1502,8 +1551,16 @@ static void DrawPokePvPMoveInfo(u8 windowId, u16 move)
     u8 *dest;
     u8 typeValueX;
     u8 statValueX;
+    const u8 *typeColor;
 
     FillWindowPixelBuffer(windowId, PIXEL_FILL(10));
+
+    // POKEPVP (ADR-099): a colored header stripe -- the owner's "more
+    // aesthetic and colorful" ask, the other half of which is the
+    // per-type text color below. Filled first so the label/value text
+    // below draws on top of the plain background, not the stripe.
+    FillWindowPixelRect(windowId, POKEPVP_PAL_BLUE, 0, 0, 80, 16);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColorHeader, -1, sText_MoveInfoHeader);
 
     // POKEPVP (ADR-097, fixes a real bug in ADR-096): FONT_NORMAL's real
     // line height is 16px (two tiles), the same "two tiles per row" the
@@ -1521,44 +1578,53 @@ static void DrawPokePvPMoveInfo(u8 windowId, u16 move)
     // (four total) with a full 16px of clearance between them -- cheaper
     // on window height than stacking would need at the correct spacing,
     // which is what keeps this inside the tile budget ADR-096 already
-    // had to fix once.
+    // had to fix once. Rows now start at y=18 instead of y=2, making room
+    // for the header stripe above (ADR-099).
     typeValueX = 2 + GetStringWidth(FONT_NORMAL, sText_MoveInfoType, 0) + 4;
     statValueX = 2 + GetStringWidth(FONT_NORMAL, sText_MoveInfoPower, 0) + 4;
 
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_MoveInfoType);
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 18, sTextColor1, -1, sText_MoveInfoPower);
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 34, sTextColor1, -1, sText_MoveInfoAcc);
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 50, sTextColor1, -1, sText_MoveInfoPP);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 18, sTextColor1, -1, sText_MoveInfoType);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 34, sTextColor1, -1, sText_MoveInfoPower);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 50, sTextColor1, -1, sText_MoveInfoAcc);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 66, sTextColor1, -1, sText_MoveInfoPP);
 
     if (move == MOVE_NONE)
     {
-        AddTextPrinterParameterized3(windowId, FONT_NORMAL, typeValueX, 2, sTextColor1, -1, gText_ThreeHyphens);
-        AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 18, sTextColor1, -1, gText_ThreeHyphens);
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, typeValueX, 18, sTextColor1, -1, gText_ThreeHyphens);
         AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 34, sTextColor1, -1, gText_ThreeHyphens);
         AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 50, sTextColor1, -1, gText_ThreeHyphens);
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 66, sTextColor1, -1, gText_ThreeHyphens);
         CopyWindowToVram(windowId, COPYWIN_GFX);
         return;
     }
 
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, typeValueX, 2, sTextColor1, -1, gTypeNames[gBattleMoves[move].type]);
+    // POKEPVP (ADR-099): only six distinct accent colors exist in this
+    // palette (see sTypeTextColors' own doc comment) -- a type left out
+    // of that table reads as NULL here and falls back to the plain gray
+    // every other value on this panel already uses, rather than crashing
+    // or reading off the end of the array.
+    typeColor = sTypeTextColors[gBattleMoves[move].type];
+    if (typeColor == NULL)
+        typeColor = sTextColor1;
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, typeValueX, 18, typeColor, -1, gTypeNames[gBattleMoves[move].type]);
 
     if (gBattleMoves[move].power < 2)
         dest = StringCopy(buf, gText_ThreeHyphens);
     else
         dest = ConvertIntToDecimalStringN(buf, gBattleMoves[move].power, STR_CONV_MODE_LEFT_ALIGN, 3);
     *dest = EOS;
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 18, sTextColor1, -1, buf);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 34, sTextColor1, -1, buf);
 
     if (gBattleMoves[move].accuracy == 0)
         dest = StringCopy(buf, gText_ThreeHyphens);
     else
         dest = ConvertIntToDecimalStringN(buf, gBattleMoves[move].accuracy, STR_CONV_MODE_LEFT_ALIGN, 3);
     *dest = EOS;
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 34, sTextColor1, -1, buf);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 50, sTextColor1, -1, buf);
 
     dest = ConvertIntToDecimalStringN(buf, gBattleMoves[move].pp, STR_CONV_MODE_LEFT_ALIGN, 2);
     *dest = EOS;
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 50, sTextColor1, -1, buf);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, statValueX, 66, sTextColor1, -1, buf);
 
     CopyWindowToVram(windowId, COPYWIN_GFX);
 }
