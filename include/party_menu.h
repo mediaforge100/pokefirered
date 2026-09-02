@@ -55,6 +55,10 @@ void ItemUseCB_MedicineStep(u8 taskId, TaskFunc func);
 void ItemUseCB_TryRestorePP(u8 taskId, TaskFunc func);
 void ItemUseCB_PPUp(u8 taskId, TaskFunc func);
 u16 ItemIdToBattleMoveId(u16 item);
+// POKEPVP (ADR-093): species-keyed tutor queries, exported from party_menu.c
+// where they already existed as file-statics.
+bool8 CanLearnTutorMove(u16 species, u8 tutor);
+u16 GetTutorMove(u8 tutor);
 bool8 IsMoveHm(u16 move);
 bool8 MonKnowsMove(struct Pokemon *mon, u16 move);
 void ItemUseCB_TMHM(u8 taskId, TaskFunc func);

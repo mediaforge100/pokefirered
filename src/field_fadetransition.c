@@ -41,6 +41,22 @@ static void Task_ExitStairs(u8 taskId);
 static void ExitStairsMovement(s16 *speedX, s16 *speedY, s16 *offsetX, s16 *offsetY, s16 *timer);
 static bool8 WaitStairExitMovementFinished(s16 *speedX, s16 *speedY, s16 *offsetX, s16 *offsetY, s16 *timer);
 
+// POKEPVP (ADR-089): real, generic "has the player actually regained
+// control after this warp" signal, reused from the existing pattern all
+// four of these tasks already follow (UnlockPlayerFieldControls() then
+// DestroyTask() once FieldFadeTransitionBackgroundEffectIsFinished(), or
+// equivalent, is true) -- not a new completion mechanism, just exposing
+// what SetUpWarpExitTask's own tasks already signal internally via
+// FuncIsActiveTask, the same idiom item_menu.c/field_door.c/
+// evolution_scene.c already use elsewhere in this codebase.
+bool8 IsWarpExitTaskActive(void)
+{
+    return FuncIsActiveTask(Task_ExitDoor)
+        || FuncIsActiveTask(Task_ExitNonAnimDoor)
+        || FuncIsActiveTask(Task_ExitNonDoor)
+        || FuncIsActiveTask(Task_ExitStairs);
+}
+
 void palette_bg_faded_fill_white(void)
 {
     CpuFastFill16(RGB_WHITE, gPlttBufferFaded, PLTT_SIZE);

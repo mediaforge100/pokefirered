@@ -329,12 +329,85 @@ void StartPokePvPDebugBattle(void)
 // pointing to MAP_PALLET_TOWN warp id 0) -- a real, already-tested,
 // guaranteed-safe outdoor landing spot, not a guessed x/y.
 //
-// The actual battle trigger is still overworld.c's existing
-// CB2_Overworld auto-trigger (ADR-066) -- not duplicated here.
+// The actual battle trigger is still overworld.c's CB2_Overworld hook --
+// not duplicated here -- but as of ADR-089 it fires on a real warp-exit
+// completion signal armed by SetPokePvPMenuMatchPending() below, not the
+// old fixed-frame idle-timer margin.
 void StartPokePvPMenuMatch(void)
 {
     DebugPrintf("POKEPVP: StartPokePvPMenuMatch (menu-selected, skips Oak's intro)");
+    // ADR-084: two real leads tried this session, in this order.
+    //
+    // 1. ResetInitialPlayerAvatarState() (ADR-083's untried lead) --
+    //    added, headlessly A/B tested (identical corrupted framebuffer
+    //    and DISPCNT/BGxCNT before and after), then REMOVED. A code
+    //    trace confirms why: InitObjectEventsLocal already calls it
+    //    generically after every warp consumes the prior state, and
+    //    GetAdjustedInitialDirection/TransitionFlags both already
+    //    tolerate a zero/never-set sInitialPlayerAvatarState safely
+    //    (fall through to DIR_SOUTH / PLAYER_AVATAR_FLAG_ON_FOOT). Ruled
+    //    out with both code evidence and an automated pixel-identical
+    //    A/B run, not a guess.
+    //
+    // 2. WarpIntoMap() -- missing here, present in every other real
+    //    SetWarpDestinationTo*/SetMainCallback2(CB2_LoadMap) caller in
+    //    this codebase (field_effect.c's Fly/Dig/Escape Rope/Teleport,
+    //    new_game.c, field_fadetransition.c, overworld.c's own door-warp
+    //    path -- overworld.c:592 is the only place that calls
+    //    ApplyCurrentWarp()+LoadCurrentMapData()+SetPlayerCoordsFromWarp()
+    //    together). Without it, sWarpDestination is set but never
+    //    applied to gSaveBlock1Ptr->location/pos before CB2_LoadMap's
+    //    own LoadMapFromWarp() (overworld.c:797) reads
+    //    gSaveBlock1Ptr->location directly and never touches player
+    //    position at all -- so the camera/streaming window that
+    //    DrawWholeMapView() and its surrounding InitObjectEventsLocal()/
+    //    SetCameraToTrackPlayer() calls use was built around whatever
+    //    stale/default position the save carried in, not the actual
+    //    warp id 0 landing spot. That mismatch -- camera centered on the
+    //    wrong tile, so most of the visible window falls outside the
+    //    metatile buffer's actually-streamed region -- is a real,
+    //    mechanistic match for the observed symptom (a small correctly-
+    //    rendered patch plus a black fill for the rest of the screen).
     SetWarpDestinationToMapWarp(MAP_GROUP(MAP_PALLET_TOWN), MAP_NUM(MAP_PALLET_TOWN), 0);
+    WarpIntoMap();
+    // ADR-089: arms the deterministic, warp-exit-completion-based battle
+    // trigger in overworld.c's CB2_Overworld, replacing the old fixed-
+    // frame idle-timer margin now that this menu path is the only real
+    // way CB2_Overworld is ever reached.
+    SetPokePvPMenuMatchPending();
+    SetMainCallback2(CB2_LoadMap);
+}
+
+// POKEPVP (ADR-091, D7 refinement: START MATCH -> AUTO-MATCH/INVITE MATCH):
+// the owner's explicit direction is that AUTO-MATCH must show *no*
+// in-world overworld scene at all, not even briefly -- unlike
+// StartPokePvPMenuMatch above (which deliberately waits for the warp-exit
+// task's full fade-in to complete, ADR-089, so the player sees a clean
+// Pallet Town before the battle), this path fires the battle the instant
+// CB2_Overworld is first reached after the map load, before that fade-in
+// has drawn anything visible.
+//
+// Why this is safe and not a guess: DoMapLoadLoop's own state machine
+// (overworld.c's LoadMapInStepsLocal) runs InitObjectEventsLocal() and
+// SetCameraToTrackPlayer() at state 4, *and only reaches state 12's
+// RunFieldCallback (which queues the warp-exit fade-in task IsWarpExitTaskActive
+// tracks) after that* -- so by the time CB2_LoadMap2 sees DoMapLoadLoop
+// return TRUE and switches to CB2_Overworld at all, gObjectEvents/
+// gPlayerAvatar are already fully valid (confirmed by reading
+// LoadMapInStepsLocal directly, not assumed). StartPokePvPDebugBattle's
+// own StopPlayerAvatar()/FreezeObjectEvents() calls only need that object-
+// event state, not a rendered/visible frame -- so firing on literally the
+// first CB2_Overworld call (still mid-fade, screen black or just starting
+// to lighten) is a real, safe earlier hook point, not the same risky "cold
+// GPU state" ADR-080 ruled out for a from-scratch menu screen (this reuses
+// the exact same proven CB2_LoadMap plumbing, just doesn't wait out its
+// cosmetic tail).
+void StartPokePvPAutoMatch(void)
+{
+    DebugPrintf("POKEPVP: StartPokePvPAutoMatch (no overworld wait, fires on first CB2_Overworld)");
+    SetWarpDestinationToMapWarp(MAP_GROUP(MAP_PALLET_TOWN), MAP_NUM(MAP_PALLET_TOWN), 0);
+    WarpIntoMap();
+    SetPokePvPAutoMatchPending();
     SetMainCallback2(CB2_LoadMap);
 }
 

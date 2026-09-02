@@ -160,6 +160,10 @@ void SetContinueGameWarpToHealLocation(u8 loc);
 void UpdateAmbientCry(s16 *state, u16 *delayCounter);
 void SetWarpDestinationToHealLocation(u8 a0);
 bool32 Overworld_SendKeysToLinkIsRunning(void);
+// POKEPVP (ADR-089): see overworld.c's CB2_Overworld comment.
+void SetPokePvPMenuMatchPending(void);
+// POKEPVP (ADR-091): see overworld.c's CB2_Overworld comment.
+void SetPokePvPAutoMatchPending(void);
 bool32 Overworld_RecvKeysFromLinkIsRunning(void);
 void OverworldWhiteOutGetMoneyLoss(void);
 u8 GetCurrentMapBattleScene(void);

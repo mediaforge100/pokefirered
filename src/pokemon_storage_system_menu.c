@@ -17,6 +17,14 @@
 
 static EWRAM_DATA u8 sPreviousBoxOption = 0;
 static EWRAM_DATA struct ChooseBoxMenu *sChooseBoxMenu = NULL;
+// POKEPVP (ADR-093 step 1): the PC screen has only ever been entered from
+// the overworld, so CB2_ExitPokeStorage hardcoded a return to the field.
+// The PokePvP Team Builder enters it from the main menu, where there is no
+// field to return to (CB2_ReturnToField there lands on a map that was never
+// loaded -- the same class of bug ADR-084 spent a session on). One optional
+// override, consumed on use so a normal field-entered PC is unaffected even
+// if a builder session was abandoned mid-way.
+static EWRAM_DATA MainCallback sPokePvPStorageExitCallback = NULL;
 
 static void CreatePCMainMenu(u8 whichMenu, s16 *windowIdPtr);
 static void ChooseBoxMenu_CreateSprites(u8 curBox);
@@ -396,8 +404,25 @@ static void CreatePCMainMenu(u8 whichMenu, s16 *windowIdPtr)
 void CB2_ExitPokeStorage(void)
 {
     sPreviousBoxOption = GetCurrentBoxOption();
+    // POKEPVP (ADR-093 step 1): a non-field caller gets its own destination.
+    // Cleared before the jump, not after, so a callback that itself re-enters
+    // the PC (a Team Builder round trip) starts from a clean slate.
+    if (sPokePvPStorageExitCallback != NULL)
+    {
+        MainCallback cb = sPokePvPStorageExitCallback;
+        sPokePvPStorageExitCallback = NULL;
+        SetMainCallback2(cb);
+        return;
+    }
     gFieldCallback = FieldTask_ReturnToPcMenu;
     SetMainCallback2(CB2_ReturnToField);
+}
+
+// POKEPVP (ADR-093 step 1): arm the one-shot exit override. Pass NULL to
+// disarm and restore FireRed's own return-to-field behavior.
+void SetPokePvPStorageExitCallback(MainCallback cb)
+{
+    sPokePvPStorageExitCallback = cb;
 }
 
 void ResetPokemonStorageSystem(void)

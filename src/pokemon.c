@@ -5719,6 +5719,24 @@ bool8 TryIncrementMonLevel(struct Pokemon *mon)
     }
 }
 
+// POKEPVP (ADR-093): the same TM/HM table CanMonLearnTMHM reads, but keyed
+// by species instead of by an existing mon. The Team Builder asks "what can
+// this species learn?" about a roster entry it has not built a
+// struct Pokemon for, which the mon-based query cannot answer. sTMHMLearnsets
+// is static to this file, so the accessor has to live here.
+//
+// This is a UX affordance, not a legality authority -- the server
+// revalidates every submitted moveset against the real format.
+bool8 CanSpeciesLearnTMHM(u16 species, u8 tm)
+{
+    if (species == SPECIES_NONE || species >= NUM_SPECIES)
+        return FALSE;
+    if (tm < 32)
+        return (sTMHMLearnsets[species][0] & (1 << tm)) ? TRUE : FALSE;
+    else
+        return (sTMHMLearnsets[species][1] & (1 << (tm - 32))) ? TRUE : FALSE;
+}
+
 u32 CanMonLearnTMHM(struct Pokemon *mon, u8 tm)
 {
     u16 species = GetMonData(mon, MON_DATA_SPECIES_OR_EGG, NULL);

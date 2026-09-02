@@ -34,5 +34,6 @@ bool8 FieldCB_ReturnToFieldOpenStartMenu(void);
 void FieldCB_ContinueScript(void);
 void FieldCB_ContinueScriptHandleMusic(void);
 void FieldCB_WarpExitFadeFromBlack(void);
+bool8 IsWarpExitTaskActive(void);
 
 #endif // GUARD_FIELD_FADETRANSITION_H

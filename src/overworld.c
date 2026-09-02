@@ -128,8 +128,17 @@ static u8 sPlayerLinkStates[MAX_LINK_PLAYERS];
 // section for .data (only whitelisted symbol tables/COMMON), and every
 // other static in this file relies on the same zero-by-default .bss
 // placement.
-static u16 sPokePvPDebugTriggerHoldFrames;
 static bool8 sPokePvPDebugTriggered;
+// POKEPVP (ADR-089): set by StartPokePvPMenuMatch() right before its warp;
+// makes the menu-triggered battle start deterministic on the real warp-exit
+// completion signal (IsWarpExitTaskActive(), field_fadetransition.c)
+// instead of the old fixed-frame idle-timer margin.
+static bool8 sPokePvPMenuMatchPending;
+// POKEPVP (ADR-091): set by StartPokePvPAutoMatch() right before its warp.
+// Unlike sPokePvPMenuMatchPending, this fires on the very first
+// CB2_Overworld call after the map load -- no fade/warp-exit-completion
+// wait -- so no in-world overworld scene is ever visibly shown.
+static bool8 sPokePvPAutoMatchPending;
 static KeyInterCB sPlayerKeyInterceptCallback;
 static bool8 sReceivingFromLink;
 static u8 sRfuKeepAliveTimer;
@@ -1495,58 +1504,64 @@ static void CB2_Overworld(void)
     if (fading)
         SetFieldVBlankCallback();
 
-    // POKEPVP (ADR-066, threshold reduced ADR-079/080): debug-only,
-    // one-shot, automatic trigger for StartPokePvPDebugBattle
-    // (battle_setup.c). Three rounds of a real human trying to trigger
-    // this by holding a button all failed for three different real
-    // reasons (ADR-063: keyboard ghosting on a 3-button combo; ADR-064:
-    // Select has a built-in "use registered item" handler that fires
-    // instantly and blocks the hold counter; ADR-065: even a single
-    // supposedly-inert button turned out to be ambiguous across real
-    // keyboard/emulator key-mapping setups) -- no amount of picking a
-    // "better" button fixes a fundamentally unreliable approach. Firing
-    // automatically once genuine free-roam overworld control is reached
-    // (not mid-script, mid-transition, or from any menu) removes the
-    // input question entirely.
-    //
-    // Threshold dropped from 60 frames (~1 real second -- a deliberate
-    // margin against firing mid-fade, from when this was reached only
-    // via Oak's real intro/overworld entry, which itself takes a moment
-    // to settle) to 2 in ADR-080's first attempt, on the theory that
-    // StartPokePvPMenuMatch's warp (CB2_LoadMap -> DoMapLoadLoop, which
-    // only ever hands off to CB2_Overworld once map data is fully
-    // loaded -- read in ADR-081's investigation) meant the map was
-    // already fully settled by the time this code ever runs, so the
-    // original margin was unnecessary here. **That theory was wrong**:
-    // a real human hit it (ADR-081) -- a corrupted starting room, not
-    // just an unfamiliar one, immediately after the deterministic
-    // Start Match trigger. `gPaletteFade.active` going false is
-    // necessary but evidently not sufficient proof the screen has
-    // actually finished settling this soon after a fresh map load (the
-    // real fade-in this guard is meant to wait out may not have even
-    // started yet at frame 1-2, indistinguishable from "already
-    // finished" by this flag alone) -- firing a second transition
-    // (the battle start) that early collides with it. Set to 40 (~2/3
-    // real second) as a real, deliberately generous margin rather than
-    // another single-digit guess -- still far faster than the original
-    // 60-frame/~1s value, but not cutting it as close. See ADR-081.
-    if (!sPokePvPDebugTriggered)
+    // POKEPVP (ADR-066, deterministic completion trigger ADR-089): the
+    // old mechanism here was a fixed-frame idle-timer (2 -> 40 -> 300
+    // frames across ADR-080/081) approximating "the screen has settled
+    // enough to safely start a second transition." That approximation is
+    // no longer needed now that D7's real menu (ADR-085/086, human-
+    // confirmed 2026-09-02) is the only way this project ever reaches
+    // CB2_Overworld -- Continue/Mystery Gift are unreachable, and Oak's
+    // intro is never shown. `StartPokePvPMenuMatch()` (battle_setup.c)
+    // is the only real caller, and it sets sPokePvPMenuMatchPending
+    // (via SetPokePvPMenuMatchPending()) right before its warp.
+    // `IsWarpExitTaskActive()` (field_fadetransition.c) is the actual,
+    // already-existing, generic "has the player regained control after
+    // this warp" signal every real warp-exit task
+    // (Task_ExitDoor/ExitNonAnimDoor/ExitNonDoor/ExitStairs) already
+    // provides internally (UnlockPlayerFieldControls() + DestroyTask()
+    // once FieldFadeTransitionBackgroundEffectIsFinished()) -- reusing it
+    // here replaces a guessed margin with the real completion event,
+    // same "reuse the proven pattern" discipline as every other ADR in
+    // this project.
+    // POKEPVP (ADR-091): AUTO-MATCH's no-overworld-scene path -- checked
+    // first and unconditionally (no fade/warp-exit-completion gate) so it
+    // fires on literally the first CB2_Overworld call after the map load,
+    // before StartPokePvPMenuMatch's slower path below would even consider
+    // firing. See StartPokePvPAutoMatch's doc comment (battle_setup.c) for
+    // why gObjectEvents/gPlayerAvatar are already safely valid this early.
+    if (sPokePvPAutoMatchPending)
     {
-        if (fading || ScriptContext_IsEnabled())
+        sPokePvPAutoMatchPending = FALSE;
+        DebugPrintf("POKEPVP: CB2_Overworld auto-match trigger firing (no overworld wait)");
+        StartPokePvPDebugBattle();
+        return;
+    }
+
+    if (sPokePvPMenuMatchPending && !sPokePvPDebugTriggered)
+    {
+        if (!fading && !ScriptContext_IsEnabled() && !IsWarpExitTaskActive())
         {
-            sPokePvPDebugTriggerHoldFrames = 0;
-        }
-        else
-        {
-            sPokePvPDebugTriggerHoldFrames++;
-            if (sPokePvPDebugTriggerHoldFrames == 300)
-            {
-                sPokePvPDebugTriggered = TRUE;
-                DebugPrintf("POKEPVP: CB2_Overworld auto-trigger firing");
-                StartPokePvPDebugBattle();
-            }
+            sPokePvPDebugTriggered = TRUE;
+            sPokePvPMenuMatchPending = FALSE;
+            DebugPrintf("POKEPVP: CB2_Overworld menu-match trigger firing (warp-exit complete)");
+            StartPokePvPDebugBattle();
         }
     }
+}
+
+// POKEPVP (ADR-091): called by StartPokePvPAutoMatch() right before its
+// warp -- arms the immediate, no-overworld-scene battle trigger above.
+void SetPokePvPAutoMatchPending(void)
+{
+    sPokePvPAutoMatchPending = TRUE;
+}
+
+// POKEPVP (ADR-089): called by StartPokePvPMenuMatch() right before its
+// warp -- arms the deterministic, completion-based battle trigger above.
+void SetPokePvPMenuMatchPending(void)
+{
+    sPokePvPMenuMatchPending = TRUE;
+    sPokePvPDebugTriggered = FALSE;
 }
 
 void SetMainCallback1(MainCallback cb)

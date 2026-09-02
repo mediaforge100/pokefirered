@@ -12,6 +12,10 @@ void StartPokePvPDebugBattle(void);
 // POKEPVP (ADR-079/080, D7 step 1): called from main_menu.c's PokePvP
 // menu "Start Match" option -- see battle_setup.c's own doc comment.
 void StartPokePvPMenuMatch(void);
+// POKEPVP (ADR-091, D7 refinement): AUTO-MATCH submenu option -- same warp
+// as StartPokePvPMenuMatch but fires the battle on the first CB2_Overworld
+// call, before any visible overworld frame renders. See battle_setup.c.
+void StartPokePvPAutoMatch(void);
 void StartOldManTutorialBattle(void);
 void StartScriptedWildBattle(void);
 void StartMarowakBattle(void);

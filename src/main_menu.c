@@ -9,6 +9,10 @@
 #include "oak_speech.h"
 #include "overworld.h"
 #include "battle_setup.h" // POKEPVP (ADR-079/080): StartPokePvPMenuMatch
+#include "pokepvp_team_builder.h" // POKEPVP (ADR-093): TEAM BUILDER
+#include "list_menu.h" // POKEPVP (ADR-093): the move editor's scrolling lists
+#include "data.h"        // POKEPVP (ADR-093): gSpeciesNames, gMoveNames
+#include "constants/moves.h"
 #include "quest_log.h"
 #include "mystery_gift_menu.h"
 #include "strings.h"
@@ -23,7 +27,11 @@ enum MainMenuType
 {
     MAIN_MENU_NEWGAME = 0,
     MAIN_MENU_CONTINUE,
-    MAIN_MENU_MYSTERYGIFT
+    MAIN_MENU_MYSTERYGIFT,
+    // POKEPVP (ADR-085, D7): the real 5-item boot menu. Task_SetWin0BldRegsAndCheckSaveFile
+    // now always selects this type -- NEWGAME/CONTINUE/MYSTERYGIFT above are FireRed's
+    // originals, left compiled but unreachable (D7 has no Continue/Mystery Gift concept).
+    MAIN_MENU_POKEPVP
 };
 
 enum MainMenuWindow
@@ -32,12 +40,31 @@ enum MainMenuWindow
     MAIN_MENU_WINDOW_CONTINUE,
     MAIN_MENU_WINDOW_NEWGAME,
     MAIN_MENU_WINDOW_MYSTERYGIFT,
+    // POKEPVP (ADR-085): the five real menu slots, top to bottom.
+    MAIN_MENU_WINDOW_POKEPVP_0, // START MATCH
+    MAIN_MENU_WINDOW_POKEPVP_1, // TEAM BUILDER (stub)
+    MAIN_MENU_WINDOW_POKEPVP_2, // PLAYER SETTINGS (stub)
+    MAIN_MENU_WINDOW_POKEPVP_3, // LEADERBOARD (stub)
+    MAIN_MENU_WINDOW_POKEPVP_4, // OPTIONS (stub)
     MAIN_MENU_WINDOW_ERROR,
     MAIN_MENU_WINDOW_COUNT
 };
 
 #define tMenuType  data[0]
 #define tCursorPos data[1]
+// POKEPVP (ADR-091): AUTO-MATCH/INVITE MATCH submenu cursor, separate from
+// the top-level 5-item menu's tCursorPos so returning to the top menu
+// doesn't need to remember/restore a shared field.
+#define tSubCursorPos data[2]
+
+// POKEPVP (ADR-093): move-editor state. data[3..7] are unused by every
+// other menu type here, and the editor is only ever reachable from the
+// team list, so it does not have to coexist with anything.
+#define tTeamSlot        data[3]
+#define tMemberIndex     data[4]
+#define tMoveSlot        data[5]
+#define tListTaskId      data[6]
+#define tListWindowId    data[7]
 
 #define tUnused8         data[8]
 #define tMGErrorMsgState data[9]
@@ -55,6 +82,34 @@ static void Task_UpdateVisualSelection(u8 taskId);
 static void Task_HandleMenuInput(u8 taskId);
 static void Task_ExecuteMainMenuSelection(u8 taskId);
 static void Task_MysteryGiftError(u8 taskId);
+static void Task_PokePvPMenuStub(u8 taskId);
+static void DrawPokePvPMenuItems(void);
+// POKEPVP (ADR-091): START MATCH -> AUTO-MATCH/INVITE MATCH submenu.
+static void DrawStartMatchSubmenuItems(void);
+static void Task_PokePvPStartMatchSubmenu(u8 taskId);
+static void Task_PokePvPInviteMatchStub(u8 taskId);
+static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId);
+// POKEPVP (ADR-093): TEAM BUILDER -> team-slot list.
+static void DrawTeamListItems(void);
+static void Task_PokePvPTeamList(u8 taskId);
+static void Task_PokePvPReturnToTopMenuFromTeamList(u8 taskId);
+static void Task_PokePvPPrepareRoster(u8 taskId);
+// POKEPVP (ADR-093): the move editor -- slot submenu, then three nested
+// ListMenu pickers (member -> move slot -> legal move).
+static void DrawSlotMenuItems(void);
+static void Task_PokePvPSlotMenu(u8 taskId);
+static void Task_PokePvPPickMember(u8 taskId);
+static void Task_PokePvPReturnToTeamListFromSlotMenu(u8 taskId);
+static void Task_PokePvPEmptyTeamMessage(u8 taskId);
+static void Task_PokePvPPickMoveSlot(u8 taskId);
+static void Task_PokePvPPickMove(u8 taskId);
+static bool8 AllocPokePvPList(void);
+static void OpenPokePvPList(u8 taskId, u16 count);
+static void ClosePokePvPList(u8 taskId);
+static void ReturnToSlotMenu(u8 taskId);
+static void BuildMemberList(u8 taskId);
+static void BuildMoveSlotList(u8 taskId);
+static u16 BuildLegalMoveList(u8 taskId);
 static void Task_ReturnToTileScreen(u8 taskId);
 static void MoveWindowByMenuTypeAndCursorPos(u8 menuType, u8 cursorPos);
 static bool8 HandleMenuInput(u8 taskId);
@@ -69,6 +124,13 @@ static void SetStdFrame0OnBg(u8 bgId);
 static void MainMenu_DrawWindow(const struct WindowTemplate * template);
 static void MainMenu_EraseWindow(const struct WindowTemplate * template);
 
+// POKEPVP (ADR-093): set before the Team Builder hands off to the PC box
+// screen, consumed on the way back in. The box screen returns through
+// CB2_InitMainMenu (a full, self-contained re-init -- the only clean way
+// back into this screen from a foreign CB2), which would otherwise land
+// the player on the top-level menu, two levels away from where they were.
+static EWRAM_DATA bool8 sPokePvPReturnToTeamList = FALSE;
+
 static const u8 sString_Dummy[] = _("");
 static const u8 sString_Newline[] = _("\n");
 // POKEPVP (ADR-079/080, D7 step 1): replaces "NEW GAME" -- this screen's
@@ -78,6 +140,38 @@ static const u8 sString_Newline[] = _("\n");
 // gText_NewGame (strings.c), since that constant may be referenced
 // elsewhere in ways this change has no business touching.
 static const u8 sText_StartMatch[] = _("START MATCH");
+// POKEPVP (ADR-085, D7): the real five-item menu. Team Builder/Player
+// Settings/Leaderboard/Options are stubs (Task_PokePvPMenuStub) -- real
+// implementations are Phase 5-8 work, out of scope here (ADR-079's own
+// "Non-goals").
+static const u8 sText_TeamBuilder[] = _("TEAM BUILDER");
+static const u8 sText_PlayerSettings[] = _("PLAYER SETTINGS");
+static const u8 sText_Leaderboard[] = _("LEADERBOARD");
+static const u8 sText_Options[] = _("OPTIONS");
+static const u8 sText_NotYetImplemented[] = _("Not yet implemented.");
+// POKEPVP (ADR-091, D7 refinement): START MATCH now opens a submenu
+// instead of acting directly. AUTO-MATCH is the only one wired to real
+// (well, real-server-integration-pending -- see battle_setup.c) behavior;
+// INVITE MATCH is a stub, same pattern as ADR-085's four top-level stubs.
+// POKEPVP (ADR-093): the team-slot list reuses the same five windows the
+// top-level menu and the START MATCH submenu already use, so it needs no
+// new window templates and no new GPU setup -- the same reuse that made
+// ADR-091's submenu safe.
+static const u8 sText_Team[] = _("TEAM ");
+static const u8 sText_TeamEmpty[] = _("EMPTY");
+// POKEPVP (ADR-093): shown while the legal-species roster is built into
+// the PC boxes -- see PokePvPTeamBuilder_BuildRosterStep for why that is
+// not instantaneous and must not be done in one frame.
+static const u8 sText_PreparingTeamBuilder[] = _("Preparing team builder…");
+static const u8 sText_EditTeam[] = _("EDIT TEAM");
+static const u8 sText_EditMoves[] = _("EDIT MOVES");
+static const u8 sText_Back[] = _("BACK");
+static const u8 sText_TeamIsEmpty[] = _("This team has no POKéMON yet.");
+// The empty move slot, and the "clear this slot" row. One dash, used as
+// both -- a slot showing "-" and a choice reading "-" are the same idea.
+static const u8 sText_NoMove[] = _("-");
+static const u8 sText_AutoMatch[] = _("AUTO-MATCH");
+static const u8 sText_InviteMatch[] = _("INVITE MATCH");
 
 static const struct WindowTemplate sWindowTemplate[] = {
     [MAIN_MENU_WINDOW_NEWGAME_ONLY] = {
@@ -116,6 +210,32 @@ static const struct WindowTemplate sWindowTemplate[] = {
         .paletteNum = 15,
         .baseBlock = 0x121
     }, 
+    // POKEPVP (ADR-085): five equal slots, 4 tiles (32px) apart, spanning
+    // the full 20-tile-tall screen (1,5,9,13,17) the same way the original
+    // NEWGAME(13)/MYSTERYGIFT(17) pair was already spaced. Fresh baseBlocks
+    // (0x151+) past every block FireRed's own menu already uses (highest is
+    // MYSTERYGIFT's 0x121) so these never alias tiles with the still-compiled
+    // but unreachable NEWGAME/CONTINUE/MYSTERYGIFT windows above.
+    [MAIN_MENU_WINDOW_POKEPVP_0] = {
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 1, .width = 24, .height = 2,
+        .paletteNum = 15, .baseBlock = 0x151
+    },
+    [MAIN_MENU_WINDOW_POKEPVP_1] = {
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 5, .width = 24, .height = 2,
+        .paletteNum = 15, .baseBlock = 0x181
+    },
+    [MAIN_MENU_WINDOW_POKEPVP_2] = {
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 9, .width = 24, .height = 2,
+        .paletteNum = 15, .baseBlock = 0x1b1
+    },
+    [MAIN_MENU_WINDOW_POKEPVP_3] = {
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 13, .width = 24, .height = 2,
+        .paletteNum = 15, .baseBlock = 0x1e1
+    },
+    [MAIN_MENU_WINDOW_POKEPVP_4] = {
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 17, .width = 24, .height = 2,
+        .paletteNum = 15, .baseBlock = 0x211
+    },
     [MAIN_MENU_WINDOW_ERROR] = {
         .bg = 0,
         .tilemapLeft = 3,
@@ -123,10 +243,38 @@ static const struct WindowTemplate sWindowTemplate[] = {
         .width = 24,
         .height = 4,
         .paletteNum = 15,
-        .baseBlock = 0x001
-    }, 
+        .baseBlock = 0x001 // unchanged from original -- proven safe to alias CONTINUE's block, mutually exclusive draw
+    },
     [MAIN_MENU_WINDOW_COUNT] = DUMMY_WIN_TEMPLATE
 };
+
+// POKEPVP (ADR-093): the move editor's list window. Added and removed on
+// demand (AddWindow/RemoveWindow) rather than living in sWindowTemplate:
+// at 18x18 tiles its buffer is ~10KB of heap, which there is no reason to
+// hold for the whole life of a menu that mostly is not the move editor.
+// baseBlock 0x241 starts past MAIN_MENU_WINDOW_POKEPVP_4's own tiles
+// (0x211 + 24*2), the same "fresh blocks past everything already in use"
+// rule ADR-085 followed for the five menu slots.
+static const struct WindowTemplate sPokePvPListWindowTemplate = {
+    .bg = 0, .tilemapLeft = 2, .tilemapTop = 1, .width = 18, .height = 18,
+    .paletteNum = 15, .baseBlock = 0x241
+};
+
+// Rows visible at once: two tiles per row over an 18-tile-tall window.
+#define POKEPVP_LIST_ROWS 9
+
+// POKEPVP (ADR-093): the move editor's working memory, on the heap rather
+// than in EWRAM_DATA -- EWRAM is at 99.2% and this is needed only while
+// the editor is actually open. Labels are pointers into gSpeciesNames /
+// gMoveNames, so nothing is copied; only the item array and the move-id
+// list are really stored.
+struct PokePvPListData
+{
+    struct ListMenuItem items[POKEPVP_MAX_LEGAL_MOVES + 1];
+    u16 moves[POKEPVP_MAX_LEGAL_MOVES];
+};
+
+static EWRAM_DATA struct PokePvPListData *sPokePvPList = NULL;
 
 static const u16 sBg_Pal[] = INCBIN_U16("graphics/main_menu/bg.gbapal");
 static const u16 sTextbox_Pal[] = INCBIN_U16("graphics/main_menu/textbox.gbapal");
@@ -144,7 +292,7 @@ static const struct BgTemplate sBgTemplate[] = {
     }
 };
 
-static const u8 sMenuCursorYMax[] = { 0, 1, 2 };
+static const u8 sMenuCursorYMax[] = { 0, 1, 2, 4 }; // POKEPVP (ADR-085): 5 items, cursor 0-4
 
 static void CB2_MainMenu(void)
 {
@@ -237,47 +385,38 @@ static void Task_SetWin0BldRegsAndCheckSaveFile(u8 taskId)
         SetGpuReg(REG_OFFSET_BLDCNT, BLDCNT_TGT1_BG0 | BLDCNT_TGT1_BG1 | BLDCNT_TGT1_BG2 | BLDCNT_TGT1_BG3 | BLDCNT_TGT1_OBJ | BLDCNT_TGT1_BD | BLDCNT_EFFECT_DARKEN);
         SetGpuReg(REG_OFFSET_BLDALPHA, BLDALPHA_BLEND(0, 0));
         SetGpuReg(REG_OFFSET_BLDY, 7);
+        // POKEPVP (ADR-085, D7): this product has no Continue/Mystery Gift
+        // concept -- every save-status branch now lands on the real 5-item
+        // menu (MAIN_MENU_POKEPVP) instead of FireRed's NEWGAME/CONTINUE/
+        // MYSTERYGIFT split. Genuine save-hardware error text (deleted/
+        // corrupted save, no flash chip) is still shown first where it was
+        // before -- only what happens *after* acknowledging it changes.
         switch (gSaveFileStatus)
         {
         case SAVE_STATUS_OK:
             LoadUserFrameToBg(0);
-            if (IsMysteryGiftEnabled() == TRUE)
-            {
-                gTasks[taskId].tMenuType = MAIN_MENU_MYSTERYGIFT;
-            }
-            else
-            {
-                gTasks[taskId].tMenuType = MAIN_MENU_CONTINUE;
-            }
+            gTasks[taskId].tMenuType = MAIN_MENU_POKEPVP;
             gTasks[taskId].func = Task_SetWin0BldRegsNoSaveFileCheck;
             break;
         case SAVE_STATUS_INVALID:
             SetStdFrame0OnBg(0);
-            gTasks[taskId].tMenuType = MAIN_MENU_NEWGAME;
+            gTasks[taskId].tMenuType = MAIN_MENU_POKEPVP;
             PrintSaveErrorStatus(taskId, gText_SaveFileHasBeenDeleted);
             break;
         case SAVE_STATUS_ERROR:
             SetStdFrame0OnBg(0);
-            gTasks[taskId].tMenuType = MAIN_MENU_CONTINUE;
+            gTasks[taskId].tMenuType = MAIN_MENU_POKEPVP;
             PrintSaveErrorStatus(taskId, gText_SaveFileCorrupted);
-            if (IsMysteryGiftEnabled() == TRUE)
-            {
-                gTasks[taskId].tMenuType = MAIN_MENU_MYSTERYGIFT;
-            }
-            else
-            {
-                gTasks[taskId].tMenuType = MAIN_MENU_CONTINUE;
-            }
             break;
         case SAVE_STATUS_EMPTY:
         default:
             LoadUserFrameToBg(0);
-            gTasks[taskId].tMenuType = MAIN_MENU_NEWGAME;
+            gTasks[taskId].tMenuType = MAIN_MENU_POKEPVP;
             gTasks[taskId].func = Task_SetWin0BldRegsNoSaveFileCheck;
             break;
         case SAVE_STATUS_NO_FLASH:
             SetStdFrame0OnBg(0);
-            gTasks[taskId].tMenuType = MAIN_MENU_NEWGAME;
+            gTasks[taskId].tMenuType = MAIN_MENU_POKEPVP;
             PrintSaveErrorStatus(taskId, gText_1MSubCircuitBoardNotInstalled);
             break;
         }
@@ -354,8 +493,11 @@ static void Task_PrintMainMenuText(u8 taskId)
     LoadPalette(&pal, BG_PLTT_ID(15) + 1, PLTT_SIZEOF(1));
     switch (gTasks[taskId].tMenuType)
     {
-    case MAIN_MENU_NEWGAME:
+    case MAIN_MENU_POKEPVP:
     default:
+        DrawPokePvPMenuItems();
+        break;
+    case MAIN_MENU_NEWGAME:
         FillWindowPixelBuffer(MAIN_MENU_WINDOW_NEWGAME_ONLY, PIXEL_FILL(10));
         AddTextPrinterParameterized3(MAIN_MENU_WINDOW_NEWGAME_ONLY, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_StartMatch);
         MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_NEWGAME_ONLY]);
@@ -398,6 +540,38 @@ static void Task_PrintMainMenuText(u8 taskId)
     gTasks[taskId].func = Task_WaitDma3AndFadeIn;
 }
 
+// POKEPVP (ADR-085): draws all 5 real menu items. Shared by
+// Task_PrintMainMenuText (first draw, with the fade-in) and
+// Task_PokePvPMenuStub's return path (redraw after a stub message, no fade).
+static void DrawPokePvPMenuItems(void)
+{
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_StartMatch);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_TeamBuilder);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_2, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_PlayerSettings);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_3, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_Leaderboard);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_Options);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_0]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_1]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_2]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_3]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_4]);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+}
+
 static void Task_WaitDma3AndFadeIn(u8 taskId)
 {
     if (WaitDma3Request(-1) != -1)
@@ -411,6 +585,18 @@ static void Task_WaitDma3AndFadeIn(u8 taskId)
 
 static void Task_UpdateVisualSelection(u8 taskId)
 {
+    // POKEPVP (ADR-093): the one place every path into the live menu passes
+    // through, so the "came back from the box screen" hand-off happens here
+    // rather than in each of Task_PrintMainMenuText's branches.
+    if (sPokePvPReturnToTeamList)
+    {
+        sPokePvPReturnToTeamList = FALSE;
+        DrawTeamListItems();
+        gTasks[taskId].tCursorPos = 1;
+        gTasks[taskId].tSubCursorPos = 0;
+        gTasks[taskId].func = Task_PokePvPTeamList;
+        return;
+    }
     MoveWindowByMenuTypeAndCursorPos(gTasks[taskId].tMenuType, gTasks[taskId].tCursorPos);
     gTasks[taskId].func = Task_HandleMenuInput;
 }
@@ -431,6 +617,51 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
         switch (gTasks[taskId].tMenuType)
         {
         default:
+        case MAIN_MENU_POKEPVP:
+            // POKEPVP (ADR-085): only slot 0 (START MATCH) is real behavior;
+            // slots 1-4 go to the stub handler instead of falling through
+            // Task_ExecuteMainMenuSelection's menuAction dispatch below.
+            if (gTasks[taskId].tCursorPos == 0)
+            {
+                // POKEPVP (ADR-091): START MATCH now opens the AUTO-MATCH/
+                // INVITE MATCH submenu instead of calling StartPokePvPMenuMatch
+                // directly. Same fade-out-already-happened situation as the
+                // stub branch below (HandleMenuInput's A-press), so redraw
+                // and fade back in here.
+                DrawStartMatchSubmenuItems();
+                BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+                gTasks[taskId].tSubCursorPos = 0;
+                gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+            }
+            else if (gTasks[taskId].tCursorPos == 1)
+            {
+                // POKEPVP (ADR-093): TEAM BUILDER. Same shape as the START
+                // MATCH submenu above -- redraw into the existing windows
+                // and fade back in, since HandleMenuInput's A-press has
+                // already taken the screen to black.
+                DrawTeamListItems();
+                BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+                gTasks[taskId].tSubCursorPos = 0;
+                gTasks[taskId].func = Task_PokePvPTeamList;
+            }
+            else
+            {
+                // ADR-086 fix: HandleMenuInput's A-press already fades the
+                // whole screen to black (0,0,16,RGB_BLACK) before this task
+                // runs. MAIN_MENU_MYSTERYGIFT's own error path (below) fades
+                // back in here so its message is actually visible while the
+                // player reads it -- Task_PokePvPMenuStub never had this
+                // call, so "Not yet implemented." was drawn into a fully
+                // black palette and was never visible until the final
+                // dismiss-time fade (added in ADR-085) flashed the menu back.
+                // Live this reads as "select a stub -> black screen", not a
+                // hang -- confirmed distinct from ADR-085's already-fixed
+                // permanently-black dismissal bug.
+                gTasks[taskId].tMGErrorMsgState = 0;
+                gTasks[taskId].func = Task_PokePvPMenuStub;
+                BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+            }
+            return;
         case MAIN_MENU_NEWGAME:
             menuAction = MAIN_MENU_NEWGAME;
             break;
@@ -536,6 +767,754 @@ static void Task_MysteryGiftError(u8 taskId)
     }
 }
 
+// POKEPVP (ADR-085): Team Builder/Player Settings/Leaderboard/Options stub.
+// Same message-box-then-wait-for-button shape as Task_MysteryGiftError
+// (a proven FireRed pattern), but returns into the still-live menu instead
+// of the title screen -- redraws all 5 items via DrawPokePvPMenuItems since
+// the error window's tiles (top15, height4) physically overlap the bottom
+// two menu slots (top13/top17) and erasing it blanks those tiles.
+static void Task_PokePvPMenuStub(u8 taskId)
+{
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        PrintMessageOnWindow4(sText_NotYetImplemented);
+        gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        if (!gPaletteFade.active)
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 2:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 3:
+        if (JOY_NEW(A_BUTTON | B_BUTTON))
+        {
+            // The menu-selection fade-out (HandleMenuInput's A-press,
+            // BeginNormalPaletteFade(...,0,16,...)) already took the
+            // screen to black before this task ever ran -- without fading
+            // back to normal here, the screen stays black forever after
+            // dismissal. Mirrors Task_WaitDma3AndFadeIn's own fade-in call.
+            PlaySE(SE_SELECT);
+            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+            DrawPokePvPMenuItems();
+            BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_UpdateVisualSelection;
+        }
+        break;
+    }
+}
+
+// POKEPVP (ADR-091): draws the 2-item AUTO-MATCH/INVITE MATCH submenu into
+// the same 5 window slots DrawPokePvPMenuItems uses -- rows 0/1 get real
+// labels, rows 2-4 are left blank (still drawn/tilemapped so any leftover
+// top-level text is actually erased, not just occluded). Exact same
+// draw/tilemap/vram-copy shape as DrawPokePvPMenuItems, just fewer labels
+// -- same "reuse, don't duplicate" discipline as that function itself.
+static void DrawStartMatchSubmenuItems(void)
+{
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_AutoMatch);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_InviteMatch);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_0]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_1]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_2]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_3]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_4]);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+}
+
+// POKEPVP (ADR-091): drives the 2-item submenu -- D-pad moves the WIN0
+// highlight between rows 0/1 (reusing MoveWindowByMenuTypeAndCursorPos's
+// existing MAIN_MENU_POKEPVP 32px-slot geometry, which already matches
+// these windows' tilemapTop spacing exactly), A selects, B returns to the
+// top-level 5-item menu.
+static void Task_PokePvPStartMatchSubmenu(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        if (gTasks[taskId].tSubCursorPos == 0)
+        {
+            // AUTO-MATCH: real server-integration path (battle_setup.c),
+            // no in-world overworld scene per the owner's explicit
+            // direction -- see StartPokePvPAutoMatch's own doc comment.
+            gExitStairsMovementDisabled = FALSE;
+            FreeAllWindowBuffers();
+            DestroyTask(taskId);
+            StartPokePvPAutoMatch();
+        }
+        else
+        {
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_PokePvPInviteMatchStub;
+            BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+        }
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+        gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromSubmenu;
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+    }
+}
+
+// POKEPVP (ADR-091): INVITE MATCH stub -- identical shape to
+// Task_PokePvPMenuStub, but returns into the submenu (not the top-level
+// menu) on dismissal, since that's where the player selected it from.
+static void Task_PokePvPInviteMatchStub(u8 taskId)
+{
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        PrintMessageOnWindow4(sText_NotYetImplemented);
+        gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        if (!gPaletteFade.active)
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 2:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 3:
+        if (JOY_NEW(A_BUTTON | B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+            DrawStartMatchSubmenuItems();
+            BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+        }
+        break;
+    }
+}
+
+// POKEPVP (ADR-091): B out of the submenu -- fades to black (done by the
+// caller before switching to this func), redraws the real 5-item top-level
+// menu, fades back in, hands off to Task_UpdateVisualSelection exactly like
+// Task_PokePvPMenuStub's own dismissal path does.
+static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    DrawPokePvPMenuItems();
+    BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+    gTasks[taskId].tCursorPos = 0;
+    gTasks[taskId].func = Task_UpdateVisualSelection;
+}
+
+// POKEPVP (ADR-093): one team-slot row. Shows the slot number and how many
+// members it holds -- enough to tell the slots apart at a glance without a
+// naming screen, which is real work (naming_screen.c) and its own decision.
+static void DrawOneTeamRow(u8 windowId, u8 slot)
+{
+    u8 buf[24];
+    u8 *dest;
+    u8 count;
+
+    count = PokePvPTeamBuilder_MemberCount(slot);
+    FillWindowPixelBuffer(windowId, PIXEL_FILL(10));
+    dest = StringCopy(buf, sText_Team);
+    dest = ConvertIntToDecimalStringN(dest, slot + 1, STR_CONV_MODE_LEFT_ALIGN, 1);
+    *dest++ = CHAR_SPACE;
+    *dest++ = CHAR_SPACE;
+    *dest++ = CHAR_SPACE;
+    if (count == 0)
+    {
+        dest = StringCopy(dest, sText_TeamEmpty);
+    }
+    else
+    {
+        dest = ConvertIntToDecimalStringN(dest, count, STR_CONV_MODE_LEFT_ALIGN, 1);
+        *dest++ = CHAR_SLASH;
+        dest = ConvertIntToDecimalStringN(dest, PARTY_SIZE, STR_CONV_MODE_LEFT_ALIGN, 1);
+    }
+    *dest = EOS;
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+    MainMenu_DrawWindow(&sWindowTemplate[windowId]);
+    PutWindowTilemap(windowId);
+}
+
+// POKEPVP (ADR-093): five team slots in the five existing windows -- the
+// list is exactly as long as the window row count, so B (not a sixth
+// "EXIT" row) is the way out, matching the START MATCH submenu's own
+// convention rather than inventing a second one.
+static void DrawTeamListItems(void)
+{
+    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_0, 0);
+    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_1, 1);
+    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_2, 2);
+    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_3, 3);
+    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_4, 4);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+}
+
+// POKEPVP (ADR-093): drives the team-slot list. Identical input shape to
+// Task_PokePvPStartMatchSubmenu (D-pad over the same 32px slot geometry,
+// A selects, B backs out), so the two screens do not behave differently
+// for no reason. A opens FireRed's own PC box screen with the roster
+// loaded -- PokePvPTeamBuilder_Open calls EnterPokeStorage, which calls
+// ResetTasks, so this task frees its windows and destroys itself first,
+// exactly as the AUTO-MATCH path already does.
+static void Task_PokePvPTeamList(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        // POKEPVP (ADR-093): a slot has two things you can do to it now --
+        // choose its POKEMON (the PC) and change their moves -- so it opens
+        // a submenu rather than one of them directly.
+        gTasks[taskId].tTeamSlot = gTasks[taskId].tSubCursorPos;
+        DrawSlotMenuItems();
+        gTasks[taskId].tSubCursorPos = 0;
+        gTasks[taskId].func = Task_PokePvPSlotMenu;
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+        gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromTeamList;
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < POKEPVP_TEAM_SLOTS - 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+    }
+}
+
+// POKEPVP (ADR-093): drives the one-time roster build with a message on
+// screen.
+//
+// Building it in the background from Task_HandleMenuInput instead was
+// tried and reverted: it works, and it does make TEAM BUILDER open
+// instantly, but a species per frame costs enough CPU to slow the whole
+// main menu for the first several seconds after boot -- which shifted the
+// frame timing of every scripted menu navigation in this repo's own
+// golden-frame suites, and in testing sent a script that meant to select
+// TEAM BUILDER into an AUTO-MATCH battle instead. A visible, honest wait
+// on the one screen that needs it beats a hidden cost on every screen.
+//
+// Same message-window shape as Task_PokePvPMenuStub, Same message-window shape as Task_PokePvPMenuStub, but it waits
+// on real progress instead of a button, and needs no fade of its own --
+// the team list is already faded in when this starts.
+static void Task_PokePvPPrepareRoster(u8 taskId)
+{
+    u8 slot;
+
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        PrintMessageOnWindow4(sText_PreparingTeamBuilder);
+        gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 2:
+        // One species per frame. The step function is idempotent once
+        // complete, so an extra call on the finishing frame is harmless.
+        if (PokePvPTeamBuilder_BuildRosterStep() == 100)
+        {
+            slot = gTasks[taskId].tTeamSlot;
+            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+            FreeAllWindowBuffers();
+            DestroyTask(taskId);
+            PokePvPTeamBuilder_Open(slot, CB2_InitMainMenu);
+        }
+        break;
+    }
+}
+
+// POKEPVP (ADR-093): the per-slot submenu. Three items in the same five
+// windows every other menu here uses.
+static void DrawSlotMenuItems(void)
+{
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_EditTeam);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_EditMoves);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_2, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_Back);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_0]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_1]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_2]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_3]);
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_4]);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+}
+
+// POKEPVP (ADR-093): EDIT TEAM / EDIT MOVES / BACK for one team slot.
+static void Task_PokePvPSlotMenu(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        switch (gTasks[taskId].tSubCursorPos)
+        {
+        case 0:
+            sPokePvPReturnToTeamList = TRUE;
+            if (PokePvPTeamBuilder_RosterReady())
+            {
+                FreeAllWindowBuffers();
+                DestroyTask(taskId);
+                PokePvPTeamBuilder_Open(gTasks[taskId].tTeamSlot, CB2_InitMainMenu);
+            }
+            else
+            {
+                // First entry this session: the roster has to be built, and
+                // that takes real time. Show a message and build it a
+                // species per frame rather than freezing on one huge frame.
+                gTasks[taskId].tMGErrorMsgState = 0;
+                gTasks[taskId].func = Task_PokePvPPrepareRoster;
+            }
+            break;
+        case 1:
+            if (PokePvPTeamBuilder_MemberCount(gTasks[taskId].tTeamSlot) == 0)
+            {
+                // Nothing to edit the moves of. Says so, rather than
+                // opening an empty list the player has to work out.
+                gTasks[taskId].tMGErrorMsgState = 0;
+                gTasks[taskId].func = Task_PokePvPEmptyTeamMessage;
+                BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+            }
+            else if (AllocPokePvPList())
+            {
+                gTasks[taskId].tMemberIndex = 0;
+                BuildMemberList(taskId);
+                OpenPokePvPList(taskId, PokePvPTeamBuilder_MemberCount(gTasks[taskId].tTeamSlot));
+                gTasks[taskId].func = Task_PokePvPPickMember;
+            }
+            // Out of heap: stay on the submenu rather than opening a list
+            // with nothing behind it.
+            break;
+        default:
+            BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+            gTasks[taskId].func = Task_PokePvPReturnToTeamListFromSlotMenu;
+            break;
+        }
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+        gTasks[taskId].func = Task_PokePvPReturnToTeamListFromSlotMenu;
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 2)
+    {
+        gTasks[taskId].tSubCursorPos++;
+    }
+}
+
+// POKEPVP (ADR-093): back from the slot submenu to the team list, redrawing
+// it so a team whose size just changed shows its new count.
+//
+// This is also the move editor's commit point. The PC path emits the team
+// on its own exit, but move edits happen entirely inside this menu and
+// would otherwise never reach the launcher at all. Emitting here rather
+// than on every SetMemberMove keeps one edit from being one round trip:
+// the mailbox ring holds 16 records and the host drains one per frame, so
+// a player changing four moves quickly could outrun it and have records
+// dropped as MB_FULL. Leaving the slot is the natural "done" moment.
+static void Task_PokePvPReturnToTeamListFromSlotMenu(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    PokePvPTeamBuilder_SendTeam(gTasks[taskId].tTeamSlot);
+    DrawTeamListItems();
+    BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+    gTasks[taskId].tSubCursorPos = gTasks[taskId].tTeamSlot;
+    gTasks[taskId].func = Task_PokePvPTeamList;
+}
+
+// POKEPVP (ADR-093): "EDIT MOVES" on a team with nothing in it.
+static void Task_PokePvPEmptyTeamMessage(u8 taskId)
+{
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        PrintMessageOnWindow4(sText_TeamIsEmpty);
+        gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        if (!gPaletteFade.active)
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 2:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 3:
+        if (JOY_NEW(A_BUTTON | B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+            DrawSlotMenuItems();
+            BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_PokePvPSlotMenu;
+        }
+        break;
+    }
+}
+
+// POKEPVP (ADR-093): the editor's working buffer has to exist before the
+// first Build*List call, not inside the Open that follows it -- the two are
+// separate because every Build* writes straight into it. (They were one
+// function first, and the member list rendered as garbage for exactly this
+// reason: it was built through a null pointer, then displayed out of the
+// freshly-allocated buffer that had never been written. The move-slot list
+// looked fine and hid it, because by then the buffer was already live.)
+static bool8 AllocPokePvPList(void)
+{
+    if (sPokePvPList == NULL)
+        sPokePvPList = Alloc(sizeof(*sPokePvPList));
+    return (sPokePvPList != NULL) ? TRUE : FALSE;
+}
+
+// POKEPVP (ADR-093): puts a scrolling list on screen, over the five menu
+// windows. Requires AllocPokePvPList to have succeeded and the caller to
+// have filled sPokePvPList->items already. The list window is added here and removed in ClosePokePvPList,
+// so its ~10KB buffer only exists while a list does.
+//
+// WIN0 is opened to the whole screen for the duration: this menu normally
+// uses it to darken everything except the selected row, which is exactly
+// wrong over a list that draws its own cursor.
+static void OpenPokePvPList(u8 taskId, u16 count)
+{
+    ClearWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
+    ClearWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
+    ClearWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
+    ClearWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
+    ClearWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
+    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_0]);
+    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_1]);
+    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_2]);
+    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_3]);
+    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_4]);
+
+    SetGpuReg(REG_OFFSET_WIN0H, WIN_RANGE(0, DISPLAY_WIDTH));
+    SetGpuReg(REG_OFFSET_WIN0V, WIN_RANGE(0, DISPLAY_HEIGHT));
+
+    gTasks[taskId].tListWindowId = AddWindow(&sPokePvPListWindowTemplate);
+    FillWindowPixelBuffer(gTasks[taskId].tListWindowId, PIXEL_FILL(10));
+    MainMenu_DrawWindow(&sPokePvPListWindowTemplate);
+    PutWindowTilemap(gTasks[taskId].tListWindowId);
+
+    gMultiuseListMenuTemplate.items = sPokePvPList->items;
+    gMultiuseListMenuTemplate.moveCursorFunc = ListMenuDefaultCursorMoveFunc;
+    gMultiuseListMenuTemplate.itemPrintFunc = NULL;
+    gMultiuseListMenuTemplate.totalItems = count;
+    gMultiuseListMenuTemplate.maxShowed = (count < POKEPVP_LIST_ROWS) ? count : POKEPVP_LIST_ROWS;
+    gMultiuseListMenuTemplate.windowId = gTasks[taskId].tListWindowId;
+    gMultiuseListMenuTemplate.header_X = 0;
+    gMultiuseListMenuTemplate.item_X = 8;
+    gMultiuseListMenuTemplate.cursor_X = 0;
+    gMultiuseListMenuTemplate.upText_Y = 1;
+    // Palette indices, not colours: the same 10/11/12 triple sTextColor1
+    // uses for every other row of text on this screen.
+    gMultiuseListMenuTemplate.fillValue = 10;
+    gMultiuseListMenuTemplate.cursorPal = 11;
+    gMultiuseListMenuTemplate.cursorShadowPal = 12;
+    gMultiuseListMenuTemplate.lettersSpacing = 0;
+    gMultiuseListMenuTemplate.itemVerticalPadding = 0;
+    gMultiuseListMenuTemplate.scrollMultiple = LIST_NO_MULTIPLE_SCROLL;
+    gMultiuseListMenuTemplate.fontId = FONT_NORMAL;
+    gMultiuseListMenuTemplate.cursorKind = 0;
+
+    gTasks[taskId].tListTaskId = ListMenuInit(&gMultiuseListMenuTemplate, 0, 0);
+    CopyWindowToVram(gTasks[taskId].tListWindowId, COPYWIN_FULL);
+}
+
+// POKEPVP (ADR-093): tears the list down and hands the screen back to the
+// five-window menu. Deliberately does not free sPokePvPList -- the editor's
+// three pickers open and close lists constantly, and reallocating ~1.3KB on
+// every A press is a fragmentation risk for nothing. It is freed when the
+// editor is left entirely (ReturnToSlotMenu).
+static void ClosePokePvPList(u8 taskId)
+{
+    DestroyListMenuTask(gTasks[taskId].tListTaskId, NULL, NULL);
+    ClearWindowTilemap(gTasks[taskId].tListWindowId);
+    MainMenu_EraseWindow(&sPokePvPListWindowTemplate);
+    CopyWindowToVram(gTasks[taskId].tListWindowId, COPYWIN_FULL);
+    RemoveWindow(gTasks[taskId].tListWindowId);
+}
+
+static void ReturnToSlotMenu(u8 taskId)
+{
+    ClosePokePvPList(taskId);
+    if (sPokePvPList != NULL)
+    {
+        Free(sPokePvPList);
+        sPokePvPList = NULL;
+    }
+    DrawSlotMenuItems();
+    gTasks[taskId].tSubCursorPos = 1;
+    gTasks[taskId].func = Task_PokePvPSlotMenu;
+}
+
+// The team's members, by species name. Labels point straight into
+// gSpeciesNames -- nothing is copied, and nothing can go stale, because the
+// list is rebuilt whenever the team could have changed.
+static void BuildMemberList(u8 taskId)
+{
+    u8 i;
+    u8 count;
+    u16 species;
+
+    count = PokePvPTeamBuilder_MemberCount(gTasks[taskId].tTeamSlot);
+    for (i = 0; i < count; i++)
+    {
+        species = PokePvPTeamBuilder_MemberSpecies(gTasks[taskId].tTeamSlot, i);
+        sPokePvPList->items[i].label = gSpeciesNames[species];
+        sPokePvPList->items[i].index = i;
+    }
+}
+
+// One member's four move slots, by move name, "-" for an empty one.
+static void BuildMoveSlotList(u8 taskId)
+{
+    u8 i;
+    u16 move;
+
+    for (i = 0; i < 4; i++)
+    {
+        move = PokePvPTeamBuilder_MemberMove(gTasks[taskId].tTeamSlot,
+                                             gTasks[taskId].tMemberIndex, i);
+        sPokePvPList->items[i].label = (move != MOVE_NONE) ? gMoveNames[move] : sText_NoMove;
+        sPokePvPList->items[i].index = i;
+    }
+}
+
+// Every move the member's species can legally learn, plus -- only when the
+// mon would still have a move left afterwards -- a "-" row that clears the
+// slot. Offering a clear that would be refused is a dead end; not offering
+// one at all makes a mistakenly-filled fourth slot permanent.
+//
+// Returns the row count. `index` on each row is the move id itself (or
+// MOVE_NONE for the clear row), so the chosen row needs no lookup back
+// through a parallel array.
+static u16 BuildLegalMoveList(u8 taskId)
+{
+    u16 species;
+    u16 moveCount;
+    u16 rows;
+    u16 i;
+    u8 known;
+
+    species = PokePvPTeamBuilder_MemberSpecies(gTasks[taskId].tTeamSlot,
+                                               gTasks[taskId].tMemberIndex);
+    moveCount = PokePvPTeamBuilder_LegalMoves(species, sPokePvPList->moves,
+                                              POKEPVP_MAX_LEGAL_MOVES);
+    rows = 0;
+
+    known = 0;
+    for (i = 0; i < 4; i++)
+    {
+        if (PokePvPTeamBuilder_MemberMove(gTasks[taskId].tTeamSlot,
+                                          gTasks[taskId].tMemberIndex, i) != MOVE_NONE)
+            known++;
+    }
+    if (known > 1
+     && PokePvPTeamBuilder_MemberMove(gTasks[taskId].tTeamSlot,
+                                      gTasks[taskId].tMemberIndex,
+                                      gTasks[taskId].tMoveSlot) != MOVE_NONE)
+    {
+        sPokePvPList->items[rows].label = sText_NoMove;
+        sPokePvPList->items[rows].index = MOVE_NONE;
+        rows++;
+    }
+
+    for (i = 0; i < moveCount; i++)
+    {
+        sPokePvPList->items[rows].label = gMoveNames[sPokePvPList->moves[i]];
+        sPokePvPList->items[rows].index = sPokePvPList->moves[i];
+        rows++;
+    }
+    return rows;
+}
+
+static void Task_PokePvPPickMember(u8 taskId)
+{
+    s32 chosen;
+
+    if (gPaletteFade.active)
+        return;
+
+    // ListMenu_ProcessInput already handles B for us: it returns LIST_CANCEL
+    // rather than leaving the press for a JOY_NEW check here, which is why
+    // an earlier version of this screen could not be backed out of at all.
+    chosen = ListMenu_ProcessInput(gTasks[taskId].tListTaskId);
+    if (chosen == LIST_NOTHING_CHOSEN)
+        return;
+    if (chosen == LIST_CANCEL)
+    {
+        PlaySE(SE_SELECT);
+        ReturnToSlotMenu(taskId);
+        return;
+    }
+
+    PlaySE(SE_SELECT);
+    gTasks[taskId].tMemberIndex = chosen;
+    ClosePokePvPList(taskId);
+    BuildMoveSlotList(taskId);
+    OpenPokePvPList(taskId, 4);
+    gTasks[taskId].func = Task_PokePvPPickMoveSlot;
+}
+
+static void Task_PokePvPPickMoveSlot(u8 taskId)
+{
+    s32 chosen;
+    u16 rows;
+
+    if (gPaletteFade.active)
+        return;
+
+    chosen = ListMenu_ProcessInput(gTasks[taskId].tListTaskId);
+    if (chosen == LIST_NOTHING_CHOSEN)
+        return;
+    if (chosen == LIST_CANCEL)
+    {
+        PlaySE(SE_SELECT);
+        ClosePokePvPList(taskId);
+        BuildMemberList(taskId);
+        OpenPokePvPList(taskId,
+                        PokePvPTeamBuilder_MemberCount(gTasks[taskId].tTeamSlot));
+        gTasks[taskId].func = Task_PokePvPPickMember;
+        return;
+    }
+
+    PlaySE(SE_SELECT);
+    gTasks[taskId].tMoveSlot = chosen;
+    ClosePokePvPList(taskId);
+    rows = BuildLegalMoveList(taskId);
+    OpenPokePvPList(taskId, rows);
+    gTasks[taskId].func = Task_PokePvPPickMove;
+}
+
+static void Task_PokePvPPickMove(u8 taskId)
+{
+    s32 chosen;
+
+    if (gPaletteFade.active)
+        return;
+
+    chosen = ListMenu_ProcessInput(gTasks[taskId].tListTaskId);
+    if (chosen == LIST_NOTHING_CHOSEN)
+        return;
+    if (chosen == LIST_CANCEL)
+    {
+        PlaySE(SE_SELECT);
+        ClosePokePvPList(taskId);
+        BuildMoveSlotList(taskId);
+        OpenPokePvPList(taskId, 4);
+        gTasks[taskId].func = Task_PokePvPPickMoveSlot;
+        return;
+    }
+
+    PlaySE(SE_SELECT);
+    // The write can still be refused (the species cannot learn it, or this
+    // is the last move); the list is rebuilt either way, so the player sees
+    // what actually happened rather than being told it worked.
+    PokePvPTeamBuilder_SetMemberMove(gTasks[taskId].tTeamSlot,
+                                     gTasks[taskId].tMemberIndex,
+                                     gTasks[taskId].tMoveSlot,
+                                     (u16)chosen);
+    ClosePokePvPList(taskId);
+    BuildMoveSlotList(taskId);
+    OpenPokePvPList(taskId, 4);
+    gTasks[taskId].func = Task_PokePvPPickMoveSlot;
+}
+
+// POKEPVP (ADR-093): B out of the team list. Same shape as
+// Task_PokePvPReturnToTopMenuFromSubmenu, but restores the cursor to the
+// TEAM BUILDER row (1) the player came from rather than resetting to 0 --
+// coming back to a different row than you left from reads as a bug.
+static void Task_PokePvPReturnToTopMenuFromTeamList(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    DrawPokePvPMenuItems();
+    BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+    gTasks[taskId].tCursorPos = 1;
+    gTasks[taskId].func = Task_UpdateVisualSelection;
+}
+
 static void Task_ReturnToTileScreen(u8 taskId)
 {
     if (!gPaletteFade.active)
@@ -552,6 +1531,12 @@ static void MoveWindowByMenuTypeAndCursorPos(u8 menuType, u8 cursorPos)
     switch (menuType)
     {
     default:
+    case MAIN_MENU_POKEPVP:
+        // POKEPVP (ADR-085): 5 equal 32px slots covering the full screen,
+        // matching sWindowTemplate's POKEPVP_0..4 tilemapTop spacing.
+        win0vTop = (cursorPos * 0x20) << 8;
+        win0vBot = (cursorPos + 1) * 0x20;
+        break;
     case MAIN_MENU_NEWGAME:
         win0vTop = 0x00 << 8;
         win0vBot = 0x20;
