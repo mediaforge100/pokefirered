@@ -605,6 +605,60 @@ void PokePvP_SetBattleOutcomeAndEndTurn(u8 outcome)
     gBattleMainFunc = sEndTurnFuncsTable[gBattleOutcome & 0x7F];
 }
 
+/* POKEPVP (ADR-108): the "this turn ended, the battle didn't" counterpart
+ * to PokePvP_SetBattleOutcomeAndEndTurn above. Reproduces exactly the
+ * bookkeeping-only tail of BattleTurnPassed's own gBattleOutcome == 0
+ * branch below (from its second TurnValuesCleanUp(FALSE) call through
+ * its re-roll of gRandomTurnNumber) -- deliberately skips everything
+ * BattleTurnPassed calls before that point (DoFieldEndTurnEffects,
+ * DoBattlerEndTurnEffects, HandleFaintedMonActions,
+ * HandleWishPerishSongOnTurnEnd): those compute weather damage, status
+ * damage, and fainted-mon switch handling locally, which is exactly the
+ * turn-resolution logic ADR-104 disabled RunTurnActionsFunctions to stop
+ * running for this battle type. A future server/fixture is expected to
+ * narrate all of that itself as ordinary presentation records (HP_BAR,
+ * STATUS_ANIM, FAINT) before ever sending the POKEPVP_MSG_TURN_CONTINUE
+ * record that reaches this function
+ * (rom/pvp-gen3/battle_controller_pokepvp.c). Fainted-mon switch-in is
+ * explicitly out of scope here -- see ADR-108. */
+void PokePvP_ContinueNextTurn(void)
+{
+    s32 i;
+
+    TurnValuesCleanUp(TRUE);
+    TurnValuesCleanUp(FALSE);
+    gHitMarker &= ~(HITMARKER_NO_ATTACKSTRING);
+    gHitMarker &= ~(HITMARKER_UNABLE_TO_USE_MOVE);
+    gHitMarker &= ~(HITMARKER_PLAYER_FAINTED);
+    gHitMarker &= ~(HITMARKER_PASSIVE_DAMAGE);
+    gBattleScripting.animTurn = 0;
+    gBattleScripting.animTargetsHit = 0;
+    gBattleScripting.moveendState = 0;
+    gBattleMoveDamage = 0;
+    gMoveResultFlags = 0;
+    /* Matches BattleTurnPassed's own literal 5, not
+     * BATTLE_COMMUNICATION_ENTRIES_COUNT (8) -- indices 0-4 are the
+     * per-battler action-selection state HandleTurnActionSelectionState
+     * needs reset (MULTIUSE_STATE/CURSOR_POSITION/SPRITES_INIT_STATE2/
+     * MOVE_EFFECT_BYTE/ACTIONS_CONFIRMED_COUNT); 5-7
+     * (MULTISTRING_CHOOSER/MISS_TYPE/MSG_DISPLAY) are scripted-message
+     * scratch vanilla FireRed itself leaves alone between turns. */
+    for (i = 0; i < 5; i++)
+        gBattleCommunication[i] = 0;
+    if (gBattleResults.battleTurnCounter < 0xFF)
+        ++gBattleResults.battleTurnCounter;
+    for (i = 0; i < gBattlersCount; i++)
+    {
+        gChosenActionByBattler[i] = B_ACTION_NONE;
+        gChosenMoveByBattler[i] = MOVE_NONE;
+    }
+    for (i = 0; i < MAX_BATTLERS_COUNT; i++)
+        *(gBattleStruct->monToSwitchIntoId + i) = PARTY_SIZE;
+    *(&gBattleStruct->absentBattlerFlags) = gAbsentBattlerFlags;
+    gBattleMainFunc = HandleTurnActionSelectionState;
+    gRandomTurnNumber = Random();
+}
+
 const u8 gStatusConditionString_PoisonJpn[] = _("どく$$$$$");
 const u8 gStatusConditionString_SleepJpn[] = _("ねむり$$$$");
 const u8 gStatusConditionString_ParalysisJpn[] = _("まひ$$$$$");

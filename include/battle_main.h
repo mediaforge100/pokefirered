@@ -115,5 +115,19 @@ void PokePvP_SetBattleOutcomeAndEndTurn(u8 outcome);
  * BATTLE_TYPE_POKEPVP, so a real button press in the FIGHT menu doesn't
  * hang forever waiting on a mailbox nothing is driving yet. */
 bool8 PokePvP_ShouldSkipLocalResolution(void);
+/* ADR-108: the counterpart to PokePvP_SetBattleOutcomeAndEndTurn for the
+ * "this turn ended, the battle didn't" case -- called from
+ * battle_controller_pokepvp.c's POKEPVP_MSG_TURN_CONTINUE handler.
+ * Reproduces exactly the bookkeeping-only tail of BattleTurnPassed's own
+ * gBattleOutcome == 0 branch (clearing per-turn scratch state,
+ * resetting chosen actions, re-rolling gRandomTurnNumber) and installs
+ * HandleTurnActionSelectionState as gBattleMainFunc -- deliberately
+ * skips BattleTurnPassed's own DoFieldEndTurnEffects/
+ * DoBattlerEndTurnEffects/HandleFaintedMonActions/
+ * HandleWishPerishSongOnTurnEnd calls, since those are exactly the local
+ * weather/status/faint computation this project's server is supposed to
+ * own instead. Fainted-mon switch-in is explicitly out of scope (see
+ * ADR-108) -- this only re-arms action selection for the next turn. */
+void PokePvP_ContinueNextTurn(void);
 
 #endif // GUARD_BATTLE_MAIN_H
