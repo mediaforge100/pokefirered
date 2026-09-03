@@ -430,11 +430,13 @@ void StartPokePvPMenuMatch(void)
 // No second gEnemyParty[1] slot the way StartPokePvPDebugBattle's own
 // ADR-109 addition has -- that exists only for a debug fixture's
 // deterministic switch target. A real opponent's remaining party members
-// are not known to this client at all: render-events never discloses an
-// opponent's species for anything beyond what's currently sent out (see
-// ADR-121's own doc comment, presentation_types.h), so a real mid-match
-// opponent switch still can't show a species-correct replacement today --
-// real, separate, unbuilt follow-up, not attempted here.
+// are not known to this client at all up front: render-events never
+// discloses an opponent's species for anything beyond what's currently
+// sent out (see ADR-121's own doc comment, presentation_types.h). ADR-123
+// closes the resulting mid-match-switch gap the same way ADR-122 closed it
+// for moves -- each remaining slot is revealed only as a real switch
+// actually happens (PokePvP_ResolveOrCreateOpponentPartySlot,
+// battle_controller_pokepvp.c), not disclosed all at once here.
 void StartPokePvPRealMatch(void)
 {
     u16 species = PokePvP_GetRealOpponentSpecies();
@@ -464,7 +466,26 @@ void StartPokePvPRealMatch(void)
         DebugPrintf("POKEPVP: synthesized player mon (species=%d CHARMANDER)", SPECIES_CHARMANDER);
     }
 
-    ZeroMonData(&gEnemyParty[0]);
+    // ADR-123: all six slots are zeroed and counted as real party members
+    // up front, not just slot 0 -- a real opponent's remaining party is
+    // genuinely unknown until a real mid-match switch reveals it
+    // (PokePvP_ResolveOrCreateOpponentPartySlot, battle_controller_pokepvp.c),
+    // but this project's own format is a fixed 6-member team (D2, ADR-119
+    // confirmed this is a real, deliberate requirement, not an accident),
+    // so gEnemyPartyCount can be the real, known-true value from the start
+    // rather than growing it later -- growing gEnemyPartyCount mid-battle
+    // would be a second, separate real risk (anything that iterates
+    // `gEnemyParty[0..gEnemyPartyCount]` before a switch ever reveals a
+    // later slot would already have run over stale/zeroed data, and
+    // changing the bound out from under it mid-battle is worse, not
+    // safer). A slot with species SPECIES_NONE (ZeroMonData's own default)
+    // is exactly how PokePvP_ResolveOrCreateOpponentPartySlot below
+    // recognizes "not yet revealed."
+    {
+        s32 i;
+        for (i = 0; i < PARTY_SIZE; i++)
+            ZeroMonData(&gEnemyParty[i]);
+    }
     // ADR-121: fixed personality (0), same RNG-neutrality reasoning
     // ADR-109's own Pidgey addition already established -- a
     // random-personality CreateMon call here would shift this battle's
@@ -473,7 +494,7 @@ void StartPokePvPRealMatch(void)
     // own golden-frame suites non-deterministic in a way no fixed fixture
     // could ever pin down.
     CreateMon(&gEnemyParty[0], species, level, 0, TRUE, 0, OT_ID_PLAYER_ID, 0);
-    gEnemyPartyCount = 1;
+    gEnemyPartyCount = PARTY_SIZE;
     DebugPrintf("POKEPVP: real opponent mon created (species=%d level=%d)", species, level);
 
     // Consumed exactly once -- a later real match this same process plays
