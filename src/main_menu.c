@@ -9,6 +9,7 @@
 #include "oak_speech.h"
 #include "overworld.h"
 #include "battle_setup.h" // POKEPVP (ADR-079/080): StartPokePvPMenuMatch
+#include "option_menu.h" // POKEPVP (ADR-112): OPTIONS reuses FireRed's own real screen
 #include "pokepvp_team_builder.h" // POKEPVP (ADR-093): TEAM BUILDER
 #include "list_menu.h" // POKEPVP (ADR-093): the move editor's scrolling lists
 #include "data.h"        // POKEPVP (ADR-093): gSpeciesNames, gMoveNames
@@ -767,6 +768,28 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
                 gTasks[taskId].tSubCursorPos = 0;
                 gTasks[taskId].func = Task_PokePvPTeamList;
             }
+            else if (gTasks[taskId].tCursorPos == 4)
+            {
+                // POKEPVP (ADR-112): OPTIONS reuses FireRed's own real
+                // options screen verbatim (CB2_OptionsMenuFromStartMenu,
+                // option_menu.c) -- same "reuse FireRed's own real code"
+                // bet as Team Builder reusing the PC (ADR-093). Every row
+                // on that screen (TEXT SPEED, BATTLE SCENE, BATTLE STYLE,
+                // SOUND) is already fully real and reads/writes
+                // gSaveBlock2Ptr the same way a vanilla FireRed save would
+                // -- nothing here is a mockup. gMain.savedCallback is only
+                // defaulted by that function when NULL, so setting it here
+                // to CB2_InitMainMenu (not CB2_ReturnToFieldWithOpenMenu,
+                // which assumes a normal overworld return) makes EXIT
+                // return to this PokePvP menu instead of a nonexistent
+                // field state, the same pattern PokePvPTeamBuilder_Open
+                // already uses for its own return target.
+                gExitStairsMovementDisabled = FALSE;
+                gMain.savedCallback = CB2_InitMainMenu;
+                FreeAllWindowBuffers();
+                DestroyTask(taskId);
+                SetMainCallback2(CB2_OptionsMenuFromStartMenu);
+            }
             else
             {
                 // ADR-086 fix: HandleMenuInput's A-press already fades the
@@ -779,7 +802,9 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
                 // dismiss-time fade (added in ADR-085) flashed the menu back.
                 // Live this reads as "select a stub -> black screen", not a
                 // hang -- confirmed distinct from ADR-085's already-fixed
-                // permanently-black dismissal bug.
+                // permanently-black dismissal bug. Still true for
+                // PLAYER SETTINGS (2) and LEADERBOARD (3) -- OPTIONS (4)
+                // is handled above, real behavior now, not a stub.
                 gTasks[taskId].tMGErrorMsgState = 0;
                 gTasks[taskId].func = Task_PokePvPMenuStub;
                 BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
