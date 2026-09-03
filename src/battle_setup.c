@@ -271,6 +271,14 @@ void StartPokePvPDebugBattle(void)
 {
     DebugPrintf("POKEPVP: StartPokePvPDebugBattle entry, gPlayerPartyCount=%d", gPlayerPartyCount);
 
+    // ADR-122: explicit, not relied-on-as-default -- guards against a
+    // stale TRUE left over from an earlier real match this same process
+    // already played (the same class of leftover-state bug ADR-121 (fix
+    // #2) already found for sPokePvPRealOpponentReady). This debug battle
+    // must always let its own local AI answer for battler 1, exactly as
+    // before ADR-122.
+    PokePvP_SetRealMatchActive(FALSE);
+
     // POKEPVP (ADR-067): real-play feedback found the battle screen
     // itself works (BATTLE_TYPE_POKEPVP genuinely reaches native
     // rendering, the actual thing this whole trigger exists to prove),
@@ -431,6 +439,15 @@ void StartPokePvPRealMatch(void)
 {
     u16 species = PokePvP_GetRealOpponentSpecies();
     u8 level = PokePvP_GetRealOpponentLevel();
+
+    // ADR-122: real fix for a real bug found live -- without this, battler
+    // 1 (the opponent) fell through to FireRed's native AI whenever asked
+    // to choose before the real remote opponent's own choice had arrived
+    // over the network, which (unlike the reactive sPokePvPMailboxDriven
+    // flag alone) is every single time this battler is first asked to
+    // choose. See PokePvP_SetRealMatchActive's own doc comment
+    // (battle_controller_pokepvp.c) for the full race-condition finding.
+    PokePvP_SetRealMatchActive(TRUE);
 
     DebugPrintf("POKEPVP: StartPokePvPRealMatch entry, gPlayerPartyCount=%d species=%d level=%d",
                 gPlayerPartyCount, species, level);

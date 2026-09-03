@@ -40,6 +40,15 @@ u8 PokePvP_GetRealOpponentLevel(void);
 // that out.
 bool8 PokePvP_IsRealMatchPending(void);
 void PokePvP_ClearRealMatchPending(void);
+// POKEPVP (ADR-122): set TRUE by StartPokePvPRealMatch, FALSE by
+// StartPokePvPDebugBattle -- both are the only two real entry points for a
+// new BATTLE_TYPE_POKEPVP battle, so exactly one of them is authoritative
+// per battle regardless of controller-install timing. Consulted by
+// PokePvPOpponentBufferRunCommand (battle_controller_pokepvp.c) so a real
+// match's battler 1 always waits on the mailbox instead of ever falling
+// through to FireRed's native AI -- fixes a real bug found live where the
+// opponent visibly played like the AI, not the actual remote human.
+void PokePvP_SetRealMatchActive(bool8 active);
 void StartOldManTutorialBattle(void);
 void StartScriptedWildBattle(void);
 void StartMarowakBattle(void);
