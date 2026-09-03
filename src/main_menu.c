@@ -10,6 +10,7 @@
 #include "overworld.h"
 #include "battle_setup.h" // POKEPVP (ADR-079/080): StartPokePvPMenuMatch
 #include "option_menu.h" // POKEPVP (ADR-112): OPTIONS reuses FireRed's own real screen
+#include "naming_screen.h" // POKEPVP (ADR-113): PLAYER SETTINGS name entry
 #include "pokepvp_team_builder.h" // POKEPVP (ADR-093): TEAM BUILDER
 #include "list_menu.h" // POKEPVP (ADR-093): the move editor's scrolling lists
 #include "data.h"        // POKEPVP (ADR-093): gSpeciesNames, gMoveNames
@@ -768,6 +769,29 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
                 gTasks[taskId].tSubCursorPos = 0;
                 gTasks[taskId].func = Task_PokePvPTeamList;
             }
+            else if (gTasks[taskId].tCursorPos == 2)
+            {
+                // POKEPVP (ADR-113): PLAYER SETTINGS, name entry. Reuses
+                // FireRed's own real naming screen (DoNamingScreen,
+                // naming_screen.c) exactly the way this ROM's own
+                // Oak-speech new-game flow already calls it for the same
+                // template (src/oak_speech.c: DoNamingScreen(
+                // NAMING_SCREEN_PLAYER, gSaveBlock2Ptr->playerName,
+                // gSaveBlock2Ptr->playerGender, 0, 0, ...)) -- copied
+                // argument-for-argument from that real, already-working
+                // call rather than the unused Debug_NamingScreenPlayer
+                // stub in the same file, which passes a different (never
+                // exercised) argument shape. Writes directly into
+                // gSaveBlock2Ptr->playerName, the same real save-block
+                // field a vanilla new game uses -- no new persistent
+                // storage invented. Sprite selection is a separate,
+                // deliberately deferred follow-up (see ADR-113) -- this
+                // is name entry only.
+                gExitStairsMovementDisabled = FALSE;
+                FreeAllWindowBuffers();
+                DestroyTask(taskId);
+                DoNamingScreen(NAMING_SCREEN_PLAYER, gSaveBlock2Ptr->playerName, gSaveBlock2Ptr->playerGender, 0, 0, CB2_InitMainMenu);
+            }
             else if (gTasks[taskId].tCursorPos == 4)
             {
                 // POKEPVP (ADR-112): OPTIONS reuses FireRed's own real
@@ -803,8 +827,8 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
                 // Live this reads as "select a stub -> black screen", not a
                 // hang -- confirmed distinct from ADR-085's already-fixed
                 // permanently-black dismissal bug. Still true for
-                // PLAYER SETTINGS (2) and LEADERBOARD (3) -- OPTIONS (4)
-                // is handled above, real behavior now, not a stub.
+                // LEADERBOARD (3) -- PLAYER SETTINGS (2) and OPTIONS (4)
+                // are both handled above now, real behavior, not stubs.
                 gTasks[taskId].tMGErrorMsgState = 0;
                 gTasks[taskId].func = Task_PokePvPMenuStub;
                 BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
