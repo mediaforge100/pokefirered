@@ -1,5 +1,6 @@
 #include "global.h"
 #include "task.h"
+#include "battle_setup.h"
 #include "help_system.h"
 #include "overworld.h"
 #include "item.h"
@@ -406,6 +407,69 @@ void StartPokePvPMenuMatch(void)
     // way CB2_Overworld is ever reached.
     SetPokePvPMenuMatchPending();
     SetMainCallback2(CB2_LoadMap);
+}
+
+// POKEPVP (ADR-121): the real-opponent counterpart to StartPokePvPDebugBattle
+// above -- identical transition machinery and player-party synthesis
+// fallback, but gEnemyParty[0] is a real species/level from a real
+// gateway-paired opponent (PokePvP_GetRealOpponentSpecies/Level,
+// battle_controller_pokepvp.c) instead of a synthesized Rattata. Only ever
+// called once PokePvP_IsRealOpponentReady() is true -- main_menu.c's
+// AUTO-MATCH wait task checks that before choosing which of these two
+// functions to call, and overworld.c's CB2_Overworld branch checks it
+// again immediately before firing (see that file's own comment).
+//
+// No second gEnemyParty[1] slot the way StartPokePvPDebugBattle's own
+// ADR-109 addition has -- that exists only for a debug fixture's
+// deterministic switch target. A real opponent's remaining party members
+// are not known to this client at all: render-events never discloses an
+// opponent's species for anything beyond what's currently sent out (see
+// ADR-121's own doc comment, presentation_types.h), so a real mid-match
+// opponent switch still can't show a species-correct replacement today --
+// real, separate, unbuilt follow-up, not attempted here.
+void StartPokePvPRealMatch(void)
+{
+    u16 species = PokePvP_GetRealOpponentSpecies();
+    u8 level = PokePvP_GetRealOpponentLevel();
+
+    DebugPrintf("POKEPVP: StartPokePvPRealMatch entry, gPlayerPartyCount=%d species=%d level=%d",
+                gPlayerPartyCount, species, level);
+
+    // Same self-contained fallback as StartPokePvPDebugBattle (ADR-067) --
+    // a real match still needs a player Pokemon even if this save has none
+    // yet.
+    if (gPlayerPartyCount == 0)
+    {
+        ZeroMonData(&gPlayerParty[0]);
+        CreateMon(&gPlayerParty[0], SPECIES_CHARMANDER, 5, 0, FALSE, 0, OT_ID_PLAYER_ID, 0);
+        GiveMoveToMon(&gPlayerParty[0], MOVE_SCRATCH);
+        gPlayerPartyCount = 1;
+        DebugPrintf("POKEPVP: synthesized player mon (species=%d CHARMANDER)", SPECIES_CHARMANDER);
+    }
+
+    ZeroMonData(&gEnemyParty[0]);
+    // ADR-121: fixed personality (0), same RNG-neutrality reasoning
+    // ADR-109's own Pidgey addition already established -- a
+    // random-personality CreateMon call here would shift this battle's
+    // own RNG stream by an amount that depends on which real species/level
+    // a real opponent happens to submit, which would make this project's
+    // own golden-frame suites non-deterministic in a way no fixed fixture
+    // could ever pin down.
+    CreateMon(&gEnemyParty[0], species, level, 0, TRUE, 0, OT_ID_PLAYER_ID, 0);
+    gEnemyPartyCount = 1;
+    DebugPrintf("POKEPVP: real opponent mon created (species=%d level=%d)", species, level);
+
+    // Consumed exactly once -- a later real match this same process plays
+    // must not silently reuse a stale species/level from this one.
+    PokePvP_ClearRealOpponent();
+
+    LockPlayerFieldControls();
+    FreezeObjectEvents();
+    StopPlayerAvatar();
+    gMain.savedCallback = CB2_EndPokePvPBattle;
+    gBattleTypeFlags = BATTLE_TYPE_POKEPVP;
+    DebugPrintf("POKEPVP: calling CreateBattleStartTask, gBattleTypeFlags=0x%x", gBattleTypeFlags);
+    CreateBattleStartTask(GetWildBattleTransition(), 0);
 }
 
 // POKEPVP (ADR-091, D7 refinement: START MATCH -> AUTO-MATCH/INVITE MATCH):

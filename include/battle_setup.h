@@ -16,6 +16,30 @@ void StartPokePvPMenuMatch(void);
 // as StartPokePvPMenuMatch but fires the battle on the first CB2_Overworld
 // call, before any visible overworld frame renders. See battle_setup.c.
 void StartPokePvPAutoMatch(void);
+// POKEPVP (ADR-121): the real-opponent counterpart to StartPokePvPDebugBattle
+// -- same transition machinery, but gEnemyParty[0] is a real species/level
+// from a real gateway-paired opponent (PokePvP_GetRealOpponentSpecies/Level
+// below) instead of a synthesized Rattata. Only ever called once
+// PokePvP_IsRealOpponentReady() is true. See battle_setup.c.
+void StartPokePvPRealMatch(void);
+// POKEPVP (ADR-121): defined in battle_controller_pokepvp.c (that's where
+// POKEPVP_MSG_REAL_OPPONENT_MON is decoded), declared here so
+// main_menu.c's AUTO-MATCH wait task and this file's own
+// StartPokePvPRealMatch can both use them without a battle-controller-
+// specific header existing. See that file's own doc comment on why this
+// state can arrive before any battle exists.
+bool8 PokePvP_IsRealOpponentReady(void);
+void PokePvP_ClearRealOpponent(void);
+u16 PokePvP_GetRealOpponentSpecies(void);
+u8 PokePvP_GetRealOpponentLevel(void);
+// POKEPVP (ADR-121): true the instant a real gateway pairing succeeds,
+// well before PokePvP_IsRealOpponentReady() above can be -- lets
+// main_menu.c's AUTO-MATCH handler skip its own wait entirely (zero
+// timing change from before ADR-121) whenever no real pairing exists at
+// all, instead of waiting unconditionally on every press just to find
+// that out.
+bool8 PokePvP_IsRealMatchPending(void);
+void PokePvP_ClearRealMatchPending(void);
 void StartOldManTutorialBattle(void);
 void StartScriptedWildBattle(void);
 void StartMarowakBattle(void);

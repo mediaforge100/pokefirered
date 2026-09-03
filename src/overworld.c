@@ -1532,8 +1532,26 @@ static void CB2_Overworld(void)
     if (sPokePvPAutoMatchPending)
     {
         sPokePvPAutoMatchPending = FALSE;
-        DebugPrintf("POKEPVP: CB2_Overworld auto-match trigger firing (no overworld wait)");
-        StartPokePvPDebugBattle();
+        // POKEPVP (ADR-121): main_menu.c's AUTO-MATCH wait task already
+        // decided, before ever arming this trigger, whether a real
+        // opponent showed up in time -- this is just the same "which
+        // battle-start function" branch that decision implies, checked
+        // again right at the instant this actually fires (the two checks
+        // are close enough in time that they should never disagree, but
+        // this is the one that actually matters: PokePvP_IsRealOpponentReady()
+        // is exactly what StartPokePvPRealMatch itself consumes). Zero
+        // change to this trigger's own timing/visibility either way --
+        // the branch decides which function runs, not when.
+        if (PokePvP_IsRealOpponentReady())
+        {
+            DebugPrintf("POKEPVP: CB2_Overworld auto-match trigger firing (real opponent, no overworld wait)");
+            StartPokePvPRealMatch();
+        }
+        else
+        {
+            DebugPrintf("POKEPVP: CB2_Overworld auto-match trigger firing (no overworld wait)");
+            StartPokePvPDebugBattle();
+        }
         return;
     }
 

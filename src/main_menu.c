@@ -83,6 +83,11 @@ enum MainMenuWindow
 #define tMoveInfoWindowId data[11]
 #define tLastInfoMoveId   data[12]
 
+// POKEPVP (ADR-121): Task_PokePvPWaitForRealOpponent's own bounded-wait
+// frame counter. Reuses tMGErrorMsgState for its 0/1/2 state machine, same
+// shape as Task_PokePvPPrepareRoster's.
+#define tWaitFrames data[13]
+
 static bool32 MainMenuGpuInit(u8 a0);
 static void Task_SetWin0BldRegsAndCheckSaveFile(u8 taskId);
 static void PrintSaveErrorStatus(u8 taskId, const u8 *str);
@@ -192,6 +197,10 @@ static const u8 sText_TeamReady[] = _("READY");
 // the PC boxes -- see PokePvPTeamBuilder_BuildRosterStep for why that is
 // not instantaneous and must not be done in one frame.
 static const u8 sText_PreparingTeamBuilder[] = _("Preparing team builder…");
+// POKEPVP (ADR-121): shown while Task_PokePvPWaitForRealOpponent gives a
+// real gateway-paired opponent a bounded chance to show up before falling
+// back to the debug battle.
+static const u8 sText_WaitingForOpponent[] = _("Waiting for opponent…");
 static const u8 sText_EditTeam[] = _("EDIT TEAM");
 static const u8 sText_EditMoves[] = _("EDIT MOVES");
 static const u8 sText_Back[] = _("BACK");
@@ -1168,6 +1177,80 @@ static void DrawTeamSelectorItems(void)
 // handing off to StartPokePvPAutoMatch, so gPlayerPartyCount is non-zero by
 // the time StartPokePvPDebugBattle runs and its own gPlayerPartyCount == 0
 // synthesis (ADR-067) never overwrites it.
+// POKEPVP (ADR-121): a real, bounded number of frames to let the mailbox
+// deliver a real gateway-paired opponent (POKEPVP_MSG_REAL_OPPONENT_MON)
+// before giving up and falling back to the existing debug battle. Not a
+// guess: every real two-launcher pairing this project's own live sessions
+// have produced (ADR-115/116/119/120) resolved species+level within a
+// handful of real frames of `matchStart`, so 300 (5 real seconds at 60fps)
+// leaves generous headroom above observed real-world latency while still
+// bounding a genuinely unreachable/misconfigured gateway to a short,
+// visible wait rather than an indefinite hang -- this project's own
+// standing rule against leaving a player stuck in a silent wait with no
+// way out.
+#define POKEPVP_AUTO_MATCH_WAIT_FRAMES 300
+
+// POKEPVP (ADR-121): shown between AUTO-MATCH's team pick and the actual
+// battle start, giving a real gateway-paired opponent a bounded chance to
+// show up. Same message-window shape as Task_PokePvPPrepareRoster (a
+// visible, honest wait on the one screen that needs it) but resolves on
+// either real progress (PokePvP_IsRealOpponentReady(), set by
+// battle_controller_pokepvp.c once POKEPVP_MSG_REAL_OPPONENT_MON arrives)
+// or a real, bounded timeout -- a timeout is not a failure state here:
+// with no gateway configured at all, PokePvP_IsRealOpponentReady() simply
+// never becomes true, and that must still lead to the existing debug
+// battle exactly as before. Either outcome calls the same, unchanged
+// StartPokePvPAutoMatch() -- overworld.c's own CB2_Overworld branch is
+// what actually decides real-vs-debug at the instant the battle fires
+// (checking the same flag again there, right before it matters), so this
+// task's only real job is deciding *when* to stop waiting, never which
+// battle starts.
+static void Task_PokePvPWaitForRealOpponent(u8 taskId)
+{
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        // Deliberately does NOT clear PokePvP_IsRealOpponentReady() here --
+        // tried first, and found live to be a real bug, not a safety net:
+        // a real opponent's mon routinely arrives within a few hundred
+        // frames of pairing, long before this wait task's own screen is
+        // ever reached, so clearing it here discarded real, current,
+        // already-arrived data instead of only stale leftovers. The right
+        // place to reset stale state from an *earlier, unrelated* pairing
+        // is the instant a *new* one begins (POKEPVP_MSG_REAL_MATCH_PENDING's
+        // own handler, battle_controller_pokepvp.c) -- not here.
+        PrintMessageOnWindow4(sText_WaitingForOpponent);
+        gTasks[taskId].tWaitFrames = 0;
+        gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 2:
+    {
+        bool8 ready = PokePvP_IsRealOpponentReady();
+
+        gTasks[taskId].tWaitFrames++;
+        if (ready || gTasks[taskId].tWaitFrames >= POKEPVP_AUTO_MATCH_WAIT_FRAMES)
+        {
+            if (ready)
+                DebugPrintf("POKEPVP: AUTO-MATCH real opponent ready after %d frames", gTasks[taskId].tWaitFrames);
+            else
+                DebugPrintf("POKEPVP: AUTO-MATCH timed out waiting for a real opponent, falling back to debug battle");
+            PokePvP_ClearRealMatchPending();
+            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+            FreeAllWindowBuffers();
+            DestroyTask(taskId);
+            StartPokePvPAutoMatch();
+        }
+        break;
+    }
+    }
+}
+
 static void Task_PokePvPTeamSelector(u8 taskId)
 {
     if (gPaletteFade.active)
@@ -1183,9 +1266,29 @@ static void Task_PokePvPTeamSelector(u8 taskId)
         PlaySE(SE_SELECT);
         PokePvPTeamBuilder_LoadTeamForBattle(gTasks[taskId].tSubCursorPos);
         gExitStairsMovementDisabled = FALSE;
-        FreeAllWindowBuffers();
-        DestroyTask(taskId);
-        StartPokePvPAutoMatch();
+        // POKEPVP (ADR-121): a real gateway pairing is worth a bounded
+        // wait for the opponent's mon; no gateway (or no pairing yet) is
+        // not -- checked here, synchronously, so the plain no-gateway case
+        // takes the exact same zero-delay path it always has
+        // (StartPokePvPAutoMatch's own "no overworld wait" design,
+        // ADR-091) with no timing change at all. Only a real
+        // POKEPVP_MSG_REAL_MATCH_PENDING record (sent the instant a real
+        // matchStart arrives, main.rs) ever makes this true.
+        if (PokePvP_IsRealMatchPending())
+        {
+            // Window buffers are deliberately NOT freed here (unlike the
+            // branch below) -- the wait task reuses this same screen's
+            // already-faded-in message window, matching
+            // Task_PokePvPPrepareRoster's own precedent.
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_PokePvPWaitForRealOpponent;
+        }
+        else
+        {
+            FreeAllWindowBuffers();
+            DestroyTask(taskId);
+            StartPokePvPAutoMatch();
+        }
     }
     else if (JOY_NEW(B_BUTTON))
     {
