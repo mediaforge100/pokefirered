@@ -292,7 +292,29 @@ void StartPokePvPDebugBattle(void)
     CreateMon(&gEnemyParty[0], SPECIES_RATTATA, 5, 0, FALSE, 0, OT_ID_PLAYER_ID, 0);
     GiveMoveToMon(&gEnemyParty[0], MOVE_TACKLE);
     gEnemyPartyCount = 1;
-    DebugPrintf("POKEPVP: synthesized enemy mon (species=%d RATTATA)", SPECIES_RATTATA);
+    // POKEPVP (ADR-109): a second hardcoded enemy party slot, so a
+    // fainted-mon-switch fixture (SEND_OUT to partyId 1 after the active
+    // battler's HP_BAR/FAINT) has a real second mon to switch into --
+    // same "self-contained, not dependent on save/team-builder state"
+    // rationale as ADR-067's own extension of this function. A real,
+    // previously-caught mistake in this same change: CreateMon's own
+    // `hasFixedPersonality=FALSE` (as the RATTATA call above already
+    // uses) calls Random32() for personality -- a second such call here
+    // would shift every later Random() draw in this same battle,
+    // including the intro transition's own randomized visuals, and did
+    // in fact break an unrelated existing golden frame
+    // (tests/golden/pokepvp-full-turn-auto-match-v1's diag-03300) the
+    // first time this was tried. Fixed personality (0) keeps this
+    // addition RNG-neutral for every test that never sends a switch
+    // record. gEnemyPartyCount deliberately stays 1 (matching every
+    // existing test's own HUD expectations) -- this slot is reachable
+    // directly by array index (record->payload[0] in
+    // battle_controller_pokepvp.c's SEND_OUT case), which never consults
+    // the count, so nothing needs it bumped.
+    ZeroMonData(&gEnemyParty[1]);
+    CreateMon(&gEnemyParty[1], SPECIES_PIDGEY, 5, 0, TRUE, 0, OT_ID_PLAYER_ID, 0);
+    GiveMoveToMon(&gEnemyParty[1], MOVE_GUST);
+    DebugPrintf("POKEPVP: synthesized enemy mons (species=%d RATTATA, %d PIDGEY)", SPECIES_RATTATA, SPECIES_PIDGEY);
 
     LockPlayerFieldControls();
     FreezeObjectEvents();
