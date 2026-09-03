@@ -88,4 +88,15 @@ u16 PokePvPTeamBuilder_LegalMoves(u16 species, u16 *dest, u16 capacity);
 // teams" path. An empty slot emits one record with memberCount 0.
 void PokePvPTeamBuilder_SendTeam(u8 slot);
 
+// POKEPVP (ADR-114): the load-back direction team_types.h's own doc
+// comment anticipated ("once the launcher can push saved teams back
+// down"). Not declared here -- unlike everything else in this header,
+// it takes team_types.h's PokePvPTeamMemberRecord, which this header
+// deliberately keeps out of its own include surface (see the top of this
+// file). battle_controller_pokepvp.c (HandlePresentationRecord, the
+// ROM's one real hostToRom reader) and team_builder.c already share
+// team_types.h directly, being symlinked into the same src/pokepvp/
+// directory, so PokePvPTeamBuilder_ReceiveMemberRecord's own prototype
+// lives there instead of in this header.
+
 #endif // GUARD_POKEPVP_TEAM_BUILDER_H
