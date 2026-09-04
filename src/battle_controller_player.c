@@ -1481,13 +1481,45 @@ static void CompleteOnFinishedBattleAnimation(void)
         PlayerBufferExecCompleted();
 }
 
+/* POKEPVP (ADR-129): defined in main_menu.c (ADR-121's own pre-battle
+ * AUTO-MATCH wait message) -- declared here rather than in a shared
+ * header since this is the only other file that needs it. */
+extern const u8 gText_PokePvPWaitingForOpponent[];
+
 static void PrintLinkStandbyMsg(void)
 {
+    /* POKEPVP (ADR-129): this native step already runs, unmodified, for a
+     * real match -- HandleTurnActionSelectionState's own STATE_WAIT_
+     * ACTION_CONFIRMED_STANDBY emits CONTROLLER_LINKSTANDBYMSG for any
+     * battler that has confirmed but is still waiting on another, for
+     * every battle type, not just link ones. But this function's own body
+     * was gated on BATTLE_TYPE_LINK, so for BATTLE_TYPE_POKEPVP (a real
+     * match is BATTLE_TYPE_TRAINER, ADR-124, never LINK) it did nothing at
+     * all -- the command still dispatched and completed instantly, but
+     * nothing was ever drawn, so the screen just kept showing whatever the
+     * move-select menu last drew. Confirmed live: a real windowed
+     * screenshot taken ~1.2 real seconds after a player's own move choice
+     * was reported and submitted still showed the stale TACKLE/GROWL move
+     * list, no acknowledgement at all that the choice had been received --
+     * exactly what an owner report of a real match "freezing" on a later
+     * turn would look like from a human's side, even on a turn the engine
+     * itself was never stuck on.
+     *
+     * "Link standby…" (gText_LinkStandby) is real link-cable wording that
+     * would be actively wrong here -- reuses gText_PokePvPWaitingForOpponent
+     * instead (main_menu.c, ADR-121's own pre-battle AUTO-MATCH wait
+     * message), the same real text already used to mean exactly this. */
     if (gBattleTypeFlags & BATTLE_TYPE_LINK)
     {
         gBattle_BG0_X = 0;
         gBattle_BG0_Y = 0;
         BattlePutTextOnWindow(gText_LinkStandby, B_WIN_MSG);
+    }
+    else if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+    {
+        gBattle_BG0_X = 0;
+        gBattle_BG0_Y = 0;
+        BattlePutTextOnWindow(gText_PokePvPWaitingForOpponent, B_WIN_MSG);
     }
 }
 

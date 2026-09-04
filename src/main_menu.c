@@ -201,7 +201,11 @@ static const u8 sText_PreparingTeamBuilder[] = _("Preparing team builder…");
 // POKEPVP (ADR-121): shown while Task_PokePvPWaitForRealOpponent gives a
 // real gateway-paired opponent a bounded chance to show up before falling
 // back to the debug battle.
-static const u8 sText_WaitingForOpponent[] = _("Waiting for opponent…");
+// POKEPVP (ADR-129): not static any more -- battle_controller_player.c
+// reuses this exact string for the in-battle wait too (see
+// PrintLinkStandbyMsg's own POKEPVP note), rather than duplicating the
+// same text as a second constant.
+const u8 gText_PokePvPWaitingForOpponent[] = _("Waiting for opponent…");
 // POKEPVP (ADR-124): the AUTO-MATCH wait's honest timeout message.
 static const u8 sText_NoOpponentFound[] = _("No opponent found.");
 static const u8 sText_EditTeam[] = _("EDIT TEAM");
@@ -1230,7 +1234,7 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
         // place to reset stale state from an *earlier, unrelated* pairing
         // is the instant a *new* one begins (POKEPVP_MSG_REAL_MATCH_PENDING's
         // own handler, battle_controller_pokepvp.c) -- not here.
-        PrintMessageOnWindow4(sText_WaitingForOpponent);
+        PrintMessageOnWindow4(gText_PokePvPWaitingForOpponent);
         gTasks[taskId].tWaitFrames = 0;
         gTasks[taskId].tMGErrorMsgState++;
         break;
