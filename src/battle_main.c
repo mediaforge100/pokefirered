@@ -1615,8 +1615,20 @@ static u8 CreateNPCTrainerParty(struct Pokemon *party, u16 trainerNum)
     if (trainerNum == TRAINER_SECRET_BASE)
         return 0;
 
+    /* POKEPVP (ADR-124): BATTLE_TYPE_POKEPVP added to this exclusion list
+     * for exactly the reason the three formats already in it are here --
+     * a PvP match's enemy party is not a scripted NPC party. It is built
+     * from a real, gateway-supplied opponent by StartPokePvPRealMatch
+     * (battle_setup.c) before this ever runs, and ZeroEnemyPartyMons()
+     * below would wipe it and replace it with gTrainers[]'s own party for
+     * whichever trainer id happened to be loaded. Only reachable at all
+     * since ADR-124 started setting BATTLE_TYPE_TRAINER for a real match
+     * (a PvP battle is a trainer battle); before that this branch was
+     * never entered for BATTLE_TYPE_POKEPVP, so this is a guard against a
+     * bug this same change would otherwise have introduced, not a
+     * pre-existing one. */
     if (gBattleTypeFlags & BATTLE_TYPE_TRAINER
-     && !(gBattleTypeFlags & (BATTLE_TYPE_BATTLE_TOWER | BATTLE_TYPE_EREADER_TRAINER | BATTLE_TYPE_TRAINER_TOWER)))
+     && !(gBattleTypeFlags & (BATTLE_TYPE_BATTLE_TOWER | BATTLE_TYPE_EREADER_TRAINER | BATTLE_TYPE_TRAINER_TOWER | BATTLE_TYPE_POKEPVP)))
     {
         ZeroEnemyPartyMons();
         for (i = 0; i < gTrainers[trainerNum].partySize; i++)
@@ -3778,9 +3790,18 @@ static void CheckFocusPunch_ClearVarsBeforeTurnStarts(void)
      * battle has actually consumed a real mailbox choice -- until then,
      * this runs exactly like plain FireRed. */
     if ((gBattleTypeFlags & BATTLE_TYPE_POKEPVP) && PokePvP_ShouldSkipLocalResolution())
+    {
+        /* POKEPVP (ADR-126): both battlers' choices are in, so the turn is
+         * now the mailbox's to narrate -- the one window in which a
+         * presentation record may safely overwrite gBattleBufferA. See
+         * sPokePvPTurnResolving (battle_controller_pokepvp.c). */
+        PokePvP_SetTurnResolving(TRUE);
         gBattleMainFunc = PokePvP_WaitForMailboxTurnResolution;
+    }
     else
+    {
         gBattleMainFunc = RunTurnActionsFunctions;
+    }
     gBattleCommunication[3] = 0;
     gBattleCommunication[4] = 0;
     gBattleScripting.multihitMoveEffect = 0;
@@ -3812,6 +3833,21 @@ static void RunTurnActionsFunctions(void)
 static void HandleEndTurn_BattleWon(void)
 {
     gCurrentActionFuncId = 0;
+    /* POKEPVP (ADR-126): checked before every other branch. ADR-124's
+     * BATTLE_TYPE_TRAINER made this function route PvP wins into
+     * BattleScript_LocalTrainerBattleWon -- an NPC defeat speech, a
+     * trainer slide-in and a prize-money payout, none of which a real
+     * human opponent has. See BattleScript_PokePvPBattleEnd's own comment
+     * (data/battle_scripts_1.s) for what the owner saw when it did. */
+    if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+    {
+        BattleStopLowHpSound();
+        gBattleTextBuff1[0] = gBattleOutcome;
+        gBattlerAttacker = GetBattlerAtPosition(B_POSITION_PLAYER_LEFT);
+        gBattlescriptCurrInstr = BattleScript_PokePvPBattleEnd;
+        gBattleMainFunc = HandleEndTurn_FinishBattle;
+        return;
+    }
     if (gBattleTypeFlags & BATTLE_TYPE_LINK)
     {
         gBattleTextBuff1[0] = gBattleOutcome;
@@ -3855,6 +3891,21 @@ static void HandleEndTurn_BattleWon(void)
 static void HandleEndTurn_BattleLost(void)
 {
     gCurrentActionFuncId = 0;
+    /* POKEPVP (ADR-126): the losing twin of HandleEndTurn_BattleWon's own
+     * branch above -- BattleScript_LocalBattleLost runs FireRed's white-out
+     * handling, which a PvP match has no Pokemon Center to white out to
+     * (the same reasoning ADR-094 already applied to this battle type's
+     * savedCallback). B_OUTCOME_DREW routes here too, and
+     * STRINGID_BATTLEEND has a real draw line for it. */
+    if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+    {
+        BattleStopLowHpSound();
+        gBattleTextBuff1[0] = gBattleOutcome;
+        gBattlerAttacker = GetBattlerAtPosition(B_POSITION_PLAYER_LEFT);
+        gBattlescriptCurrInstr = BattleScript_PokePvPBattleEnd;
+        gBattleMainFunc = HandleEndTurn_FinishBattle;
+        return;
+    }
     if (gBattleTypeFlags & BATTLE_TYPE_LINK)
     {
         gBattleTextBuff1[0] = gBattleOutcome;

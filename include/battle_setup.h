@@ -38,6 +38,16 @@ u8 PokePvP_GetRealOpponentLevel(void);
 // timing change from before ADR-121) whenever no real pairing exists at
 // all, instead of waiting unconditionally on every press just to find
 // that out.
+// POKEPVP (ADR-124): true when this launcher was started against a real
+// gateway at all -- the signal AUTO-MATCH needs to tell "wait for a real
+// opponent, and say so if none comes" apart from "there is no gateway, run
+// the offline AI debug battle." See POKEPVP_MSG_ONLINE_MODE's doc comment
+// (presentation_types.h) for the owner-reported bug this closes.
+// POKEPVP (ADR-125): how many gEnemyParty slots hold a real, disclosed
+// opponent Pokemon rather than an unrevealed placeholder. Set by
+// StartPokePvPRealMatch; read by the mid-match switch resolver.
+void PokePvP_SetOpponentRevealedCount(u8 count);
+bool8 PokePvP_IsOnlineMode(void);
 bool8 PokePvP_IsRealMatchPending(void);
 void PokePvP_ClearRealMatchPending(void);
 // POKEPVP (ADR-122): set TRUE by StartPokePvPRealMatch, FALSE by
@@ -49,6 +59,18 @@ void PokePvP_ClearRealMatchPending(void);
 // through to FireRed's native AI -- fixes a real bug found live where the
 // opponent visibly played like the AI, not the actual remote human.
 void PokePvP_SetRealMatchActive(bool8 active);
+// POKEPVP (ADR-124): the trainer identity a real match's opponent is drawn
+// and named with -- defined in battle_controller_pokepvp.c (that's where
+// POKEPVP_MSG_REAL_OPPONENT_NAME is decoded), declared here so the two
+// vendored FireRed read sites (battle_controller_opponent.c's trainer-pic
+// handlers, battle_message.c's B_TXT_TRAINER1_CLASS/NAME cases) can ask
+// for it instead of indexing gTrainers[gTrainerBattleOpponent_A], which for
+// a PvP match is pinned to TRAINER_NONE on purpose. See those functions'
+// own doc comment for why a real human opponent must not borrow a scripted
+// NPC's name, sprite, or save flags.
+u8 PokePvP_GetOpponentTrainerPicId(void);
+u8 PokePvP_GetOpponentTrainerClass(void);
+const u8 *PokePvP_GetOpponentTrainerName(void);
 void StartOldManTutorialBattle(void);
 void StartScriptedWildBattle(void);
 void StartMarowakBattle(void);

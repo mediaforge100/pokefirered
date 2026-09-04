@@ -2981,6 +2981,26 @@ BattleScript_BattleTowerLostLostSkipMonRecall::
 BattleScript_BattleTowerLostLostSkipDouble::
 	end2
 
+@ POKEPVP (ADR-126): the end of a server-authoritative PvP battle.
+@ Deliberately NOT BattleScript_LocalTrainerBattleWon, which ADR-124's
+@ BATTLE_TYPE_TRAINER change had been routing PvP wins into: that script
+@ does trainerslidein (the opponent's trainer sprite is long gone by then),
+@ printstring STRINGID_TRAINER1LOSETEXT (a scripted NPC's defeat speech,
+@ which a real human opponent has none of, and which BattleStringShouldBeColored
+@ renders through a special palette) and getmoneyreward (prize money, which
+@ is not a PvP concept and reads gTrainers[TRAINER_NONE]). Owner-reported
+@ live: right after being declared the winner the game stayed in the battle
+@ scene with the colours flickering black.
+@
+@ STRINGID_BATTLEEND is the Union Room result line -- "Player defeated
+@ {B_TRAINER1_CLASS} {B_TRAINER1_NAME}!" -- chosen off gBattleTextBuff1[0],
+@ which battle_main.c sets to gBattleOutcome. Same shape as the link
+@ ending, minus endlinkbattle (there is no link hardware here).
+BattleScript_PokePvPBattleEnd::
+	printstring STRINGID_BATTLEEND
+	waitmessage B_WAIT_TIME_LONG
+	end2
+
 BattleScript_LinkBattleWonOrLost::
 	printstring STRINGID_BATTLEEND
 	waitmessage B_WAIT_TIME_LONG

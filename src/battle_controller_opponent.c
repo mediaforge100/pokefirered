@@ -15,6 +15,7 @@
 #include "battle_gfx_sfx_util.h"
 #include "battle_ai_script_commands.h"
 #include "battle_ai_switch_items.h"
+#include "battle_setup.h" // POKEPVP (ADR-124): PokePvP_GetOpponentTrainerPicId
 #include "trainer_tower.h"
 #include "constants/battle_anim.h"
 #include "constants/moves.h"
@@ -422,7 +423,40 @@ static void CompleteOnFinishedBattleAnimation(void)
 
 void OpponentBufferExecCompleted(void)
 {
-    gBattlerControllerFuncs[gActiveBattler] = OpponentBufferRunCommand;
+    /* POKEPVP (ADR-126): re-install the PokePvP wrapper, not the raw
+     * OpponentBufferRunCommand, for a server-authoritative battle.
+     *
+     * This one line is why every real match so far was played against
+     * FireRed's own AI. rom/pvp-gen3/battle_controller_pokepvp.c installs
+     * PokePvPOpponentBufferRunCommand for battler 1 (ADR-071), which is
+     * what makes that battler wait for the real opponent's server-relayed
+     * choice instead of asking BattleAI. But the wrapper delegates every
+     * command it does not intercept to the real OpponentBufferRunCommand,
+     * and the *first* such command in any battle -- GETMONDATA during the
+     * intro, long before turn 1 -- ends here, which reinstalled the raw
+     * function and permanently uninstalled the wrapper. From that point
+     * every CONTROLLER_CHOOSEACTION/CHOOSEMOVE went straight to the AI and
+     * no mailbox choice could ever be answered, so sPokePvPMailboxDriven
+     * never flipped either and FireRed's local resolution loop ran the
+     * whole battle. ADR-122's guard was real and correct and had simply
+     * never executed.
+     *
+     * Proven, not deduced: two paired launchers where only one is given
+     * any input at all -- the idle side submits nothing, so zero opponent
+     * choices ever arrive -- and the active side still played four
+     * complete turns. Battler 1 was being answered by something local.
+     *
+     * battle_controller_player.c's PlayerBufferExecCompleted is
+     * deliberately NOT changed to match. Battler 0's wrapper being
+     * replaced is by design (battle_controller_pokepvp.c's
+     * sPlayerChoiceWatch comment spells this out): the human keeps playing
+     * through FireRed's own menu code, and PokePvP_PollPlayerChoice --
+     * anchored on the exec-flag bit rather than on any function pointer --
+     * is what reports their real choice. */
+    if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+        SetControllerToPokePvPOpponent();
+    else
+        gBattlerControllerFuncs[gActiveBattler] = OpponentBufferRunCommand;
     gBattleControllerExecFlags &= ~gBitTable[gActiveBattler];
 }
 
@@ -1122,7 +1156,14 @@ static void OpponentHandleDrawTrainerPic(void)
 {
     u32 trainerPicId;
 
-    if (gTrainerBattleOpponent_A == TRAINER_SECRET_BASE)
+    /* POKEPVP (ADR-124): a real match is a trainer battle now, so this
+     * handler runs for the first time -- and the opponent is a real human,
+     * not gTrainers[gTrainerBattleOpponent_A] (pinned to TRAINER_NONE by
+     * StartPokePvPRealMatch, whose trainerPic is 0 = Archie). Checked
+     * first, same shape as every other format-specific override below it. */
+    if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+        trainerPicId = PokePvP_GetOpponentTrainerPicId();
+    else if (gTrainerBattleOpponent_A == TRAINER_SECRET_BASE)
         trainerPicId = GetSecretBaseTrainerPicIndex();
     else if (gBattleTypeFlags & BATTLE_TYPE_BATTLE_TOWER)
         trainerPicId = GetBattleTowerTrainerFrontSpriteId();
@@ -1152,7 +1193,14 @@ static void OpponentHandleTrainerSlide(void)
 {
     u32 trainerPicId;
 
-    if (gTrainerBattleOpponent_A == TRAINER_SECRET_BASE)
+    /* POKEPVP (ADR-124): a real match is a trainer battle now, so this
+     * handler runs for the first time -- and the opponent is a real human,
+     * not gTrainers[gTrainerBattleOpponent_A] (pinned to TRAINER_NONE by
+     * StartPokePvPRealMatch, whose trainerPic is 0 = Archie). Checked
+     * first, same shape as every other format-specific override below it. */
+    if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+        trainerPicId = PokePvP_GetOpponentTrainerPicId();
+    else if (gTrainerBattleOpponent_A == TRAINER_SECRET_BASE)
         trainerPicId = GetSecretBaseTrainerPicIndex();
     else if (gBattleTypeFlags & BATTLE_TYPE_BATTLE_TOWER)
         trainerPicId = GetBattleTowerTrainerFrontSpriteId();

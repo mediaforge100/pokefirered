@@ -87,6 +87,11 @@ u16 PokePvPTeamBuilder_LegalMoves(u16 species, u16 *dest, u16 capacity);
 // from the box screen; exposed for tests and for a future "re-sync all
 // teams" path. An empty slot emits one record with memberCount 0.
 void PokePvPTeamBuilder_SendTeam(u8 slot);
+// POKEPVP (ADR-125): tells the host the player has chosen this team and
+// pressed AUTO-MATCH, so it can join blind pairing *now* rather than at
+// process start with a team the player never picked. Call it right after
+// PokePvPTeamBuilder_SendTeam(slot) so the host has the team in hand.
+void PokePvPTeamBuilder_RequestMatch(u8 slot);
 
 // POKEPVP (ADR-114): the load-back direction team_types.h's own doc
 // comment anticipated ("once the launcher can push saved teams back

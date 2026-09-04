@@ -72,6 +72,7 @@ static void CB2_EndWildBattle(void);
 static void CB2_EndPokePvPBattle(void); // POKEPVP (ADR-094)
 static u8 GetWildBattleTransition(void);
 static u8 GetTrainerBattleTransition(void);
+static u8 GetPokePvPBattleTransition(void); // POKEPVP (ADR-124)
 static void CB2_EndScriptedWildBattle(void);
 static void CB2_EndMarowakBattle(void);
 static bool32 IsPlayerDefeated(u32 battleOutcome);
@@ -324,6 +325,14 @@ void StartPokePvPDebugBattle(void)
     CreateMon(&gEnemyParty[1], SPECIES_PIDGEY, 5, 0, TRUE, 0, OT_ID_PLAYER_ID, 0);
     GiveMoveToMon(&gEnemyParty[1], MOVE_GUST);
     DebugPrintf("POKEPVP: synthesized enemy mons (species=%d RATTATA, %d PIDGEY)", SPECIES_RATTATA, SPECIES_PIDGEY);
+    // POKEPVP (ADR-125): both of this debug battle's enemy mons are real,
+    // known, locally-synthesized Pokemon -- unlike a real match, nothing
+    // here is an unrevealed placeholder. Saying so keeps
+    // PokePvP_ResolveOrCreateOpponentPartySlot's species search covering
+    // both slots, which is what lets a fixture's mid-battle switch to
+    // PIDGEY resolve to the slot PIDGEY is actually in (partyId 1) instead
+    // of revealing it over the active RATTATA in slot 0.
+    PokePvP_SetOpponentRevealedCount(2);
 
     LockPlayerFieldControls();
     FreezeObjectEvents();
@@ -486,6 +495,36 @@ void StartPokePvPRealMatch(void)
         for (i = 0; i < PARTY_SIZE; i++)
             ZeroMonData(&gEnemyParty[i]);
     }
+    // POKEPVP (ADR-125): the five slots after the lead are filled with
+    // unrevealed *placeholders*, not left as SPECIES_NONE.
+    //
+    // Owner-reported live: a real opponent showed up "with 1 pokemon".
+    // That is what FireRed draws when five of six gEnemyParty slots are
+    // empty -- BattleIntroDrawPartySummaryScreens maps SPECIES_NONE to
+    // HP_EMPTY_SLOT, so the party-status summary showed a single ball for
+    // a full six-Pokemon team. Every real trainer battle shows the
+    // opponent's team size up front, and so does every real PvP battle;
+    // hiding it is not a privacy property this format has, it was an
+    // accident of how the unknown-species problem was represented.
+    //
+    // The species genuinely is unknown -- no render event ever discloses
+    // an opponent's team (POKEPVP_MSG_REAL_OPPONENT_MON's doc comment) --
+    // so these carry the lead's species purely as a placeholder and are
+    // never shown: a Pokemon only ever appears on screen through a real
+    // SEND_OUT/switch, which overwrites the slot with the real species
+    // first (PokePvP_ResolveOrCreateOpponentPartySlot). What the player
+    // sees of a placeholder is exactly what a real trainer battle shows of
+    // an un-sent-out Pokemon: one undamaged ball.
+    //
+    // PokePvP_SetOpponentRevealedCount(1) is what keeps that honest -- the
+    // switch resolver reveals into slot 1, 2, 3... in order rather than
+    // hunting for a SPECIES_NONE that no longer exists.
+    {
+        s32 i;
+        for (i = 1; i < PARTY_SIZE; i++)
+            CreateMon(&gEnemyParty[i], species, level, 0, TRUE, 0, OT_ID_PLAYER_ID, 0);
+    }
+    PokePvP_SetOpponentRevealedCount(1);
     // ADR-121: fixed personality (0), same RNG-neutrality reasoning
     // ADR-109's own Pidgey addition already established -- a
     // random-personality CreateMon call here would shift this battle's
@@ -505,9 +544,51 @@ void StartPokePvPRealMatch(void)
     FreezeObjectEvents();
     StopPlayerAvatar();
     gMain.savedCallback = CB2_EndPokePvPBattle;
-    gBattleTypeFlags = BATTLE_TYPE_POKEPVP;
+    // POKEPVP (ADR-124): a real match is a battle against another *trainer*,
+    // and BATTLE_TYPE_TRAINER is the single flag every one of FireRed's own
+    // presentation decisions branches on to say so. Without it (every
+    // version of this function before ADR-124) a real gateway-paired match
+    // rendered as a *wild encounter* -- no opponent trainer sprite, no
+    // trainer slide-in, no ball throw, no party-status balls, "Wild
+    // BULBASAUR appeared!" instead of "... sent out BULBASAUR!", and "Wild
+    // BULBASAUR" rather than "Foe BULBASAUR" in every message for the rest
+    // of the battle. Owner-reported live, 2026-09-03 ("isn't even shown as a
+    // trainer -- it's a wild Pokemon encounter"), and confirmed by reading
+    // this line, not assumed: the debug log line just below printed
+    // gBattleTypeFlags=0x100000 (BATTLE_TYPE_POKEPVP alone) on a verified
+    // real-match run.
+    //
+    // Four real consequences of setting it, each checked in the vendored
+    // code rather than hoped for:
+    //  1. CB2_InitBattleInternal (battle_main.c) calls CreateNPCTrainerParty
+    //     for every non-link battle, and its BATTLE_TYPE_TRAINER branch
+    //     starts with ZeroEnemyPartyMons() -- it would have wiped the real
+    //     opponent this function just built and rebuilt gEnemyParty from
+    //     gTrainers[gTrainerBattleOpponent_A]'s scripted NPC party. Excluded
+    //     there the same way BATTLE_TYPE_BATTLE_TOWER/EREADER/TRAINER_TOWER
+    //     already are, for the same reason: those formats supply their own
+    //     enemy party too.
+    //  2. gTrainerBattleOpponent_A is pinned to TRAINER_NONE. gTrainers[0]
+    //     is a real, valid, all-zero entry, so the handful of places that
+    //     index it unconditionally in a trainer battle (battle_bg.c's
+    //     LEADER/CHAMPION terrain override, HandleEndTurn_BattleWon's
+    //     victory-BGM switch, vs_seeker.c's ClearRematchStateByTrainerId
+    //     lookup) all read a harmless default instead of impersonating a
+    //     real NPC or touching that NPC's save flags. The three places whose
+    //     answer would actually be *visible* (opponent trainer pic, trainer
+    //     class, trainer name) are given real PokePvP answers at their own
+    //     sites -- see PokePvP_GetOpponentTrainerPicId/Name
+    //     (battle_controller_pokepvp.c).
+    //  3. SetWildMonHeldItem (pokemon.c) becomes a no-op, which is both
+    //     correct for D8 (no held items at launch) and one fewer Random()
+    //     call in this path.
+    //  4. The transition animation comes from FireRed's own *trainer*
+    //     transition table now, not its wild one -- see
+    //     GetPokePvPBattleTransition below.
+    gTrainerBattleOpponent_A = TRAINER_NONE;
+    gBattleTypeFlags = BATTLE_TYPE_POKEPVP | BATTLE_TYPE_TRAINER;
     DebugPrintf("POKEPVP: calling CreateBattleStartTask, gBattleTypeFlags=0x%x", gBattleTypeFlags);
-    CreateBattleStartTask(GetWildBattleTransition(), 0);
+    CreateBattleStartTask(GetPokePvPBattleTransition(), 0);
 }
 
 // POKEPVP (ADR-091, D7 refinement: START MATCH -> AUTO-MATCH/INVITE MATCH):
@@ -931,6 +1012,32 @@ static u8 GetWildBattleTransition(void)
         return sBattleTransitionTable_Wild[transitionType][0];
     else
         return sBattleTransitionTable_Wild[transitionType][1];
+}
+
+// POKEPVP (ADR-124): GetWildBattleTransition's body, verbatim, off the
+// *trainer* transition table instead of the wild one -- so a real match's
+// battle-intro animation is one of the ones FireRed uses when a trainer
+// challenges you, matching the trainer presentation the rest of ADR-124
+// turns on.
+//
+// Deliberately not GetTrainerBattleTransition() itself: that function
+// derives its enemy level from GetSumOfEnemyPartyLevel(gTrainerBattleOpponent_A,
+// ...), i.e. from the *scripted NPC party table*, which a PvP opponent has
+// no entry in (StartPokePvPRealMatch pins gTrainerBattleOpponent_A to
+// TRAINER_NONE, whose partySize is 0 and whose party pointer is NULL). The
+// real opponent's real level is already sitting in gEnemyParty[0], exactly
+// where GetWildBattleTransition reads it from, so this reuses that read and
+// only swaps the table.
+static u8 GetPokePvPBattleTransition(void)
+{
+    u8 transitionType = GetBattleTransitionTypeByMap();
+    u8 enemyLevel = GetMonData(&gEnemyParty[0], MON_DATA_LEVEL);
+    u8 playerLevel = GetSumOfPlayerPartyLevel(1);
+
+    if (enemyLevel < playerLevel)
+        return sBattleTransitionTable_Trainer[transitionType][0];
+    else
+        return sBattleTransitionTable_Trainer[transitionType][1];
 }
 
 static u8 GetTrainerBattleTransition(void)

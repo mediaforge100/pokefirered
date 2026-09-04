@@ -115,6 +115,9 @@ void PokePvP_SetBattleOutcomeAndEndTurn(u8 outcome);
  * BATTLE_TYPE_POKEPVP, so a real button press in the FIGHT menu doesn't
  * hang forever waiting on a mailbox nothing is driving yet. */
 bool8 PokePvP_ShouldSkipLocalResolution(void);
+// POKEPVP (ADR-126): opens the window in which the mailbox may process
+// presentation records -- see sPokePvPTurnResolving (battle_controller_pokepvp.c).
+void PokePvP_SetTurnResolving(bool8 resolving);
 /* ADR-108: the counterpart to PokePvP_SetBattleOutcomeAndEndTurn for the
  * "this turn ended, the battle didn't" case -- called from
  * battle_controller_pokepvp.c's POKEPVP_MSG_TURN_CONTINUE handler.

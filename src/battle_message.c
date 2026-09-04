@@ -1728,7 +1728,14 @@ void BufferStringBattle(u16 stringId)
                     break;
                 }
             }
-            else if (gTrainerBattleOpponent_A == TRAINER_UNION_ROOM)
+            // POKEPVP (ADR-126): a PvP result reads exactly like a Union
+            // Room one -- "Player defeated COOLTRAINER MISTY!" -- because
+            // that is what it is: a result against another real trainer
+            // with a real name, not a scripted NPC with a defeat speech.
+            // The name itself comes from this same file's own
+            // B_TRAINER1_CLASS/B_TRAINER1_NAME PokePvP branches (ADR-124).
+            else if (gTrainerBattleOpponent_A == TRAINER_UNION_ROOM
+                  || (gBattleTypeFlags & BATTLE_TYPE_POKEPVP))
             {
                 switch (gBattleTextBuff1[0])
                 {
@@ -2034,7 +2041,14 @@ u32 BattleStringExpandPlaceholders(const u8 *src, u8 *dst)
                 toCpy = gAbilityNames[sBattlerAbilities[gEffectBattler]];
                 break;
             case B_TXT_TRAINER1_CLASS: // trainer class name
-                if (gTrainerBattleOpponent_A == TRAINER_SECRET_BASE)
+                // POKEPVP (ADR-124): a real match's opponent is a real
+                // human, not gTrainers[gTrainerBattleOpponent_A] (pinned
+                // to TRAINER_NONE by StartPokePvPRealMatch). Checked
+                // first, same shape as the format-specific overrides
+                // below it.
+                if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+                    toCpy = gTrainerClassNames[PokePvP_GetOpponentTrainerClass()];
+                else if (gTrainerBattleOpponent_A == TRAINER_SECRET_BASE)
                     toCpy = gTrainerClassNames[GetSecretBaseTrainerNameIndex()];
                 else if (gTrainerBattleOpponent_A == TRAINER_UNION_ROOM)
                     toCpy = gTrainerClassNames[GetUnionRoomTrainerClass()];
@@ -2055,7 +2069,19 @@ u32 BattleStringExpandPlaceholders(const u8 *src, u8 *dst)
                     text[i] = EOS;
                     toCpy = text;
                 }
-                if (gTrainerBattleOpponent_A == TRAINER_UNION_ROOM)
+                // POKEPVP (ADR-124): the real opponent's own player name,
+                // delivered at pairing time over the mailbox
+                // (POKEPVP_MSG_REAL_OPPONENT_NAME). It leads *this* chain,
+                // not the SECRET_BASE `if` above it: that one is a plain
+                // `if` in vanilla, so a branch added there is silently
+                // overwritten by this chain's own trailing `else`, which
+                // would fall back to gTrainers[TRAINER_NONE].trainerName --
+                // an empty string -- for every PvP match.
+                if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+                {
+                    toCpy = PokePvP_GetOpponentTrainerName();
+                }
+                else if (gTrainerBattleOpponent_A == TRAINER_UNION_ROOM)
                 {
                     toCpy = gLinkPlayers[multiplayerId ^ BIT_SIDE].name;
                 }

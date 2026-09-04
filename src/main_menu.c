@@ -101,6 +101,7 @@ static void Task_HandleMenuInput(u8 taskId);
 static void Task_ExecuteMainMenuSelection(u8 taskId);
 static void Task_MysteryGiftError(u8 taskId);
 static void Task_PokePvPMenuStub(u8 taskId);
+static void Task_PokePvPNoOpponentFound(u8 taskId); // POKEPVP (ADR-124)
 static void DrawPokePvPMenuItems(void);
 // POKEPVP (ADR-091): START MATCH -> AUTO-MATCH/INVITE MATCH submenu.
 static void DrawStartMatchSubmenuItems(void);
@@ -201,6 +202,8 @@ static const u8 sText_PreparingTeamBuilder[] = _("Preparing team builder…");
 // real gateway-paired opponent a bounded chance to show up before falling
 // back to the debug battle.
 static const u8 sText_WaitingForOpponent[] = _("Waiting for opponent…");
+// POKEPVP (ADR-124): the AUTO-MATCH wait's honest timeout message.
+static const u8 sText_NoOpponentFound[] = _("No opponent found.");
 static const u8 sText_EditTeam[] = _("EDIT TEAM");
 static const u8 sText_EditMoves[] = _("EDIT MOVES");
 static const u8 sText_Back[] = _("BACK");
@@ -1188,7 +1191,15 @@ static void DrawTeamSelectorItems(void)
 // visible wait rather than an indefinite hang -- this project's own
 // standing rule against leaving a player stuck in a silent wait with no
 // way out.
-#define POKEPVP_AUTO_MATCH_WAIT_FRAMES 300
+// POKEPVP (ADR-124): 300 frames (5s) was the right bound when this wait
+// was only ever entered *after* a pairing had already succeeded and only
+// the opponent's own mon was still in flight. It is the wrong bound now
+// that an online launcher enters this wait to wait for the pairing itself
+// -- i.e. for a human friend to press AUTO-MATCH on their own machine.
+// 1800 frames is 30 real seconds, and the timeout is no longer a silent
+// fallback into a fake battle (see this task's own timeout branch), so a
+// bound that is generous rather than tight costs nothing.
+#define POKEPVP_AUTO_MATCH_WAIT_FRAMES 1800
 
 // POKEPVP (ADR-121): shown between AUTO-MATCH's team pick and the actual
 // battle start, giving a real gateway-paired opponent a bounded chance to
@@ -1233,12 +1244,9 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
         bool8 ready = PokePvP_IsRealOpponentReady();
 
         gTasks[taskId].tWaitFrames++;
-        if (ready || gTasks[taskId].tWaitFrames >= POKEPVP_AUTO_MATCH_WAIT_FRAMES)
+        if (ready)
         {
-            if (ready)
-                DebugPrintf("POKEPVP: AUTO-MATCH real opponent ready after %d frames", gTasks[taskId].tWaitFrames);
-            else
-                DebugPrintf("POKEPVP: AUTO-MATCH timed out waiting for a real opponent, falling back to debug battle");
+            DebugPrintf("POKEPVP: AUTO-MATCH real opponent ready after %d frames", gTasks[taskId].tWaitFrames);
             PokePvP_ClearRealMatchPending();
             ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
             MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
@@ -1246,8 +1254,65 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
             DestroyTask(taskId);
             StartPokePvPAutoMatch();
         }
+        else if (gTasks[taskId].tWaitFrames >= POKEPVP_AUTO_MATCH_WAIT_FRAMES)
+        {
+            // POKEPVP (ADR-124): this used to fall through to
+            // StartPokePvPAutoMatch() as well, which -- with no real
+            // opponent ready -- means overworld.c's own branch starts
+            // StartPokePvPDebugBattle(): a local battle against FireRed's
+            // native AI, presented identically to a real match. That is
+            // exactly what the owner played on 2026-09-03 and reported as
+            // "the opponent still behaves like AI." An online launcher now
+            // says so instead. See POKEPVP_MSG_ONLINE_MODE's doc comment
+            // (presentation_types.h) for why this task is only ever
+            // reached in online mode at all, so this branch never affects
+            // the offline debug path every golden-frame suite uses.
+            DebugPrintf("POKEPVP: AUTO-MATCH found no real opponent in %d frames", gTasks[taskId].tWaitFrames);
+            PokePvP_ClearRealMatchPending();
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_PokePvPNoOpponentFound;
+        }
         break;
     }
+    }
+}
+
+// POKEPVP (ADR-124): the honest end of an AUTO-MATCH that never found
+// anyone. Deliberately Task_PokePvPInviteMatchStub's exact shape and
+// return target -- a message on the same already-open window, dismissed
+// with A or B, back into the START MATCH submenu the player selected
+// AUTO-MATCH from -- rather than a new screen: this is the same "tell the
+// player and put them back where they were" case that task already solves,
+// and reusing it keeps one dismissal/fade path instead of two.
+static void Task_PokePvPNoOpponentFound(u8 taskId)
+{
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        PrintMessageOnWindow4(sText_NoOpponentFound);
+        gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        if (!gPaletteFade.active)
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 2:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 3:
+        if (JOY_NEW(A_BUTTON | B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+            DrawStartMatchSubmenuItems();
+            BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+        }
+        break;
     }
 }
 
@@ -1265,6 +1330,16 @@ static void Task_PokePvPTeamSelector(u8 taskId)
 
         PlaySE(SE_SELECT);
         PokePvPTeamBuilder_LoadTeamForBattle(gTasks[taskId].tSubCursorPos);
+        // POKEPVP (ADR-125): matchmaking starts *here*, when the player
+        // picks a team and presses AUTO-MATCH -- not when the launcher
+        // process started. The team's own member records go up first, then
+        // the request that tells the host to join pairing with them; the
+        // ring is FIFO, so the host always has the team before it reads the
+        // request. Sent unconditionally (even with no gateway configured):
+        // with no gateway the host simply has nothing to join, and the
+        // offline debug path below is unchanged.
+        PokePvPTeamBuilder_SendTeam(gTasks[taskId].tSubCursorPos);
+        PokePvPTeamBuilder_RequestMatch(gTasks[taskId].tSubCursorPos);
         gExitStairsMovementDisabled = FALSE;
         // POKEPVP (ADR-121): a real gateway pairing is worth a bounded
         // wait for the opponent's mon; no gateway (or no pairing yet) is
@@ -1274,7 +1349,15 @@ static void Task_PokePvPTeamSelector(u8 taskId)
         // ADR-091) with no timing change at all. Only a real
         // POKEPVP_MSG_REAL_MATCH_PENDING record (sent the instant a real
         // matchStart arrives, main.rs) ever makes this true.
-        if (PokePvP_IsRealMatchPending())
+        // POKEPVP (ADR-124): PokePvP_IsOnlineMode() added alongside the
+        // original pairing check. Waiting only when a pairing *already*
+        // exists is what let AUTO-MATCH start a local AI battle whenever
+        // the other player hadn't pressed their own AUTO-MATCH yet -- the
+        // common case for two humans, and the one the owner hit. A
+        // launcher with no gateway at all still takes the unchanged
+        // zero-delay path below, so every offline golden-frame suite's
+        // timing is untouched.
+        if (PokePvP_IsOnlineMode() || PokePvP_IsRealMatchPending())
         {
             // Window buffers are deliberately NOT freed here (unlike the
             // branch below) -- the wait task reuses this same screen's
