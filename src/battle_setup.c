@@ -446,6 +446,17 @@ void StartPokePvPMenuMatch(void)
 // for moves -- each remaining slot is revealed only as a real switch
 // actually happens (PokePvP_ResolveOrCreateOpponentPartySlot,
 // battle_controller_pokepvp.c), not disclosed all at once here.
+
+/* POKEPVP (ADR-147): same fixed, non-shiny-guaranteeing OT ID and
+ * reasoning as presentation_types.h's own POKEPVP_OPPONENT_OT_ID
+ * (rom/pvp-gen3/battle_controller_pokepvp.c's own copy of this constant)
+ * -- defined again here rather than shared, because this file's own
+ * include path (rom/pokefirered/Makefile's INCLUDE_DIRS, just `include`)
+ * cannot reach rom/pvp-gen3's own headers the way files that physically
+ * live under src/pokepvp/ (a symlink farm into rom/pvp-gen3/) can. Keep
+ * both definitions' values identical if this ever needs to change. */
+#define POKEPVP_OPPONENT_OT_ID 0x00001234
+
 void StartPokePvPRealMatch(void)
 {
     u16 species = PokePvP_GetRealOpponentSpecies();
@@ -522,7 +533,7 @@ void StartPokePvPRealMatch(void)
     {
         s32 i;
         for (i = 1; i < PARTY_SIZE; i++)
-            CreateMon(&gEnemyParty[i], species, level, 0, TRUE, 0, OT_ID_PLAYER_ID, 0);
+            CreateMon(&gEnemyParty[i], species, level, 0, TRUE, 0, OT_ID_PRESET, POKEPVP_OPPONENT_OT_ID);
     }
     PokePvP_SetOpponentRevealedCount(1);
     // ADR-121: fixed personality (0), same RNG-neutrality reasoning
@@ -532,7 +543,31 @@ void StartPokePvPRealMatch(void)
     // a real opponent happens to submit, which would make this project's
     // own golden-frame suites non-deterministic in a way no fixed fixture
     // could ever pin down.
-    CreateMon(&gEnemyParty[0], species, level, 0, TRUE, 0, OT_ID_PLAYER_ID, 0);
+    //
+    // POKEPVP (ADR-147, owner-reported live: "enemy pokemon sprite appear
+    // golden"): OT_ID_PLAYER_ID used to be passed here, giving every
+    // opponent mon this ROM ever creates the *local player's own* real
+    // trainer ID (CreateBoxMon's own "Player is the OT" branch,
+    // pokemon.c) alongside this fixed personality of 0. Gen 3's shiny
+    // check (GET_SHINY_VALUE, pokemon.h) is `HIHALF(otId) ^ LOHALF(otId)
+    // ^ HIHALF(personality) ^ LOHALF(personality) < 8`; with personality
+    // fixed at 0 this reduces to a value that depends only on the local
+    // player's own save-file trainer ID, so it's the same result for
+    // *every* opponent mon this player's client ever renders -- shiny or
+    // not by luck of that one player's own ID, not per-mon randomness.
+    // Reproduced from the report: a save whose own TID^SID happens to
+    // land under 8 renders every single enemy sprite shiny (many of
+    // which read as gold-tinted). OT_ID_PRESET with a fixed
+    // POKEPVP_OPPONENT_OT_ID whose own halves are known not to satisfy
+    // that check keeps the exact same RNG-neutrality this comment already
+    // established (no Random32() draw either way, unlike
+    // OT_ID_RANDOM_NO_SHINY, which vanilla's own real trainer-battle
+    // opponent creation uses, battle_main.c, but which would consume this
+    // battle's own RNG stream non-deterministically) while guaranteeing
+    // every real opponent's mon renders with its normal palette, matching
+    // what a real Pokemon trainer battle's own opponent always looks
+    // like.
+    CreateMon(&gEnemyParty[0], species, level, 0, TRUE, 0, OT_ID_PRESET, POKEPVP_OPPONENT_OT_ID);
     gEnemyPartyCount = PARTY_SIZE;
     DebugPrintf("POKEPVP: real opponent mon created (species=%d level=%d)", species, level);
 
