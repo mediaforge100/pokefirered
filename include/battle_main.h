@@ -124,6 +124,22 @@ void PokePvP_SetTurnResolving(bool8 resolving);
  * for a battler while this is true -- see PokePvP_ShouldBlockNativeBufferWrite's
  * own doc comment (battle_controller_pokepvp.c) for why. */
 bool8 PokePvP_ShouldBlockNativeBufferWrite(void);
+/* POKEPVP (ADR-146): completes an abandoned CONTROLLER_CHOOSEACTION/
+ * CHOOSEMOVE for `battler` the same way HandleTurnActionSelectionState's
+ * own STATE_BEFORE_ACTION_CHOSEN case answers an already-absent battler
+ * (battle_main.c, `gChosenActionByBattler[gActiveBattler] =
+ * B_ACTION_NOTHING_FAINTED` then straight to STATE_WAIT_ACTION_CONFIRMED)
+ * -- reactively instead of proactively, for the one real case that
+ * shortcut can't itself catch: a battler whose mon faints *during* the
+ * same turn its own action was already dispatched for, before that
+ * action would ever have resolved (a faster attacker's move getting
+ * there first). See battle_controller_pokepvp.c's own caller (the
+ * mailbox pump's read-gate) for the full trace of the deadlock this
+ * closes and why `STATE_WAIT_ACTION_CONFIRMED`/`B_ACTION_NOTHING_FAINTED`
+ * cannot be named directly from that file (both are private to this
+ * one). Never call this for a battler whose own request could still
+ * legitimately be answered -- see the caller's own precondition. */
+void PokePvP_UnstickAbandonedActionSelection(u8 battler);
 /* ADR-108: the counterpart to PokePvP_SetBattleOutcomeAndEndTurn for the
  * "this turn ended, the battle didn't" case -- called from
  * battle_controller_pokepvp.c's POKEPVP_MSG_TURN_CONTINUE handler.

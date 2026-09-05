@@ -3486,6 +3486,31 @@ static void HandleTurnActionSelectionState(void)
         gBattleMainFunc = SetActionsAndBattlersTurnOrder;
 }
 
+/* POKEPVP (ADR-146): see battle_main.h's own doc comment on this function
+ * for the deadlock it closes. Mirrors STATE_BEFORE_ACTION_CHOSEN's own
+ * already-absent-battler shortcut above (gChosenActionByBattler ->
+ * B_ACTION_NOTHING_FAINTED, straight to STATE_WAIT_ACTION_CONFIRMED) --
+ * the only difference is *when*: that shortcut only ever runs before a
+ * battler's own CONTROLLER_CHOOSEACTION is dispatched at all, so it can
+ * simply skip the dispatch; this runs after one is already outstanding,
+ * so it also has to clear the controller's own exec flag directly to
+ * retract it -- nothing else ever will, since PrepareBufferDataTransfer
+ * (battle_controllers.c) only clears it as the tail end of a real
+ * BtlController_Emit* completing, and there is deliberately no such
+ * completion coming for this request (see the caller). Singles-only:
+ * the wider exec-flag mask STATE_WAIT_ACTION_CONFIRMED itself checks
+ * (gBitTable[battler] plus three more shifted copies, battle_main.c's
+ * own multi-battler-slot convention) only ever has its base bit set in
+ * a format with no doubles, matching every other exec-flag touch in
+ * this project's own pvp-gen3 files. */
+void PokePvP_UnstickAbandonedActionSelection(u8 battler)
+{
+    gAbsentBattlerFlags |= gBitTable[battler];
+    gChosenActionByBattler[battler] = B_ACTION_NOTHING_FAINTED;
+    gBattleCommunication[battler] = STATE_WAIT_ACTION_CONFIRMED;
+    gBattleControllerExecFlags &= ~gBitTable[battler];
+}
+
 void SwapTurnOrder(u8 id1, u8 id2)
 {
     u32 temp;
