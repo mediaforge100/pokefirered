@@ -118,6 +118,12 @@ bool8 PokePvP_ShouldSkipLocalResolution(void);
 // POKEPVP (ADR-126): opens the window in which the mailbox may process
 // presentation records -- see sPokePvPTurnResolving (battle_controller_pokepvp.c).
 void PokePvP_SetTurnResolving(bool8 resolving);
+/* POKEPVP (ADR-131, fixes ADR-130): TRUE when a real match's turn is
+ * genuinely resolving (mailbox presentation owns every battler's buffer).
+ * HandleTurnActionSelectionState (battle_main.c) must not emit anything
+ * for a battler while this is true -- see PokePvP_ShouldBlockNativeBufferWrite's
+ * own doc comment (battle_controller_pokepvp.c) for why. */
+bool8 PokePvP_ShouldBlockNativeBufferWrite(void);
 /* ADR-108: the counterpart to PokePvP_SetBattleOutcomeAndEndTurn for the
  * "this turn ended, the battle didn't" case -- called from
  * battle_controller_pokepvp.c's POKEPVP_MSG_TURN_CONTINUE handler.

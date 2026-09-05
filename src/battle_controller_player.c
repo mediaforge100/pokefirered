@@ -2499,8 +2499,30 @@ static void PlayerHandleChooseItem(void)
 static void PlayerHandleChoosePokemon(void)
 {
     s32 i;
+    u8 taskId;
 
-    gBattleControllerData[gActiveBattler] = CreateTask(TaskDummy, 0xFF);
+    /* POKEPVP (ADR-133, upstream-patch task, ADR-132-fainted-switch-ui-
+     * audit-fix.md Finding B): the original CreateTask call below indexed
+     * gTasks with its return value unconditionally. If every task slot is
+     * occupied, CreateTask returns TASK_NONE (0xFF), and the un-hardened
+     * write below became gTasks[0xFF].data[0] -- a real out-of-bounds
+     * EWRAM write the audit named as a plausible root cause for the
+     * corrupted-function-pointer/heap-corruption signature ADR-132's own
+     * live crash produced. This dummy task only ever preserves a single
+     * u8 case value across the palette fade (see below); on TASK_NONE
+     * there is nothing unsafe about simply waiting a frame and asking
+     * again instead of indexing out of bounds -- this handler is called
+     * every frame via gBattlerControllerFuncs until it installs
+     * OpenPartyMenuToChooseMon, so returning without doing so here is a
+     * real, bounded retry, not a silent drop: FireRed will call back in on
+     * the very next frame. This changes no observable behavior for any
+     * ordinary battle, where a free task slot is always available; it
+     * only removes an unconditional-corruption codepath that vanilla
+     * FireRed never checked for either. */
+    taskId = CreateTask(TaskDummy, 0xFF);
+    if (taskId == TASK_NONE)
+        return;
+    gBattleControllerData[gActiveBattler] = taskId;
     gTasks[gBattleControllerData[gActiveBattler]].data[0] = gBattleBufferA[gActiveBattler][1] & 0xF;
     *(&gBattleStruct->battlerPreventingSwitchout) = gBattleBufferA[gActiveBattler][1] >> 4;
     *(&gBattleStruct->playerPartyIdx) = gBattleBufferA[gActiveBattler][2];

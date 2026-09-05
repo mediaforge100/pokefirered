@@ -3184,6 +3184,22 @@ static void HandleTurnActionSelectionState(void)
     {
         u8 position = GetBattlerPosition(gActiveBattler);
 
+        /* POKEPVP (ADR-131, fixes ADR-130): this battler's own buffer is
+         * owned by mailbox presentation right now -- do not touch it.
+         * Write-side counterpart to the mailbox pump's own read-side
+         * guard (PokePvPChoiceRequestOutstanding, ADR-126). Without this,
+         * a spurious re-entry into this function while a turn is
+         * genuinely resolving (see ADR-130) emits a fresh LinkStandbyMsg
+         * into gBattleBufferA[gActiveBattler], destroying whatever real
+         * presentation record the pump had just written there -- the
+         * opponent's HP bar update in particular, and eventually the
+         * turn itself, since gBattleMainFunc could then never settle
+         * back into PokePvP_WaitForMailboxTurnResolution. This is a
+         * no-op either way: correct behavior already has this function
+         * out of gBattleMainFunc entirely during that window. */
+        if ((gBattleTypeFlags & BATTLE_TYPE_POKEPVP) && PokePvP_ShouldBlockNativeBufferWrite())
+            continue;
+
         switch (gBattleCommunication[gActiveBattler])
         {
         case STATE_BEFORE_ACTION_CHOSEN: // Choose an action.
