@@ -25,6 +25,7 @@
 #include "pokedex.h"
 #include "text_window.h"
 #include "text_window_graphics.h"
+#include "new_menu_helpers.h" // POKEPVP (main-menu backdrop redraw): DecompressAndCopyTileDataToVram
 #include "constants/songs.h"
 
 enum MainMenuType
@@ -102,9 +103,9 @@ static void Task_ExecuteMainMenuSelection(u8 taskId);
 static void Task_MysteryGiftError(u8 taskId);
 static void Task_PokePvPMenuStub(u8 taskId);
 static void Task_PokePvPNoOpponentFound(u8 taskId); // POKEPVP (ADR-124)
-static void DrawPokePvPMenuItems(void);
+static void DrawPokePvPMenuItems(u8 selectedIdx);
 // POKEPVP (ADR-091): START MATCH -> AUTO-MATCH/INVITE MATCH submenu.
-static void DrawStartMatchSubmenuItems(void);
+static void DrawStartMatchSubmenuItems(u8 selectedIdx);
 static void Task_PokePvPStartMatchSubmenu(u8 taskId);
 static void Task_PokePvPInviteMatchStub(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId);
@@ -176,8 +177,10 @@ static const u8 sText_StartMatch[] = _("START MATCH");
 // implementations are Phase 5-8 work, out of scope here (ADR-079's own
 // "Non-goals").
 static const u8 sText_TeamBuilder[] = _("TEAM BUILDER");
-static const u8 sText_PlayerSettings[] = _("PLAYER SETTINGS");
-static const u8 sText_Leaderboard[] = _("LEADERBOARD");
+// Renamed from PLAYER SETTINGS / LEADERBOARD to match the owner's
+// BattleDex creative (pokepvp_title1.png) -- labels only, same stubs.
+static const u8 sText_Profile[] = _("PROFILE");
+static const u8 sText_MatchHistory[] = _("MATCH HISTORY");
 static const u8 sText_Options[] = _("OPTIONS");
 static const u8 sText_NotYetImplemented[] = _("Not yet implemented.");
 // POKEPVP (ADR-091, D7 refinement): START MATCH now opens a submenu
@@ -262,30 +265,32 @@ static const struct WindowTemplate sWindowTemplate[] = {
         .paletteNum = 15,
         .baseBlock = 0x121
     }, 
-    // POKEPVP (ADR-085): five equal slots, 4 tiles (32px) apart, spanning
-    // the full 20-tile-tall screen (1,5,9,13,17) the same way the original
-    // NEWGAME(13)/MYSTERYGIFT(17) pair was already spaced. Fresh baseBlocks
-    // (0x151+) past every block FireRed's own menu already uses (highest is
-    // MYSTERYGIFT's 0x121) so these never alias tiles with the still-compiled
-    // but unreachable NEWGAME/CONTINUE/MYSTERYGIFT windows above.
+    // POKEPVP (main-menu backdrop redraw): five equal slots, packed tight
+    // (2 tiles/16px each, no gap) into screen rows 6-15, leaving rows 0-5
+    // for the BG2 backdrop's header art and rows 16-19 for its footer --
+    // see sBgTemplate/LoadPokePvPMenuBackdrop above. Previously 1,5,9,13,17
+    // with gaps spanning the whole screen (ADR-085); MoveWindowByMenuType-
+    // AndCursorPos's MAIN_MENU_POKEPVP case must stay in lockstep with this
+    // spacing. baseBlocks unchanged -- they address tile storage, not
+    // screen position, so the reflow doesn't disturb them.
     [MAIN_MENU_WINDOW_POKEPVP_0] = {
-        .bg = 0, .tilemapLeft = 3, .tilemapTop = 1, .width = 24, .height = 2,
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 6, .width = 24, .height = 2,
         .paletteNum = 15, .baseBlock = 0x151
     },
     [MAIN_MENU_WINDOW_POKEPVP_1] = {
-        .bg = 0, .tilemapLeft = 3, .tilemapTop = 5, .width = 24, .height = 2,
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 8, .width = 24, .height = 2,
         .paletteNum = 15, .baseBlock = 0x181
     },
     [MAIN_MENU_WINDOW_POKEPVP_2] = {
-        .bg = 0, .tilemapLeft = 3, .tilemapTop = 9, .width = 24, .height = 2,
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 10, .width = 24, .height = 2,
         .paletteNum = 15, .baseBlock = 0x1b1
     },
     [MAIN_MENU_WINDOW_POKEPVP_3] = {
-        .bg = 0, .tilemapLeft = 3, .tilemapTop = 13, .width = 24, .height = 2,
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 12, .width = 24, .height = 2,
         .paletteNum = 15, .baseBlock = 0x1e1
     },
     [MAIN_MENU_WINDOW_POKEPVP_4] = {
-        .bg = 0, .tilemapLeft = 3, .tilemapTop = 17, .width = 24, .height = 2,
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 14, .width = 24, .height = 2,
         .paletteNum = 15, .baseBlock = 0x211
     },
     [MAIN_MENU_WINDOW_ERROR] = {
@@ -300,6 +305,15 @@ static const struct WindowTemplate sWindowTemplate[] = {
     [MAIN_MENU_WINDOW_COUNT] = DUMMY_WIN_TEMPLATE
 };
 
+// POKEPVP (menu redesign): geometry-only -- never AddWindow'd, just handed
+// to MainMenu_DrawWindow to draw ONE frame around the whole 5-row block
+// (rows 6-15) instead of a separate border per row. tilemapLeft/Top/width/
+// height must bound the POKEPVP_0..4 windows exactly (left=3, top=6,
+// spanning to top+height=16, matching POKEPVP_4's tilemapTop 14 + height 2).
+static const struct WindowTemplate sPokePvPMenuPanelTemplate = {
+    .bg = 0, .tilemapLeft = 3, .tilemapTop = 6, .width = 24, .height = 10
+};
+
 // POKEPVP (ADR-093): the move editor's list window. Added and removed on
 // demand (AddWindow/RemoveWindow) rather than living in sWindowTemplate:
 // at 18x18 tiles its buffer is ~10KB of heap, which there is no reason to
@@ -307,30 +321,34 @@ static const struct WindowTemplate sWindowTemplate[] = {
 // baseBlock 0x241 starts past MAIN_MENU_WINDOW_POKEPVP_4's own tiles
 // (0x211 + 24*2), the same "fresh blocks past everything already in use"
 // rule ADR-085 followed for the five menu slots.
+//
+// POKEPVP (menu redesign): tilemapTop 1 / height 18 assumed the screen
+// had no header/footer competing for rows -- true before the backdrop
+// redraw, false after (rows 0-5 are the header art, 16-19 the footer).
+// Left at the old size this window drew across both bands, which is
+// the "crooked Team Builder" bug reported after that redraw. Clamped to
+// the same rows 6-15 the top-level menu itself uses, so it sits inside
+// the one panel frame rather than spilling past it.
 static const struct WindowTemplate sPokePvPListWindowTemplate = {
-    .bg = 0, .tilemapLeft = 2, .tilemapTop = 1, .width = 18, .height = 18,
+    .bg = 0, .tilemapLeft = 2, .tilemapTop = 6, .width = 18, .height = 10,
     .paletteNum = 15, .baseBlock = 0x241
 };
 
-// Rows visible at once: two tiles per row over an 18-tile-tall window.
-#define POKEPVP_LIST_ROWS 9
+// Rows visible at once: two tiles per row over a 10-tile-tall window.
+#define POKEPVP_LIST_ROWS 5
 
 // POKEPVP (ADR-096/097): the move info panel, in the ~80px (tilemapLeft
 // 20..29) the list window's own 18-tile width leaves unused on the
-// right. Deliberately NOT the list's own 18-tile height -- an 18-tall
-// window here (180 tiles) stacked on top of the list window's 324
-// (baseBlock 0x241) pushed the total past this background's real tile
-// budget (ADR-096): confirmed by capturing a frame and finding the
-// bottom third rendering as the raw backdrop color instead of drawn
-// text. 10x9 (90 tiles, baseBlock 0x385..0x3DF) stays comfortably clear
-// of that. Height dropped further from ADR-096's original 11 once
-// DrawPokePvPMoveInfo moved to one line per field instead of two
-// (ADR-097) -- four 16px-tall lines is all this needs now. Same
-// on-demand Add/RemoveWindow lifetime as the list window, opened only
-// for the move-slot and movepool lists (not the species list, which has
-// no move stats to show).
+// right. 10x9 (90 tiles, baseBlock 0x385..0x3DF) stays comfortably clear
+// of the list window's own tile budget (ADR-096). Four 16px-tall lines
+// is all this needs (ADR-097). Same on-demand Add/RemoveWindow lifetime
+// as the list window, opened only for the move-slot and movepool lists
+// (not the species list, which has no move stats to show).
+//
+// POKEPVP (menu redesign): tilemapTop/height clamped to rows 6-15 for
+// the same reason as sPokePvPListWindowTemplate above.
 static const struct WindowTemplate sPokePvPMoveInfoWindowTemplate = {
-    .bg = 0, .tilemapLeft = 20, .tilemapTop = 1, .width = 10, .height = 11,
+    .bg = 0, .tilemapLeft = 20, .tilemapTop = 6, .width = 10, .height = 10,
     .paletteNum = 15, .baseBlock = 0x385
 };
 
@@ -350,7 +368,48 @@ static EWRAM_DATA struct PokePvPListData *sPokePvPList = NULL;
 static const u16 sBg_Pal[] = INCBIN_U16("graphics/main_menu/bg.gbapal");
 static const u16 sTextbox_Pal[] = INCBIN_U16("graphics/main_menu/textbox.gbapal");
 
+// POKEPVP (main-menu backdrop redraw): the "BattleDex" arena backdrop, an
+// 8bpp BG2 layer drawn behind BG0's window list (see sBgTemplate below).
+// Two hand-cropped, GBA-palette-quantized bands from the owner's own
+// creative (pokepvp_title1.png) -- a header (logo/ribbons, screen rows
+// 0-5) and a footer (control hints, rows 16-19) -- plus one shared blank
+// tile for every row the backdrop doesn't cover, so BG0's existing list
+// window (rows 6-15) is untouched and still opaque over it. baseTile
+// offsets in LoadPokePvPMenuBackdrop() below must match this order:
+// header at tile 0, footer at tile 180, blank at tile 300.
+// Derived from backdrop_header.png's own embedded palette (not a
+// separate hand-authored .gbapal) -- footer/blank share the same table,
+// so any one of the three source PNGs would do; header's was picked
+// arbitrarily. Regenerated by the generic %.gbapal: %.png rule, so
+// nothing here needs to be a checked-in binary.
+static const u16 sPokePvPBackdrop_Pal[] = INCBIN_U16("graphics/main_menu/backdrop_header.gbapal");
+
+// POKEPVP (menu redesign): a fixed navy/gold/cream 9-tile rounded-rect
+// frame replacing FireRed's player-selectable window skin (Options ->
+// Frame Type) for this screen specifically -- the panel must look the
+// same regardless of the save file's own settings. Same 24x24 (3x3
+// tile), same tile order (TL/top/TR/left/center/right/BL/bottom/BR) as
+// GetUserWindowGraphics' own frames, so it's a drop-in replacement.
+static const u16 sPokePvPPanelFrame_Gfx[] = INCBIN_U16("graphics/main_menu/panel_frame.4bpp");
+static const u16 sPokePvPPanelFrame_Pal[] = INCBIN_U16("graphics/main_menu/panel_frame.gbapal");
+// The frame tiles used to load at the same hardcoded 0x1B1 FireRed's own
+// GetUserWindowGraphics frames always have -- which happens to collide
+// with MAIN_MENU_WINDOW_POKEPVP_2's own baseBlock (0x1b1, ADR-085). That
+// let the PROFILE row's own text-glyph tiles overwrite the frame's corner
+// tile every redraw -- the "thick black border" bug: 0x1B1 rendered
+// whatever glyph bitmap happened to be there instead of the frame corner.
+// Comfortably past every baseBlock this file uses (highest is the move
+// info window's 0x385 + up to 100 tiles).
+#define POKEPVP_PANEL_FRAME_BASE_TILE 0x400
+static const u32 sPokePvPBackdropHeader_Gfx[] = INCBIN_U32("graphics/main_menu/backdrop_header.8bpp.lz");
+static const u32 sPokePvPBackdropFooter_Gfx[] = INCBIN_U32("graphics/main_menu/backdrop_footer.8bpp.lz");
+static const u32 sPokePvPBackdropBlank_Gfx[] = INCBIN_U32("graphics/main_menu/backdrop_blank.8bpp.lz");
+static const u32 sPokePvPBackdrop_Map[] = INCBIN_U32("graphics/main_menu/backdrop_map.bin.lz");
+
 static const u8 sTextColor1[] = { 10, 11, 12 };
+// POKEPVP (menu redesign): the selected row's red-bar/white-text style,
+// bank 15 indices 13-15 (previously unused padding) -- see textbox.pal.
+static const u8 sTextColorSelected[] = { 13, 14, 15 };
 
 static const u8 sTextColor2[] = { 10,  1, 12 };
 
@@ -430,8 +489,46 @@ static const struct BgTemplate sBgTemplate[] = {
         .charBaseIndex = 0,
         .mapBaseIndex = 30,
         .priority = 0
+    },
+    // POKEPVP (main-menu backdrop redraw): the BattleDex arena backdrop.
+    // charBaseIndex 2 (VRAM byte 0x8000) and mapBaseIndex 26 (VRAM byte
+    // 0xD000) sit clear of every tile/map range BG0 already uses above
+    // (its window text tops out around tile 0x271 * 32B =~ 0x4C40, and its
+    // own map lives at block 30 = byte 0xF000) -- verified by hand against
+    // this file's own baseBlock constants before picking these numbers.
+    // priority 3 (lowest) keeps it behind BG0's opaque list-row windows.
+    {
+        .bg = 2,
+        .charBaseIndex = 2,
+        .mapBaseIndex = 26,
+        .paletteMode = 1, // 8bpp, to hold the backdrop's real color count
+        .priority = 3
     }
 };
+
+// POKEPVP (main-menu backdrop redraw): loads the BattleDex arena backdrop
+// onto BG2. Palette lands at banks 3-14 (VRAM color slots 48-239) so it
+// never touches bank 2 (the window frame border, GetUserWindowGraphics)
+// or bank 15 (sTextbox_Pal, the list text/fill colors) -- both still set
+// up by LoadUserFrameToBg/SetStdFrame0OnBg and MainMenuGpuInit itself.
+// Tile offsets must match sPokePvPBackdrop_Map's own layout: header at
+// tile 0 (screen rows 0-5), footer at tile 180 (rows 16-19), blank at
+// tile 300 (every other cell, including the untouched rows 6-15 where
+// BG0's own list windows already draw an opaque box).
+static void LoadPokePvPMenuBackdrop(void)
+{
+    // The compiled backdrop.gbapal file itself is 48 zero-padded entries
+    // (matching the reserved bank 0-2 slots this palette must not disturb)
+    // followed by the real colors -- skip that padding on the SOURCE side
+    // (&sPokePvPBackdrop_Pal[48]) rather than shifting the destination
+    // again, or the two shifts stack and the real colors land 48 slots
+    // too high.
+    LoadPalette(&sPokePvPBackdrop_Pal[48], BG_PLTT_ID(3), 12 * PLTT_SIZE_4BPP);
+    DecompressAndCopyTileDataToVram(2, sPokePvPBackdropHeader_Gfx, 0, 0, 0);
+    DecompressAndCopyTileDataToVram(2, sPokePvPBackdropFooter_Gfx, 0, 180, 0);
+    DecompressAndCopyTileDataToVram(2, sPokePvPBackdropBlank_Gfx, 0, 300, 0);
+    DecompressAndCopyTileDataToVram(2, sPokePvPBackdrop_Map, 0, 0, 1);
+}
 
 static const u8 sMenuCursorYMax[] = { 0, 1, 2, 4 }; // POKEPVP (ADR-085): 5 items, cursor 0-4
 
@@ -495,6 +592,7 @@ static bool32 MainMenuGpuInit(u8 a0)
     DeactivateAllTextPrinters();
     LoadPalette(sBg_Pal, BG_PLTT_ID(0), sizeof(sBg_Pal));
     LoadPalette(sTextbox_Pal, BG_PLTT_ID(15), sizeof(sTextbox_Pal));
+    LoadPokePvPMenuBackdrop();
     SetGpuReg(REG_OFFSET_WIN0H, 0);
     SetGpuReg(REG_OFFSET_WIN0V, 0);
     SetGpuReg(REG_OFFSET_WININ, 0);
@@ -521,11 +619,11 @@ static void Task_SetWin0BldRegsAndCheckSaveFile(u8 taskId)
     {
         SetGpuReg(REG_OFFSET_WIN0H, 0);
         SetGpuReg(REG_OFFSET_WIN0V, 0);
-        SetGpuReg(REG_OFFSET_WININ, 0x0001);
-        SetGpuReg(REG_OFFSET_WINOUT, 0x0021);
+        SetGpuReg(REG_OFFSET_WININ, 0x0001 | WININ_WIN0_BG2); // POKEPVP: let the BG2 backdrop show too
+        SetGpuReg(REG_OFFSET_WINOUT, 0x0021 | WINOUT_WIN01_BG2);
         SetGpuReg(REG_OFFSET_BLDCNT, BLDCNT_TGT1_BG0 | BLDCNT_TGT1_BG1 | BLDCNT_TGT1_BG2 | BLDCNT_TGT1_BG3 | BLDCNT_TGT1_OBJ | BLDCNT_TGT1_BD | BLDCNT_EFFECT_DARKEN);
         SetGpuReg(REG_OFFSET_BLDALPHA, BLDALPHA_BLEND(0, 0));
-        SetGpuReg(REG_OFFSET_BLDY, 7);
+        SetGpuReg(REG_OFFSET_BLDY, 0); // POKEPVP: selection is a real color swap now, not a darken
         // POKEPVP (ADR-085, D7): this product has no Continue/Mystery Gift
         // concept -- every save-status branch now lands on the real 5-item
         // menu (MAIN_MENU_POKEPVP) instead of FireRed's NEWGAME/CONTINUE/
@@ -570,6 +668,7 @@ static void PrintSaveErrorStatus(u8 taskId, const u8 *str)
     gTasks[taskId].func = Task_SaveErrorStatus_RunPrinterThenWaitButton;
     BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
     ShowBg(0);
+    ShowBg(2);
     SetVBlankCallback(VBlankCB_MainMenu);
 }
 
@@ -597,11 +696,11 @@ static void Task_SetWin0BldRegsNoSaveFileCheck(u8 taskId)
     {
         SetGpuReg(REG_OFFSET_WIN0H, 0);
         SetGpuReg(REG_OFFSET_WIN0V, 0);
-        SetGpuReg(REG_OFFSET_WININ, 0x0001);
-        SetGpuReg(REG_OFFSET_WINOUT, 0x0021);
+        SetGpuReg(REG_OFFSET_WININ, 0x0001 | WININ_WIN0_BG2); // POKEPVP: let the BG2 backdrop show too
+        SetGpuReg(REG_OFFSET_WINOUT, 0x0021 | WINOUT_WIN01_BG2);
         SetGpuReg(REG_OFFSET_BLDCNT, BLDCNT_TGT1_BG0 | BLDCNT_TGT1_BG1 | BLDCNT_TGT1_BG2 | BLDCNT_TGT1_BG3 | BLDCNT_TGT1_OBJ | BLDCNT_TGT1_BD | BLDCNT_EFFECT_DARKEN);
         SetGpuReg(REG_OFFSET_BLDALPHA, BLDALPHA_BLEND(0, 0));
-        SetGpuReg(REG_OFFSET_BLDY, 7);
+        SetGpuReg(REG_OFFSET_BLDY, 0); // POKEPVP: selection is a real color swap now, not a darken
         if (gTasks[taskId].tMenuType == MAIN_MENU_NEWGAME)
             gTasks[taskId].func = Task_ExecuteMainMenuSelection;
         else
@@ -622,11 +721,11 @@ static void Task_PrintMainMenuText(u8 taskId)
     u16 pal;
     SetGpuReg(REG_OFFSET_WIN0H, 0);
     SetGpuReg(REG_OFFSET_WIN0V, 0);
-    SetGpuReg(REG_OFFSET_WININ, 0x0001);
-    SetGpuReg(REG_OFFSET_WINOUT, 0x0021);
+    SetGpuReg(REG_OFFSET_WININ, 0x0001 | WININ_WIN0_BG2); // POKEPVP: let the BG2 backdrop show too
+    SetGpuReg(REG_OFFSET_WINOUT, 0x0021 | WINOUT_WIN01_BG2);
     SetGpuReg(REG_OFFSET_BLDCNT, BLDCNT_TGT1_BG0 | BLDCNT_TGT1_BG1 | BLDCNT_TGT1_BG2 | BLDCNT_TGT1_BG3 | BLDCNT_TGT1_OBJ | BLDCNT_TGT1_BD | BLDCNT_EFFECT_DARKEN);
     SetGpuReg(REG_OFFSET_BLDALPHA, BLDALPHA_BLEND(0, 0));
-    SetGpuReg(REG_OFFSET_BLDY, 7);
+    SetGpuReg(REG_OFFSET_BLDY, 0); // POKEPVP: selection is a real color swap now, not a darken
     if (gSaveBlock2Ptr->playerGender == MALE)
         pal = RGB(4, 16, 31);
     else
@@ -636,7 +735,7 @@ static void Task_PrintMainMenuText(u8 taskId)
     {
     case MAIN_MENU_POKEPVP:
     default:
-        DrawPokePvPMenuItems();
+        DrawPokePvPMenuItems(gTasks[taskId].tCursorPos);
         break;
     case MAIN_MENU_NEWGAME:
         FillWindowPixelBuffer(MAIN_MENU_WINDOW_NEWGAME_ONLY, PIXEL_FILL(10));
@@ -681,36 +780,42 @@ static void Task_PrintMainMenuText(u8 taskId)
     gTasks[taskId].func = Task_WaitDma3AndFadeIn;
 }
 
-// POKEPVP (ADR-085): draws all 5 real menu items. Shared by
-// Task_PrintMainMenuText (first draw, with the fade-in) and
-// Task_PokePvPMenuStub's return path (redraw after a stub message, no fade).
-static void DrawPokePvPMenuItems(void)
+// POKEPVP (menu redesign): draws all 5 real menu items, styled to match
+// the owner's BattleDex creative -- the selected row is a solid red bar
+// with white text (sTextColorSelected/PIXEL_FILL(13)), everything else
+// is plain cream with dark-ink text (sTextColor1/PIXEL_FILL(10)), and
+// ONE frame is drawn around the whole 5-row block (sPokePvPMenuPanelTemplate)
+// instead of a separate border per row -- five individually-boxed rows
+// is what read as FireRed's stock list "slapped on top of" the backdrop
+// rather than one embedded panel. Shared by Task_PrintMainMenuText (first
+// draw, with the fade-in) and every redraw-on-return/redraw-on-cursor-move
+// path below.
+static void DrawPokePvPMenuItems(u8 selectedIdx)
 {
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_StartMatch);
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_TeamBuilder);
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_2, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_PlayerSettings);
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_3, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_Leaderboard);
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_Options);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_0]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_1]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_2]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_3]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_4]);
-    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
-    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
-    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
-    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
-    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_GFX);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_GFX);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    const u8 *const sLabels[] = {
+        sText_StartMatch, sText_TeamBuilder, sText_Profile,
+        sText_MatchHistory, sText_Options,
+    };
+    u8 i;
+
+    for (i = 0; i < 5; i++)
+    {
+        bool8 selected = (i == selectedIdx);
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+            selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
+    }
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 5; i++)
+        PutWindowTilemap(sWindowIds[i]);
+    for (i = 0; i < 4; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
 }
 
 static void Task_WaitDma3AndFadeIn(u8 taskId)
@@ -720,6 +825,7 @@ static void Task_WaitDma3AndFadeIn(u8 taskId)
         gTasks[taskId].func = Task_UpdateVisualSelection;
         BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
         ShowBg(0);
+        ShowBg(2);
         SetVBlankCallback(VBlankCB_MainMenu);
     }
 }
@@ -739,6 +845,12 @@ static void Task_UpdateVisualSelection(u8 taskId)
         return;
     }
     MoveWindowByMenuTypeAndCursorPos(gTasks[taskId].tMenuType, gTasks[taskId].tCursorPos);
+    // POKEPVP (menu redesign): the selected-row red-bar/white-text look
+    // is a real color swap, not the old WIN0-darken trick (BLDY is 0 now
+    // for this menu type -- see Task_SetWin0BldRegsAndCheckSaveFile) --
+    // so it has to be redrawn every time the cursor moves, not just once.
+    if (gTasks[taskId].tMenuType == MAIN_MENU_POKEPVP)
+        DrawPokePvPMenuItems(gTasks[taskId].tCursorPos);
     gTasks[taskId].func = Task_HandleMenuInput;
 }
 
@@ -769,7 +881,7 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
                 // directly. Same fade-out-already-happened situation as the
                 // stub branch below (HandleMenuInput's A-press), so redraw
                 // and fade back in here.
-                DrawStartMatchSubmenuItems();
+                DrawStartMatchSubmenuItems(0);
                 BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
                 gTasks[taskId].tSubCursorPos = 0;
                 gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
@@ -989,7 +1101,7 @@ static void Task_PokePvPMenuStub(u8 taskId)
             PlaySE(SE_SELECT);
             ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
             MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-            DrawPokePvPMenuItems();
+            DrawPokePvPMenuItems(gTasks[taskId].tCursorPos);
             BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
             gTasks[taskId].tMGErrorMsgState = 0;
             gTasks[taskId].func = Task_UpdateVisualSelection;
@@ -1004,30 +1116,37 @@ static void Task_PokePvPMenuStub(u8 taskId)
 // top-level text is actually erased, not just occluded). Exact same
 // draw/tilemap/vram-copy shape as DrawPokePvPMenuItems, just fewer labels
 // -- same "reuse, don't duplicate" discipline as that function itself.
-static void DrawStartMatchSubmenuItems(void)
+// POKEPVP (menu redesign): same red-bar/white-text selection style and
+// single-panel-border as DrawPokePvPMenuItems -- this screen had no
+// visible cursor at all once BLDY went to 0 (the old WIN0-darken trick
+// this submenu still called MoveWindowByMenuTypeAndCursorPos for was the
+// ONLY thing indicating a selection here, and neutering it without an
+// alternative silently broke picking AUTO-MATCH vs INVITE MATCH).
+static void DrawStartMatchSubmenuItems(u8 selectedIdx)
 {
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_AutoMatch);
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_InviteMatch);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_0]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_1]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_2]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_3]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_4]);
-    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
-    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
-    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
-    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
-    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_GFX);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_GFX);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    const u8 *const sLabels[] = {
+        sText_AutoMatch, sText_InviteMatch, sString_Dummy, sString_Dummy, sString_Dummy,
+    };
+    u8 i;
+
+    for (i = 0; i < 5; i++)
+    {
+        bool8 selected = (i == selectedIdx);
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+            selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
+    }
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 5; i++)
+        PutWindowTilemap(sWindowIds[i]);
+    for (i = 0; i < 4; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
 }
 
 // POKEPVP (ADR-091): drives the 2-item submenu -- D-pad moves the WIN0
@@ -1073,10 +1192,12 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
     {
         gTasks[taskId].tSubCursorPos--;
+        DrawStartMatchSubmenuItems(gTasks[taskId].tSubCursorPos);
     }
     else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
     {
         gTasks[taskId].tSubCursorPos++;
+        DrawStartMatchSubmenuItems(gTasks[taskId].tSubCursorPos);
     }
 }
 
@@ -1106,7 +1227,7 @@ static void Task_PokePvPInviteMatchStub(u8 taskId)
             PlaySE(SE_SELECT);
             ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
             MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-            DrawStartMatchSubmenuItems();
+            DrawStartMatchSubmenuItems(gTasks[taskId].tSubCursorPos);
             BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
             gTasks[taskId].tMGErrorMsgState = 0;
             gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
@@ -1124,7 +1245,7 @@ static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId)
     if (gPaletteFade.active)
         return;
 
-    DrawPokePvPMenuItems();
+    DrawPokePvPMenuItems(0);
     BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
     gTasks[taskId].tCursorPos = 0;
     gTasks[taskId].func = Task_UpdateVisualSelection;
@@ -1311,7 +1432,7 @@ static void Task_PokePvPNoOpponentFound(u8 taskId)
             PlaySE(SE_SELECT);
             ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
             MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-            DrawStartMatchSubmenuItems();
+            DrawStartMatchSubmenuItems(gTasks[taskId].tSubCursorPos);
             BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
             gTasks[taskId].tMGErrorMsgState = 0;
             gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
@@ -1380,7 +1501,7 @@ static void Task_PokePvPTeamSelector(u8 taskId)
     else if (JOY_NEW(B_BUTTON))
     {
         PlaySE(SE_SELECT);
-        DrawStartMatchSubmenuItems();
+        DrawStartMatchSubmenuItems(0);
         gTasks[taskId].tSubCursorPos = 0;
         gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
     }
@@ -2158,7 +2279,7 @@ static void Task_PokePvPReturnToTopMenuFromTeamList(u8 taskId)
     if (gPaletteFade.active)
         return;
 
-    DrawPokePvPMenuItems();
+    DrawPokePvPMenuItems(1);
     BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
     gTasks[taskId].tCursorPos = 1;
     gTasks[taskId].func = Task_UpdateVisualSelection;
@@ -2181,10 +2302,11 @@ static void MoveWindowByMenuTypeAndCursorPos(u8 menuType, u8 cursorPos)
     {
     default:
     case MAIN_MENU_POKEPVP:
-        // POKEPVP (ADR-085): 5 equal 32px slots covering the full screen,
-        // matching sWindowTemplate's POKEPVP_0..4 tilemapTop spacing.
-        win0vTop = (cursorPos * 0x20) << 8;
-        win0vBot = (cursorPos + 1) * 0x20;
+        // POKEPVP (main-menu backdrop redraw): 5 equal 16px slots packed
+        // into rows 6-15 (pixel y 48-127), matching sWindowTemplate's
+        // POKEPVP_0..4 tilemapTop values above -- keep both in lockstep.
+        win0vTop = (0x30 + cursorPos * 0x10) << 8;
+        win0vBot = 0x30 + (cursorPos + 1) * 0x10;
         break;
     case MAIN_MENU_NEWGAME:
         win0vTop = 0x00 << 8;
@@ -2325,14 +2447,15 @@ static void PrintBadgeCount(void)
 
 static void LoadUserFrameToBg(u8 bgId)
 {
-    LoadBgTiles(bgId, GetUserWindowGraphics(gSaveBlock2Ptr->optionsWindowFrameType)->tiles, 0x120, 0x1B1);
-    LoadPalette(GetUserWindowGraphics(gSaveBlock2Ptr->optionsWindowFrameType)->palette, BG_PLTT_ID(2), PLTT_SIZE_4BPP);
+    LoadBgTiles(bgId, sPokePvPPanelFrame_Gfx, 0x120, POKEPVP_PANEL_FRAME_BASE_TILE);
+    LoadPalette(sPokePvPPanelFrame_Pal, BG_PLTT_ID(2), PLTT_SIZE_4BPP);
     MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
 }
 
 static void SetStdFrame0OnBg(u8 bgId)
 {
-    LoadStdWindowGfx(MAIN_MENU_WINDOW_NEWGAME_ONLY, 0x1B1, BG_PLTT_ID(2));
+    LoadBgTiles(bgId, sPokePvPPanelFrame_Gfx, 0x120, POKEPVP_PANEL_FRAME_BASE_TILE);
+    LoadPalette(sPokePvPPanelFrame_Pal, BG_PLTT_ID(2), PLTT_SIZE_4BPP);
     MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
 }
 
@@ -2340,7 +2463,7 @@ static void MainMenu_DrawWindow(const struct WindowTemplate * windowTemplate)
 {
     FillBgTilemapBufferRect(
         windowTemplate->bg, 
-        0x1B1, 
+        POKEPVP_PANEL_FRAME_BASE_TILE + 0, 
         windowTemplate->tilemapLeft - 1, 
         windowTemplate->tilemapTop - 1,
         1,
@@ -2348,17 +2471,20 @@ static void MainMenu_DrawWindow(const struct WindowTemplate * windowTemplate)
         2
     );
     FillBgTilemapBufferRect(
-        windowTemplate->bg, 
-        0x1B2, 
-        windowTemplate->tilemapLeft, 
-        windowTemplate->tilemapTop - 1, 
-        windowTemplate->width, 
-        windowTemplate->height, 
+        windowTemplate->bg,
+        POKEPVP_PANEL_FRAME_BASE_TILE + 1,
+        windowTemplate->tilemapLeft,
+        windowTemplate->tilemapTop - 1,
+        windowTemplate->width,
+        1, // POKEPVP fix: was `windowTemplate->height` -- stamped the top-edge
+           // tile across the whole window body, not just its top row. Invisible
+           // at the old per-row height=2 (mostly hidden under real content);
+           // fatal once this drew ONE panel spanning height=10 (menu redesign).
         2
     );
     FillBgTilemapBufferRect(
         windowTemplate->bg, 
-        0x1B3, 
+        POKEPVP_PANEL_FRAME_BASE_TILE + 2, 
         windowTemplate->tilemapLeft + 
         windowTemplate->width, 
         windowTemplate->tilemapTop - 1,
@@ -2368,7 +2494,7 @@ static void MainMenu_DrawWindow(const struct WindowTemplate * windowTemplate)
     );
     FillBgTilemapBufferRect(
         windowTemplate->bg, 
-        0x1B4, 
+        POKEPVP_PANEL_FRAME_BASE_TILE + 3, 
         windowTemplate->tilemapLeft - 1, 
         windowTemplate->tilemapTop,
         1, 
@@ -2377,7 +2503,7 @@ static void MainMenu_DrawWindow(const struct WindowTemplate * windowTemplate)
     );
     FillBgTilemapBufferRect(
         windowTemplate->bg, 
-        0x1B6, 
+        POKEPVP_PANEL_FRAME_BASE_TILE + 5, 
         windowTemplate->tilemapLeft + 
         windowTemplate->width, 
         windowTemplate->tilemapTop,
@@ -2387,7 +2513,7 @@ static void MainMenu_DrawWindow(const struct WindowTemplate * windowTemplate)
     );
     FillBgTilemapBufferRect(
         windowTemplate->bg, 
-        0x1B7, 
+        POKEPVP_PANEL_FRAME_BASE_TILE + 6, 
         windowTemplate->tilemapLeft - 1, 
         windowTemplate->tilemapTop + 
         windowTemplate->height,
@@ -2397,7 +2523,7 @@ static void MainMenu_DrawWindow(const struct WindowTemplate * windowTemplate)
     );
     FillBgTilemapBufferRect(
         windowTemplate->bg, 
-        0x1B8, 
+        POKEPVP_PANEL_FRAME_BASE_TILE + 7, 
         windowTemplate->tilemapLeft, 
         windowTemplate->tilemapTop + 
         windowTemplate->height, 
@@ -2407,8 +2533,8 @@ static void MainMenu_DrawWindow(const struct WindowTemplate * windowTemplate)
     );
     FillBgTilemapBufferRect(
         windowTemplate->bg, 
-        0x1B9, 
-        windowTemplate->tilemapLeft + 
+        POKEPVP_PANEL_FRAME_BASE_TILE + 8,
+        windowTemplate->tilemapLeft +
         windowTemplate->width, 
         windowTemplate->tilemapTop + 
         windowTemplate->height,
