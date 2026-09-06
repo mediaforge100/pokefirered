@@ -112,16 +112,18 @@ static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId);
 // POKEPVP (ADR-095): AUTO-MATCH -> team-selector screen, a deliberately
 // separate picker from TEAM BUILDER's own team-slot list below -- no
 // EDIT TEAM/EDIT MOVES submenu, A here starts the match directly.
-static void DrawTeamSelectorItems(void);
+static void DrawOneSelectorRow(u8 windowId, u8 slot, bool8 selected);
+static void DrawTeamSelectorItems(u8 selectedIdx);
 static void Task_PokePvPTeamSelector(u8 taskId);
 // POKEPVP (ADR-093): TEAM BUILDER -> team-slot list.
-static void DrawTeamListItems(void);
+static void DrawOneTeamRow(u8 windowId, u8 slot, bool8 selected);
+static void DrawTeamListItems(u8 selectedIdx);
 static void Task_PokePvPTeamList(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromTeamList(u8 taskId);
 static void Task_PokePvPPrepareRoster(u8 taskId);
 // POKEPVP (ADR-093): the move editor -- slot submenu, then three nested
 // ListMenu pickers (member -> move slot -> legal move).
-static void DrawSlotMenuItems(void);
+static void DrawSlotMenuItems(u8 selectedIdx);
 static void Task_PokePvPSlotMenu(u8 taskId);
 static void Task_PokePvPPickMember(u8 taskId);
 static void Task_PokePvPReturnToTeamListFromSlotMenu(u8 taskId);
@@ -822,6 +824,27 @@ static void Task_WaitDma3AndFadeIn(u8 taskId)
 {
     if (WaitDma3Request(-1) != -1)
     {
+        /* POKEPVP (ADR-158, owner-reported live: "it's not possible to
+         * select 'edit team' or 'edit moves'" -- the second PC-box entry
+         * hard-reset the game): LoadPokePvPMenuBackdrop's four
+         * DecompressAndCopyTileDataToVram calls (header/footer/blank/map)
+         * allocate heap decompress buffers tracked in the shared
+         * sTempTileDataBuffers cursor list, and MainMenuGpuInit runs
+         * again on every return from the PC box (CB2_InitMainMenu). Every
+         * other subsystem that uses that API (berry_crush, daycare,
+         * diploma, ...) pairs each use with ResetTempTileDataBuffers +
+         * FreeTempTileDataBuffersIfPossible; the backdrop load did not,
+         * so every Team Builder round trip leaked the whole backdrop set
+         * (~21 KB, measured via a temporary heap walk: +4 blocks / -21376
+         * free per round trip) until the malloc free-list could no longer
+         * serve EnterPokeStorage's gStorage Alloc -- malloc.c:174
+         * assertion, illegal opcode, soft reset to the title screen.
+         * Freed here, at the one point this task is guaranteed DMA-idle
+         * (WaitDma3Request just resolved; FreeTempTileDataBuffersIfPossible
+         * deliberately refuses while a bg copy is in flight) and every
+         * menu entry -- boot and re-init alike -- passes through. */
+        FreeTempTileDataBuffersIfPossible();
+        ResetTempTileDataBuffers();
         gTasks[taskId].func = Task_UpdateVisualSelection;
         BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
         ShowBg(0);
@@ -838,7 +861,7 @@ static void Task_UpdateVisualSelection(u8 taskId)
     if (sPokePvPReturnToTeamList)
     {
         sPokePvPReturnToTeamList = FALSE;
-        DrawTeamListItems();
+        DrawTeamListItems(0);
         gTasks[taskId].tCursorPos = 1;
         gTasks[taskId].tSubCursorPos = 0;
         gTasks[taskId].func = Task_PokePvPTeamList;
@@ -892,7 +915,7 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
                 // MATCH submenu above -- redraw into the existing windows
                 // and fade back in, since HandleMenuInput's A-press has
                 // already taken the screen to black.
-                DrawTeamListItems();
+                DrawTeamListItems(0);
                 BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
                 gTasks[taskId].tSubCursorPos = 0;
                 gTasks[taskId].func = Task_PokePvPTeamList;
@@ -1172,7 +1195,7 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
             // built team entered the match at all. Live redraw within the
             // same still-faded-in menu CB2, same as Task_PokePvPTeamList's
             // own transition into its slot submenu -- no palette fade.
-            DrawTeamSelectorItems();
+            DrawTeamSelectorItems(0);
             gTasks[taskId].tSubCursorPos = 0;
             gTasks[taskId].func = Task_PokePvPTeamSelector;
         }
@@ -1254,12 +1277,20 @@ static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId)
 // POKEPVP (ADR-095): one team-selector row. Deliberately terser than the
 // builder's own row below (exact "x/6" member count) -- this screen is a
 // picker, not an editor, so READY/EMPTY is all a player needs to decide.
-static void DrawOneSelectorRow(u8 windowId, u8 slot)
+/* ADR-158 (owner-reported live, "team selector visually crooked"):
+ * each row used to border itself with MainMenu_DrawWindow -- a full frame
+ * stamped INSIDE the same 2-tile/16px-tall row the 16px text already
+ * fills -- so packed rows read as cramped double-outlined boxes with the
+ * frame tiles cutting the text ("arrow/chevron on top of the text").
+ * Rows now follow the top menu's own reworked style (DrawPokePvPMenuItems):
+ * a plain fill, a color-swap selection bar, and ONE panel frame around the
+ * whole block instead of one box per row (drawn by DrawTeamSelectorItems). */
+static void DrawOneSelectorRow(u8 windowId, u8 slot, bool8 selected)
 {
     u8 buf[24];
     u8 *dest;
 
-    FillWindowPixelBuffer(windowId, PIXEL_FILL(10));
+    FillWindowPixelBuffer(windowId, PIXEL_FILL(selected ? 13 : 10));
     dest = StringCopy(buf, sText_Team);
     dest = ConvertIntToDecimalStringN(dest, slot + 1, STR_CONV_MODE_LEFT_ALIGN, 1);
     *dest++ = CHAR_SPACE;
@@ -1270,8 +1301,7 @@ static void DrawOneSelectorRow(u8 windowId, u8 slot)
     else
         dest = StringCopy(dest, sText_TeamReady);
     *dest = EOS;
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
-    MainMenu_DrawWindow(&sWindowTemplate[windowId]);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, selected ? sTextColorSelected : sTextColor1, -1, buf);
     PutWindowTilemap(windowId);
 }
 
@@ -1283,13 +1313,18 @@ static void DrawOneSelectorRow(u8 windowId, u8 slot)
 // (or does nothing on an empty one); there is no EDIT TEAM/EDIT MOVES
 // submenu here at all, so a player can't confuse "pick a team to play" with
 // "edit a team".
-static void DrawTeamSelectorItems(void)
+/* ADR-158: now takes the selected index and draws the ONE panel frame
+ * around the whole 5-row block (sPokePvPMenuPanelTemplate bounds rows
+ * 6-15 exactly), matching the top menu's own reworked look and giving
+ * the selector a real, redraw-on-move selection bar. */
+static void DrawTeamSelectorItems(u8 selectedIdx)
 {
-    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_0, 0);
-    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_1, 1);
-    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_2, 2);
-    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_3, 3);
-    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_4, 4);
+    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_0, 0, selectedIdx == 0);
+    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_1, 1, selectedIdx == 1);
+    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_2, 2, selectedIdx == 2);
+    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_3, 3, selectedIdx == 3);
+    DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_4, 4, selectedIdx == 4);
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
@@ -1508,24 +1543,26 @@ static void Task_PokePvPTeamSelector(u8 taskId)
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
     {
         gTasks[taskId].tSubCursorPos--;
+        DrawTeamSelectorItems(gTasks[taskId].tSubCursorPos); /* ADR-158: selection follows the cursor */
     }
     else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < POKEPVP_TEAM_SLOTS - 1)
     {
         gTasks[taskId].tSubCursorPos++;
+        DrawTeamSelectorItems(gTasks[taskId].tSubCursorPos); /* ADR-158 */
     }
 }
 
 // POKEPVP (ADR-093): one team-slot row. Shows the slot number and how many
 // members it holds -- enough to tell the slots apart at a glance without a
 // naming screen, which is real work (naming_screen.c) and its own decision.
-static void DrawOneTeamRow(u8 windowId, u8 slot)
+static void DrawOneTeamRow(u8 windowId, u8 slot, bool8 selected)
 {
     u8 buf[24];
     u8 *dest;
     u8 count;
 
     count = PokePvPTeamBuilder_MemberCount(slot);
-    FillWindowPixelBuffer(windowId, PIXEL_FILL(10));
+    FillWindowPixelBuffer(windowId, PIXEL_FILL(selected ? 13 : 10));
     dest = StringCopy(buf, sText_Team);
     dest = ConvertIntToDecimalStringN(dest, slot + 1, STR_CONV_MODE_LEFT_ALIGN, 1);
     *dest++ = CHAR_SPACE;
@@ -1542,8 +1579,7 @@ static void DrawOneTeamRow(u8 windowId, u8 slot)
         dest = ConvertIntToDecimalStringN(dest, PARTY_SIZE, STR_CONV_MODE_LEFT_ALIGN, 1);
     }
     *dest = EOS;
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
-    MainMenu_DrawWindow(&sWindowTemplate[windowId]);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, selected ? sTextColorSelected : sTextColor1, -1, buf);
     PutWindowTilemap(windowId);
 }
 
@@ -1551,13 +1587,14 @@ static void DrawOneTeamRow(u8 windowId, u8 slot)
 // list is exactly as long as the window row count, so B (not a sixth
 // "EXIT" row) is the way out, matching the START MATCH submenu's own
 // convention rather than inventing a second one.
-static void DrawTeamListItems(void)
+static void DrawTeamListItems(u8 selectedIdx)
 {
-    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_0, 0);
-    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_1, 1);
-    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_2, 2);
-    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_3, 3);
-    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_4, 4);
+    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_0, 0, selectedIdx == 0);
+    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_1, 1, selectedIdx == 1);
+    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_2, 2, selectedIdx == 2);
+    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_3, 3, selectedIdx == 3);
+    DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_4, 4, selectedIdx == 4);
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
@@ -1586,7 +1623,7 @@ static void Task_PokePvPTeamList(u8 taskId)
         // choose its POKEMON (the PC) and change their moves -- so it opens
         // a submenu rather than one of them directly.
         gTasks[taskId].tTeamSlot = gTasks[taskId].tSubCursorPos;
-        DrawSlotMenuItems();
+        DrawSlotMenuItems(0);
         gTasks[taskId].tSubCursorPos = 0;
         gTasks[taskId].func = Task_PokePvPSlotMenu;
     }
@@ -1599,10 +1636,12 @@ static void Task_PokePvPTeamList(u8 taskId)
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
     {
         gTasks[taskId].tSubCursorPos--;
+        DrawTeamListItems(gTasks[taskId].tSubCursorPos); /* ADR-158: selection follows the cursor */
     }
     else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < POKEPVP_TEAM_SLOTS - 1)
     {
         gTasks[taskId].tSubCursorPos++;
+        DrawTeamListItems(gTasks[taskId].tSubCursorPos); /* ADR-158 */
     }
 }
 
@@ -1654,21 +1693,22 @@ static void Task_PokePvPPrepareRoster(u8 taskId)
 
 // POKEPVP (ADR-093): the per-slot submenu. Three items in the same five
 // windows every other menu here uses.
-static void DrawSlotMenuItems(void)
+/* ADR-158: same rework as the selector/team-list rows -- selection is a
+ * fill swap now (drawn fresh on every cursor move), the stale windows 3/4
+ * (which used to draw leftover team-list rows and borders behind this
+ * 3-item submenu) are cleared instead of bordered, and ONE panel frame
+ * bounds the whole block. */
+static void DrawSlotMenuItems(u8 selectedIdx)
 {
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(selectedIdx == 0 ? 13 : 10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(selectedIdx == 1 ? 13 : 10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(selectedIdx == 2 ? 13 : 10));
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_EditTeam);
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_EditMoves);
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_2, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_Back);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_0]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_1]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_2]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_3]);
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_POKEPVP_4]);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, selectedIdx == 0 ? sTextColorSelected : sTextColor1, -1, sText_EditTeam);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, selectedIdx == 1 ? sTextColorSelected : sTextColor1, -1, sText_EditMoves);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_2, FONT_NORMAL, 2, 2, selectedIdx == 2 ? sTextColorSelected : sTextColor1, -1, sText_Back);
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
@@ -1745,10 +1785,12 @@ static void Task_PokePvPSlotMenu(u8 taskId)
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
     {
         gTasks[taskId].tSubCursorPos--;
+        DrawSlotMenuItems(gTasks[taskId].tSubCursorPos); /* ADR-158: selection follows the cursor */
     }
     else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 2)
     {
         gTasks[taskId].tSubCursorPos++;
+        DrawSlotMenuItems(gTasks[taskId].tSubCursorPos); /* ADR-158 */
     }
 }
 
@@ -1768,7 +1810,7 @@ static void Task_PokePvPReturnToTeamListFromSlotMenu(u8 taskId)
         return;
 
     PokePvPTeamBuilder_SendTeam(gTasks[taskId].tTeamSlot);
-    DrawTeamListItems();
+    DrawTeamListItems(gTasks[taskId].tTeamSlot);
     BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
     gTasks[taskId].tSubCursorPos = gTasks[taskId].tTeamSlot;
     gTasks[taskId].func = Task_PokePvPTeamList;
@@ -1798,7 +1840,7 @@ static void Task_PokePvPEmptyTeamMessage(u8 taskId)
             PlaySE(SE_SELECT);
             ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
             MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-            DrawSlotMenuItems();
+            DrawSlotMenuItems(1);
             BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
             gTasks[taskId].tMGErrorMsgState = 0;
             gTasks[taskId].func = Task_PokePvPSlotMenu;
@@ -2081,7 +2123,7 @@ static void ReturnToSlotMenu(u8 taskId)
         Free(sPokePvPList);
         sPokePvPList = NULL;
     }
-    DrawSlotMenuItems();
+    DrawSlotMenuItems(1);
     gTasks[taskId].tSubCursorPos = 1;
     gTasks[taskId].func = Task_PokePvPSlotMenu;
 }
