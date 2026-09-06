@@ -444,6 +444,32 @@ void HandleInputChooseMove(void)
     {
         u8 moveTarget;
 
+        /* POKEPVP (ADR-155, Phase 5 hard-gate upstream-patch task): in a
+         * single battle, refuse an A-press on a 0-PP slot outright.
+         * During a locked continuation (a two-turn move's release turn, a
+         * Choice-band/Encore lock, or any other case Showdown collapses
+         * to one legal move) the launcher zeroes the PP of every illegal
+         * position via POKEPVP_MSG_PP_UPDATE (ADR-149), so the menu's
+         * own PP numbers are the real legality signal -- a 0 here means
+         * "the server did not issue this option this turn," and the
+         * press must never leave this controller. The double-battle
+         * branch below already keys off this same state
+         * (canSelectTarget = FALSE when currentPp == 0), but that
+         * branch's FALSE path still emits the choice
+         * (BtlController_EmitTwoReturnValues) and lets the local
+         * resolution loop catch it with BattleScript_NoPPForMove; with
+         * that loop disabled for BATTLE_TYPE_POKEPVP (ADR-104) there is
+         * no second net, so this is deliberately stricter: a 0-PP slot
+         * in a single battle never reaches the emit at all. This also
+         * tightens vanilla singles (a 0-PP press used to submit and
+         * waste the turn at resolution time) -- the menu already shows
+         * the truth, now it enforces it too. */
+        if (!gBattleBufferA[gActiveBattler][1] && moveInfo->currentPp[gMoveSelectionCursor[gActiveBattler]] == 0)
+        {
+            DebugPrintf("POKEPVP: blocked illegal 0-PP move press (slot %d) in a single battle -- choiceRequest-gated (ADR-155)",
+                       gMoveSelectionCursor[gActiveBattler]);
+            return;
+        }
         PlaySE(SE_SELECT);
         if (moveInfo->moves[gMoveSelectionCursor[gActiveBattler]] == MOVE_CURSE)
         {
