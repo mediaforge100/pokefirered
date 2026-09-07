@@ -3255,7 +3255,9 @@ static u8 PokeSum_BufferOtName_IsEqualToCurrentOwner(struct Pokemon * mon)
     else
     {
         trainerId = GetPlayerTrainerId() & 0xffff;
-        StringCopy(sMonSummaryScreen->summary.otNameStrBufs[0], gSaveBlock2Ptr->playerName);
+        /* POKEPVP (ADR-159): bound the copy -- the source is 8 bytes and this target is 12, but an un-terminated name used to walk the whole save block here. */
+        StringCopyN(sMonSummaryScreen->summary.otNameStrBufs[0], gSaveBlock2Ptr->playerName, PLAYER_NAME_LENGTH);
+        sMonSummaryScreen->summary.otNameStrBufs[0][PLAYER_NAME_LENGTH] = EOS;
     }
 
     if (trainerId != (GetMonData(mon, MON_DATA_OT_ID) & 0xffff))

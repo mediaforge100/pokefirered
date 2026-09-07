@@ -559,10 +559,36 @@ static void CB2_InitMainMenu_2(void)
     MainMenuGpuInit(1);
 }
 
+// POKEPVP (ADR-159): in vanilla the player name is always written by the
+// New Game naming flow. PokePvP boots straight into this menu (ADR-085) and
+// never runs it, so a fresh save's `playerName` can be raw 0xFF garbage with
+// no EOS -- and unbounded StringCopy consumers (e.g. the summary screen's
+// OT-name compare) then walk ~20KB through the whole save block, smashing
+// the heap into the black screen. Clamp the field to a valid, terminated
+// name at every menu entry so no consumer ever sees garbage.
+static void PokePvP_SanitizePlayerName(void)
+{
+    u8 i;
+
+    for (i = 0; i < PLAYER_NAME_LENGTH; i++)
+    {
+        if (gSaveBlock2Ptr->playerName[i] == EOS)
+            return;
+        if (gSaveBlock2Ptr->playerName[i] > 0x3F) // not a FireRed charmap name char (0xFF = empty save)
+        {
+            gSaveBlock2Ptr->playerName[i] = EOS;
+            return;
+        }
+    }
+
+    gSaveBlock2Ptr->playerName[PLAYER_NAME_LENGTH] = EOS;
+}
+
 static bool32 MainMenuGpuInit(u8 a0)
 {
     u8 taskId;
 
+    PokePvP_SanitizePlayerName(); /* POKEPVP (ADR-159) */
     SetVBlankCallback(NULL);
     SetGpuReg(REG_OFFSET_DISPCNT, 0);
     SetGpuReg(REG_OFFSET_BG2CNT, 0);
