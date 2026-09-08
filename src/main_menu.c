@@ -12,6 +12,7 @@
 #include "option_menu.h" // POKEPVP (ADR-112): OPTIONS reuses FireRed's own real screen
 #include "naming_screen.h" // POKEPVP (ADR-113): PLAYER SETTINGS name entry
 #include "pokepvp_team_builder.h" // POKEPVP (ADR-093): TEAM BUILDER
+#include "history.h" // POKEPVP (ADR-168): MATCH HISTORY buffer
 #include "list_menu.h" // POKEPVP (ADR-093): the move editor's scrolling lists
 #include "data.h"        // POKEPVP (ADR-093): gSpeciesNames, gMoveNames
 #include "pokemon.h"     // POKEPVP (ADR-096): gBattleMoves, for the move info panel
@@ -102,6 +103,8 @@ static void Task_HandleMenuInput(u8 taskId);
 static void Task_ExecuteMainMenuSelection(u8 taskId);
 static void Task_MysteryGiftError(u8 taskId);
 static void Task_PokePvPMenuStub(u8 taskId);
+static void Task_PokePvPMatchHistory(u8 taskId);
+static void Task_PokePvPReturnToTopMenuFromHistory(u8 taskId);
 static void Task_PokePvPNoOpponentFound(u8 taskId); // POKEPVP (ADR-124)
 static void DrawPokePvPMenuItems(u8 selectedIdx);
 // POKEPVP (ADR-091): START MATCH -> AUTO-MATCH/INVITE MATCH submenu.
@@ -183,6 +186,9 @@ static const u8 sText_TeamBuilder[] = _("TEAM BUILDER");
 // BattleDex creative (pokepvp_title1.png) -- labels only, same stubs.
 static const u8 sText_Profile[] = _("PROFILE");
 static const u8 sText_MatchHistory[] = _("MATCH HISTORY");
+static const u8 sText_HistoryWSep[] = _("   W: ");
+static const u8 sText_HistoryL[] = _("  L: ");
+static const u8 sText_HistoryEmpty[] = _("No matches yet.");
 static const u8 sText_Options[] = _("OPTIONS");
 static const u8 sText_NotYetImplemented[] = _("Not yet implemented.");
 // POKEPVP (ADR-091, D7 refinement): START MATCH now opens a submenu
@@ -991,6 +997,16 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
                 DestroyTask(taskId);
                 SetMainCallback2(CB2_OptionsMenuFromStartMenu);
             }
+            else if (gTasks[taskId].tCursorPos == 3)
+            {
+                /* POKEPVP (ADR-168): MATCH HISTORY -- real screen now
+                 * (was LEADERBOARD/stub). The task draws whatever the
+                 * launcher already buffered in history.c; fade back in
+                 * like the START MATCH/Team Builder branches above (the
+                 * A-press already blacked the screen). */
+                gTasks[taskId].func = Task_PokePvPMatchHistory;
+                BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+            }
             else
             {
                 // ADR-086 fix: HandleMenuInput's A-press already fades the
@@ -1157,6 +1173,82 @@ static void Task_PokePvPMenuStub(u8 taskId)
         }
         break;
     }
+}
+
+/* POKEPVP (ADR-168): the real MATCH HISTORY screen. On entry (menu item 3
+ * "MATCH HISTORY" -- was LEADERBOARD, still a stub before this) the host
+ * has already fetched the account's head-to-head record and buffered it
+ * in history.c; we draw a header + up to POKEPVP_HISTORY_MAX_ENTRIES rows
+ * of "NAME   W: n  L: n" into the five menu windows (each 2 tiles tall,
+ * exact same draw/tilemap/vram shape as the top menu -- reuse, not new
+ * window geometry, and no new baseBlock allocation, which this background
+ * is out of budget for). B returns to the top menu (same redraw path as
+ * every other return). A is a no-op (nothing to select). */
+static void Task_PokePvPMatchHistory(u8 taskId)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    u8 count = PokePvPMatchHistory_Count();
+    u8 row;
+
+    if (gPaletteFade.active)
+        return;
+
+    for (row = 0; row < 5; row++)
+    {
+        u8 buf[32];
+        u8 *dst;
+        PokePvPHistoryEntry entry;
+
+        if (row == 0)
+        {
+            FillWindowPixelBuffer(sWindowIds[row], PIXEL_FILL(13));
+            AddTextPrinterParameterized3(sWindowIds[row], FONT_NORMAL, 2, 2,
+                sTextColorSelected, -1, sText_MatchHistory);
+        }
+        else if (row - 1 < count && PokePvPMatchHistory_Get(row - 1, &entry))
+        {
+            FillWindowPixelBuffer(sWindowIds[row], PIXEL_FILL(10));
+            dst = StringCopy(buf, entry.name);
+            dst = StringCopy(dst, sText_HistoryWSep);
+            dst = ConvertIntToDecimalStringN(dst, entry.wins, STR_CONV_MODE_LEFT_ALIGN, 2);
+            dst = StringCopy(dst, sText_HistoryL);
+            ConvertIntToDecimalStringN(dst, entry.losses, STR_CONV_MODE_LEFT_ALIGN, 2);
+            AddTextPrinterParameterized3(sWindowIds[row], FONT_NORMAL, 2, 2,
+                sTextColor1, -1, buf);
+        }
+        else
+        {
+            FillWindowPixelBuffer(sWindowIds[row], PIXEL_FILL(10));
+            AddTextPrinterParameterized3(sWindowIds[row], FONT_NORMAL, 2, 2,
+                sTextColor1, -1, sText_HistoryEmpty);
+        }
+        MainMenu_DrawWindow(&sWindowTemplate[sWindowIds[row]]);
+        PutWindowTilemap(sWindowIds[row]);
+        CopyWindowToVram(sWindowIds[row], COPYWIN_FULL);
+    }
+
+    if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 0, 16, RGB_BLACK);
+        gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromHistory;
+    }
+}
+
+/* POKEPVP (ADR-168): fade-out already ran (B above); redraw the top menu
+ * and hand back to selection, same as Task_PokePvPReturnToTopMenuFromSubmenu. */
+static void Task_PokePvPReturnToTopMenuFromHistory(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+    DrawPokePvPMenuItems(0);
+    BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+    gTasks[taskId].tCursorPos = 0;
+    gTasks[taskId].func = Task_UpdateVisualSelection;
 }
 
 // POKEPVP (ADR-091): draws the 2-item AUTO-MATCH/INVITE MATCH submenu into
