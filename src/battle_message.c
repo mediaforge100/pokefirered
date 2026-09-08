@@ -49,6 +49,15 @@ static const u8 sText_Trainer1RecallPkmn1[] = _("{B_TRAINER1_NAME}: {B_OPPONENT_
 static const u8 sText_Trainer1WinText[] = _("{B_TRAINER1_WIN_TEXT}");
 static const u8 sText_Trainer1RecallPkmn2[] = _("{B_TRAINER1_NAME}: {B_OPPONENT_MON2_NAME}, come back!");
 static const u8 sText_Trainer1RecallBoth[] = _("{B_TRAINER1_NAME}: {B_OPPONENT_MON1_NAME} and\n{B_OPPONENT_MON2_NAME}, come back!");
+
+/* POKEPVP (ADR-167): FRLG weather banners -- project-owned battle-table
+ * strings (see battle_string_ids.h). `{B_ATK_NAME_WITH_PREFIX}` is NOT
+ * used: the banner is field-wide, dispatched on buffer 0 always, so the
+ * TEXT handler's gBattlerAttacker priming (ADR-157) would name the local
+ * mon pointlessly -- these strings are bare literals on purpose. */
+static const u8 sText_PokePvPRain[] = _("It started raining!");
+static const u8 sText_PokePvPSunny[] = _("The sunlight turned harsh!");
+static const u8 sText_PokePvPWeatherCleared[] = _("The weather cleared up.");
 static const u8 sText_Trainer2WinText[] = _("{B_TRAINER2_WIN_TEXT}");
 static const u8 sText_PkmnGainedEXP[] = _("{B_BUFF1} gained{B_BUFF2}\n{B_BUFF3} EXP. Points!\p");
 static const u8 sText_EmptyString4[] = _("");
@@ -888,7 +897,10 @@ const u8 *const gBattleStringsTable[BATTLESTRINGS_COUNT - BATTLESTRINGS_TABLE_ST
     [STRINGID_TRAINER1MON1COMEBACK - BATTLESTRINGS_TABLE_START]          = sText_Trainer1RecallPkmn1,
     [STRINGID_TRAINER1WINTEXT - BATTLESTRINGS_TABLE_START]               = sText_Trainer1WinText,
     [STRINGID_TRAINER1MON2COMEBACK - BATTLESTRINGS_TABLE_START]          = sText_Trainer1RecallPkmn2,
-    [STRINGID_TRAINER1MON1AND2COMEBACK - BATTLESTRINGS_TABLE_START]      = sText_Trainer1RecallBoth
+    [STRINGID_TRAINER1MON1AND2COMEBACK - BATTLESTRINGS_TABLE_START]      = sText_Trainer1RecallBoth,
+    [STRINGID_POKEPVP_RAIN - BATTLESTRINGS_TABLE_START]                  = sText_PokePvPRain,
+    [STRINGID_POKEPVP_SUNNY - BATTLESTRINGS_TABLE_START]                 = sText_PokePvPSunny,
+    [STRINGID_POKEPVP_WEATHER_CLEARED - BATTLESTRINGS_TABLE_START]       = sText_PokePvPWeatherCleared,
 };
 
 const u16 gMissStringIds[] =

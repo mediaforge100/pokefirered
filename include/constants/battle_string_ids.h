@@ -385,7 +385,17 @@
 #define STRINGID_TRAINER1MON2COMEBACK 384
 #define STRINGID_TRAINER1MON1AND2COMEBACK 385
 
-#define BATTLESTRINGS_COUNT     386
+/* POKEPVP (ADR-167): FRLG weather banners. Rain Dance / Sunny Day have no
+ * vanilla battle-table string in FireRed (FRLG has no weather mechanic),
+ * so the server-driven weather announcement uses these project-owned
+ * entries -- ordinary table entries, so the standard TEXT pipeline
+ * (BtlController_EmitPrintString + exec-flag sequencing + ADR-128 hold)
+ * displays them readably, same as every other battle text. */
+#define STRINGID_POKEPVP_RAIN 386
+#define STRINGID_POKEPVP_SUNNY 387
+#define STRINGID_POKEPVP_WEATHER_CLEARED 388
+
+#define BATTLESTRINGS_COUNT     389
 
 // This is the string id that gBattleStringsTable starts with.
 // String ids before this (e.g. STRINGID_INTROMSG) are not in the table,
