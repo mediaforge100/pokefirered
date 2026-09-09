@@ -92,6 +92,9 @@ void PokePvPTeamBuilder_SendTeam(u8 slot);
 // process start with a team the player never picked. Call it right after
 // PokePvPTeamBuilder_SendTeam(slot) so the host has the team in hand.
 void PokePvPTeamBuilder_RequestMatch(u8 slot);
+/* POKEPVP (Phase J v2): PRACTICE on a team slot -- starts a practice match
+ * against the server-side AI with this team (POKEPVP_MSG_PRACTICE_REQUEST). */
+void PokePvPTeamBuilder_RequestPractice(u8 slot);
 
 // POKEPVP (ADR-114): the load-back direction team_types.h's own doc
 // comment anticipated ("once the launcher can push saved teams back

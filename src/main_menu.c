@@ -62,6 +62,10 @@ enum MainMenuWindow
 // the top-level 5-item menu's tCursorPos so returning to the top menu
 // doesn't need to remember/restore a shared field.
 #define tSubCursorPos data[2]
+// POKEPVP (Phase J v2): which submenu item opened the team selector.
+#define POKEPVP_MATCH_MODE_AUTO     0u
+#define POKEPVP_MATCH_MODE_INVITE   1u
+#define POKEPVP_MATCH_MODE_PRACTICE 2u
 
 // POKEPVP (ADR-093): move-editor state. data[3..7] are unused by every
 // other menu type here, and the editor is only ever reachable from the
@@ -72,7 +76,10 @@ enum MainMenuWindow
 #define tListTaskId      data[6]
 #define tListWindowId    data[7]
 
-#define tUnused8         data[8]
+// POKEPVP (Phase J v2): which START MATCH submenu item led into the team
+// selector (AUTO MATCH / INVITE MATCH / PRACTICE). The selector's A-press
+// sends MATCH_REQUEST for the first two and PRACTICE_REQUEST for practice.
+#define tSubMode         data[8]
 #define tMGErrorMsgState data[9]
 #define tMGErrorType     data[10]
 
@@ -110,7 +117,6 @@ static void DrawPokePvPMenuItems(u8 selectedIdx);
 // POKEPVP (ADR-091): START MATCH -> AUTO-MATCH/INVITE MATCH submenu.
 static void DrawStartMatchSubmenuItems(u8 selectedIdx);
 static void Task_PokePvPStartMatchSubmenu(u8 taskId);
-static void Task_PokePvPInviteMatchStub(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId);
 // POKEPVP (ADR-095): AUTO-MATCH -> team-selector screen, a deliberately
 // separate picker from TEAM BUILDER's own team-slot list below -- no
@@ -235,6 +241,8 @@ static const u8 sText_MoveInfoPP[] = _("PP");
 static const u8 sText_MoveInfoHeader[] = _("MOVE INFO");
 static const u8 sText_AutoMatch[] = _("AUTO-MATCH");
 static const u8 sText_InviteMatch[] = _("INVITE MATCH");
+// POKEPVP (Phase J v2): PRACTICE runs a match against the server-side AI.
+static const u8 sText_PracticeMatch[] = _("PRACTICE");
 
 static const struct WindowTemplate sWindowTemplate[] = {
     [MAIN_MENU_WINDOW_NEWGAME_ONLY] = {
@@ -638,7 +646,7 @@ static bool32 MainMenuGpuInit(u8 a0)
     SetGpuReg(REG_OFFSET_DISPCNT, DISPCNT_OBJ_1D_MAP | DISPCNT_OBJ_ON | DISPCNT_WIN0_ON);
     taskId = CreateTask(Task_SetWin0BldRegsAndCheckSaveFile, 0);
     gTasks[taskId].tCursorPos = 0;
-    gTasks[taskId].tUnused8 = a0;
+    gTasks[taskId].tSubMode = a0;
     return FALSE;
 }
 
@@ -1271,7 +1279,7 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
         MAIN_MENU_WINDOW_POKEPVP_4,
     };
     const u8 *const sLabels[] = {
-        sText_AutoMatch, sText_InviteMatch, sString_Dummy, sString_Dummy, sString_Dummy,
+        sText_AutoMatch, sText_InviteMatch, sText_PracticeMatch, sString_Dummy, sString_Dummy,
     };
     u8 i;
 
@@ -1305,23 +1313,29 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
     if (JOY_NEW(A_BUTTON))
     {
         PlaySE(SE_SELECT);
-        if (gTasks[taskId].tSubCursorPos == 0)
+        // POKEPVP (Phase J v2): all three submenu items now open the same
+        // team-selector screen; the mode byte tells the selector whether
+        // the A-press sends MATCH_REQUEST (AUTO/INVITE -- the launcher's
+        // join mode, CLI or future ROM picker) or PRACTICE_REQUEST.
+        // INVITE MATCH is no longer the pre-Phase-B "not yet
+        // implemented" stub: its flow is the same team selector, and the
+        // launcher joins blind pairing when no queue was configured
+        // (--queue invite is the default).
+        if (gTasks[taskId].tSubCursorPos == 2)
         {
-            // POKEPVP (ADR-095): AUTO-MATCH now opens a team-selector
-            // screen first instead of firing StartPokePvPAutoMatch()
-            // directly -- until now there was no way to choose which
-            // built team entered the match at all. Live redraw within the
-            // same still-faded-in menu CB2, same as Task_PokePvPTeamList's
-            // own transition into its slot submenu -- no palette fade.
             DrawTeamSelectorItems(0);
+            gTasks[taskId].tSubMode = POKEPVP_MATCH_MODE_PRACTICE;
             gTasks[taskId].tSubCursorPos = 0;
             gTasks[taskId].func = Task_PokePvPTeamSelector;
         }
         else
         {
-            gTasks[taskId].tMGErrorMsgState = 0;
-            gTasks[taskId].func = Task_PokePvPInviteMatchStub;
-            BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+            DrawTeamSelectorItems(0);
+            gTasks[taskId].tSubMode = (gTasks[taskId].tSubCursorPos == 0)
+                ? POKEPVP_MATCH_MODE_AUTO
+                : POKEPVP_MATCH_MODE_INVITE;
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPTeamSelector;
         }
     }
     else if (JOY_NEW(B_BUTTON))
@@ -1335,7 +1349,7 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
         gTasks[taskId].tSubCursorPos--;
         DrawStartMatchSubmenuItems(gTasks[taskId].tSubCursorPos);
     }
-    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 2)
     {
         gTasks[taskId].tSubCursorPos++;
         DrawStartMatchSubmenuItems(gTasks[taskId].tSubCursorPos);
@@ -1345,37 +1359,6 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
 // POKEPVP (ADR-091): INVITE MATCH stub -- identical shape to
 // Task_PokePvPMenuStub, but returns into the submenu (not the top-level
 // menu) on dismissal, since that's where the player selected it from.
-static void Task_PokePvPInviteMatchStub(u8 taskId)
-{
-    switch (gTasks[taskId].tMGErrorMsgState)
-    {
-    case 0:
-        PrintMessageOnWindow4(sText_NotYetImplemented);
-        gTasks[taskId].tMGErrorMsgState++;
-        break;
-    case 1:
-        if (!gPaletteFade.active)
-            gTasks[taskId].tMGErrorMsgState++;
-        break;
-    case 2:
-        RunTextPrinters();
-        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
-            gTasks[taskId].tMGErrorMsgState++;
-        break;
-    case 3:
-        if (JOY_NEW(A_BUTTON | B_BUTTON))
-        {
-            PlaySE(SE_SELECT);
-            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
-            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-            DrawStartMatchSubmenuItems(gTasks[taskId].tSubCursorPos);
-            BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
-            gTasks[taskId].tMGErrorMsgState = 0;
-            gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
-        }
-        break;
-    }
-}
 
 // POKEPVP (ADR-091): B out of the submenu -- fades to black (done by the
 // caller before switching to this func), redraws the real 5-item top-level
@@ -1556,12 +1539,14 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
 }
 
 // POKEPVP (ADR-124): the honest end of an AUTO-MATCH that never found
-// anyone. Deliberately Task_PokePvPInviteMatchStub's exact shape and
-// return target -- a message on the same already-open window, dismissed
-// with A or B, back into the START MATCH submenu the player selected
-// AUTO-MATCH from -- rather than a new screen: this is the same "tell the
-// player and put them back where they were" case that task already solves,
-// and reusing it keeps one dismissal/fade path instead of two.
+// anyone. The same shape and return target as the old
+// Task_PokePvPInviteMatchStub (retired in Phase J v2 when the INVITE
+// MATCH item became real) -- a message on the same already-open window,
+// dismissed with A or B, back into the START MATCH submenu the player
+// selected AUTO-MATCH from -- rather than a new screen: this is the same
+// "tell the player and put them back where they were" case that task
+// already solves, and reusing it keeps one dismissal/fade path instead
+// of two.
 static void Task_PokePvPNoOpponentFound(u8 taskId)
 {
     switch (gTasks[taskId].tMGErrorMsgState)
@@ -1616,8 +1601,14 @@ static void Task_PokePvPTeamSelector(u8 taskId)
         // request. Sent unconditionally (even with no gateway configured):
         // with no gateway the host simply has nothing to join, and the
         // offline debug path below is unchanged.
+        // POKEPVP (Phase J v2): PRACTICE (submenu item 2) sends
+        // PRACTICE_REQUEST instead of MATCH_REQUEST -- the host starts a
+        // practice match against the server AI with this same team.
         PokePvPTeamBuilder_SendTeam(gTasks[taskId].tSubCursorPos);
-        PokePvPTeamBuilder_RequestMatch(gTasks[taskId].tSubCursorPos);
+        if (gTasks[taskId].tSubMode == POKEPVP_MATCH_MODE_PRACTICE)
+            PokePvPTeamBuilder_RequestPractice(gTasks[taskId].tSubCursorPos);
+        else
+            PokePvPTeamBuilder_RequestMatch(gTasks[taskId].tSubCursorPos);
         gExitStairsMovementDisabled = FALSE;
         // POKEPVP (ADR-121): a real gateway pairing is worth a bounded
         // wait for the opponent's mon; no gateway (or no pairing yet) is
