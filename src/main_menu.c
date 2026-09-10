@@ -18,12 +18,14 @@
 #include "ready_check.h" // POKEPVP (UI plan slice 3): ready-check prompt buffer
 #include "packs_catalog.h" // POKEPVP (UI plan slice 3): pack catalog + launch-config flags
 #include "inbox.h" // POKEPVP (UI plan slice 4): challenge inbox buffer
+#include "profile.h" // POKEPVP (UI plan slice 5): PROFILE screen buffer
 #include "history.h" // POKEPVP (ADR-168): MATCH HISTORY buffer
 #include "list_menu.h" // POKEPVP (ADR-093): the move editor's scrolling lists
 #include "data.h"        // POKEPVP (ADR-093): gSpeciesNames, gMoveNames
 #include "pokemon.h"     // POKEPVP (ADR-096): gBattleMoves, for the move info panel
 #include "battle_main.h" // POKEPVP (ADR-096): gTypeNames, for the move info panel
 #include "constants/moves.h"
+#include "constants/species.h" // POKEPVP (UI plan slice 5): NUM_SPECIES for the PROFILE top-species bounds
 #include "quest_log.h"
 #include "mystery_gift_menu.h"
 #include "strings.h"
@@ -163,6 +165,10 @@ static void Task_PokePvPNoOpponentFound(u8 taskId); // POKEPVP (ADR-124)
 // challenge is buffered (and not snoozed). ACCEPT hands to the team
 // selector; DECLINE/BLOCK send a CHALLENGE_ACTION; B snoozes.
 static void Task_PokePvPInbox(u8 taskId);
+// POKEPVP (UI plan slice 5, Phase E): the PROFILE screen -- tag, stats,
+// most-used species, recent opponents. Reached from the top menu's
+// PROFILE row (cursor 2); B returns to the top menu.
+static void Task_PokePvPProfile(u8 taskId);
 // POKEPVP (UI plan slice 2, Phase I): the post-match screen -- result +
 // REMATCH / PLAY AGAIN / ADD RIVAL / EXIT, reached from
 // Task_WaitFadeAndPrintMainMenuText whenever a post-match session is
@@ -378,6 +384,17 @@ static const u8 sText_Accept[] = _("ACCEPT");
 static const u8 sText_Decline[] = _("DECLINE");
 static const u8 sText_BlockPlayer[] = _("BLOCK");
 static const u8 sText_ChallengeBlocked[] = _("Player blocked.");
+// POKEPVP (UI plan slice 5): the PROFILE screen (Build Plan §10: ID,
+// display name, stats, most-used Pokemon, recent opponents). The sprite
+// picker is deferred; the sprite id is shown as a number.
+static const u8 sText_ProfileHeader[] = _("PROFILE");
+static const u8 sText_ProfileW[] = _("W:");
+static const u8 sText_ProfileL[] = _("L:");
+static const u8 sText_ProfileT[] = _("T:");
+static const u8 sText_ProfileM[] = _("M:");
+static const u8 sText_ProfileTop[] = _("TOP");
+static const u8 sText_ProfileRecent[] = _("RECENT");
+static const u8 sText_ProfileEmpty[] = _("No matches yet.");
 
 static const struct WindowTemplate sWindowTemplate[] = {
     [MAIN_MENU_WINDOW_NEWGAME_ONLY] = {
@@ -1132,26 +1149,16 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
             }
             else if (gTasks[taskId].tCursorPos == 2)
             {
-                // POKEPVP (ADR-113): PLAYER SETTINGS, name entry. Reuses
-                // FireRed's own real naming screen (DoNamingScreen,
-                // naming_screen.c) exactly the way this ROM's own
-                // Oak-speech new-game flow already calls it for the same
-                // template (src/oak_speech.c: DoNamingScreen(
-                // NAMING_SCREEN_PLAYER, gSaveBlock2Ptr->playerName,
-                // gSaveBlock2Ptr->playerGender, 0, 0, ...)) -- copied
-                // argument-for-argument from that real, already-working
-                // call rather than the unused Debug_NamingScreenPlayer
-                // stub in the same file, which passes a different (never
-                // exercised) argument shape. Writes directly into
-                // gSaveBlock2Ptr->playerName, the same real save-block
-                // field a vanilla new game uses -- no new persistent
-                // storage invented. Sprite selection is a separate,
-                // deliberately deferred follow-up (see ADR-113) -- this
-                // is name entry only.
-                gExitStairsMovementDisabled = FALSE;
-                FreeAllWindowBuffers();
-                DestroyTask(taskId);
-                DoNamingScreen(NAMING_SCREEN_PLAYER, gSaveBlock2Ptr->playerName, gSaveBlock2Ptr->playerGender, 0, 0, CB2_InitMainMenu);
+                // POKEPVP (UI plan slice 5, Phase E): PROFILE -- the
+                // real screen now (was PLAYER SETTINGS/name entry,
+                // ADR-113). Shows the permanent NAME#1234 tag, stats,
+                // most-used species, and recent opponents; the NAME row
+                // inside it re-enters the naming screen (moved here per
+                // Build Plan §10 item 3). Same redraw-and-fade-in shape
+                // as the START MATCH/Team Builder branches above.
+                gTasks[taskId].tSubCursorPos = 0;
+                gTasks[taskId].func = Task_PokePvPProfile;
+                BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
             }
             else if (gTasks[taskId].tCursorPos == 4)
             {
@@ -2508,6 +2515,190 @@ static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId)
     BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
     gTasks[taskId].tCursorPos = 0;
     gTasks[taskId].func = Task_UpdateVisualSelection;
+}
+
+// ---------------------------------------------------------------------------
+// POKEPVP (UI plan slice 5, Phase E): PROFILE screen.
+//
+// Reached from the top menu's PROFILE row (cursor 2). Window 0 is the
+// header (PROFILE + the save-block player name + the permanent NAME#1234
+// tag), window 1 the stats line (M/W/L/T -- qualifying matches only,
+// practice/forfeit excluded server-side), window 2 the most-used
+// species (up to 3, FireRed's own gSpeciesNames), window 3 the first
+// recent opponent, window 4 the NAME action (re-enters the naming
+// screen, moved here from the old PLAYER SETTINGS row per Build Plan
+// §10 item 3), and the ERROR band shows recent opponents 2-3. B returns
+// to the top menu. The sprite picker stays deferred (ADR-113's note);
+// the sprite id is not displayed.
+// ---------------------------------------------------------------------------
+
+static void DrawProfileScreen(void)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    PokePvPProfile profile;
+    u8 buf[25];
+    u8 *dst;
+    u8 i;
+
+    /* Window 0: header -- PROFILE + name + tag. */
+    FillWindowPixelBuffer(sWindowIds[0], PIXEL_FILL(13));
+    dst = StringCopy(buf, sText_ProfileHeader);
+    *dst++ = CHAR_SPACE;
+    for (i = 0; i < PLAYER_NAME_LENGTH && gSaveBlock2Ptr->playerName[i] != EOS; i++)
+        *dst++ = gSaveBlock2Ptr->playerName[i];
+    if (PokePvPProfile_Get(&profile))
+    {
+        *dst++ = CHAR_SPACE;
+        dst = StringCopy(dst, profile.tag);
+    }
+    if ((u32)(dst - buf) > 23u)
+        buf[23] = EOS;
+    AddTextPrinterParameterized3(sWindowIds[0], FONT_NORMAL, 2, 2, sTextColorSelected, -1, buf);
+    PutWindowTilemap(sWindowIds[0]);
+
+    /* Window 1: stats. */
+    FillWindowPixelBuffer(sWindowIds[1], PIXEL_FILL(10));
+    dst = buf;
+    if (PokePvPProfile_Get(&profile))
+    {
+        dst = StringCopy(dst, sText_ProfileM);
+        dst = ConvertIntToDecimalStringN(dst, profile.matches, STR_CONV_MODE_LEFT_ALIGN, 1);
+        *dst++ = CHAR_SPACE;
+        dst = StringCopy(dst, sText_ProfileW);
+        dst = ConvertIntToDecimalStringN(dst, profile.wins, STR_CONV_MODE_LEFT_ALIGN, 1);
+        *dst++ = CHAR_SPACE;
+        dst = StringCopy(dst, sText_ProfileL);
+        dst = ConvertIntToDecimalStringN(dst, profile.losses, STR_CONV_MODE_LEFT_ALIGN, 1);
+        *dst++ = CHAR_SPACE;
+        dst = StringCopy(dst, sText_ProfileT);
+        dst = ConvertIntToDecimalStringN(dst, profile.ties, STR_CONV_MODE_LEFT_ALIGN, 1);
+    }
+    else
+    {
+        dst = StringCopy(dst, sText_ProfileEmpty);
+    }
+    *dst = EOS;
+    AddTextPrinterParameterized3(sWindowIds[1], FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+    PutWindowTilemap(sWindowIds[1]);
+
+    /* Window 2: most-used species. */
+    FillWindowPixelBuffer(sWindowIds[2], PIXEL_FILL(10));
+    dst = StringCopy(buf, sText_ProfileTop);
+    *dst++ = CHAR_SPACE;
+    if (PokePvPProfile_Get(&profile))
+    {
+        for (i = 0; i < profile.topCount && i < POKEPVP_PROFILE_MAX_TOP_SPECIES; i++)
+        {
+            if (profile.topSpecies[i] > 0 && profile.topSpecies[i] < NUM_SPECIES)
+            {
+                dst = StringCopy(dst, gSpeciesNames[profile.topSpecies[i]]);
+                *dst++ = CHAR_SPACE;
+            }
+        }
+    }
+    if ((u32)(dst - buf) > 23u)
+        buf[23] = EOS;
+    AddTextPrinterParameterized3(sWindowIds[2], FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+    PutWindowTilemap(sWindowIds[2]);
+
+    /* Window 3: first recent opponent. */
+    FillWindowPixelBuffer(sWindowIds[3], PIXEL_FILL(10));
+    dst = StringCopy(buf, sText_ProfileRecent);
+    *dst++ = CHAR_SPACE;
+    {
+        PokePvPRecentOpponent opp;
+
+        if (PokePvPProfile_GetRecent(0, &opp))
+        {
+            dst = StringCopy(dst, opp.name);
+            *dst++ = CHAR_SPACE;
+            dst = StringCopy(dst, opp.tag);
+        }
+    }
+    if ((u32)(dst - buf) > 23u)
+        buf[23] = EOS;
+    AddTextPrinterParameterized3(sWindowIds[3], FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+    PutWindowTilemap(sWindowIds[3]);
+
+    /* Window 4: NAME action (moved here from the old PLAYER SETTINGS
+     * row). */
+    FillWindowPixelBuffer(sWindowIds[4], PIXEL_FILL(10));
+    AddTextPrinterParameterized3(sWindowIds[4], FONT_NORMAL, 2, 2, sTextColor1, -1, gText_Player);
+    PutWindowTilemap(sWindowIds[4]);
+
+    /* ERROR band: recent opponents 2-3 (two lines). */
+    {
+        PokePvPRecentOpponent opp;
+        u8 line = 0;
+
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+        if (PokePvPProfile_GetRecent(1, &opp))
+        {
+            dst = StringCopy(buf, opp.name);
+            *dst++ = CHAR_SPACE;
+            dst = StringCopy(dst, opp.tag);
+            *dst = EOS;
+            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 2, sTextColor1, -1, buf);
+            line = 1;
+        }
+        if (PokePvPProfile_GetRecent(2, &opp))
+        {
+            dst = StringCopy(buf, opp.name);
+            *dst++ = CHAR_SPACE;
+            dst = StringCopy(dst, opp.tag);
+            *dst = EOS;
+            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 2 + 16 * line, sTextColor1, -1, buf);
+        }
+        PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+        CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
+    }
+
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 4; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+}
+
+static void Task_PokePvPProfile(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    DrawProfileScreen();
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        /* The NAME row (window 4) re-enters the naming screen; the other
+         * rows are display-only. */
+        if (gTasks[taskId].tSubCursorPos == 4)
+        {
+            PlaySE(SE_SELECT);
+            gExitStairsMovementDisabled = FALSE;
+            FreeAllWindowBuffers();
+            DestroyTask(taskId);
+            DoNamingScreen(NAMING_SCREEN_PLAYER, gSaveBlock2Ptr->playerName, gSaveBlock2Ptr->playerGender, 0, 0, CB2_InitMainMenu);
+        }
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+        gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromHistory;
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+        MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 4)
+    {
+        gTasks[taskId].tSubCursorPos++;
+        MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+    }
 }
 
 // ---------------------------------------------------------------------------
