@@ -15,6 +15,8 @@
 #include "pokepvp/mailbox.h" // POKEPVP (UI plan slice 2): ROM->host post-match action records (quoted-relative to src/, as battle_controller_pokepvp.c does)
 #include "pokepvp/presentation_types.h" // POKEPVP (UI plan slice 2): POST_MATCH_ACTION message id
 #include "post_match.h" // POKEPVP (UI plan slice 2): POST-MATCH screen buffer
+#include "ready_check.h" // POKEPVP (UI plan slice 3): ready-check prompt buffer
+#include "packs_catalog.h" // POKEPVP (UI plan slice 3): pack catalog + launch-config flags
 #include "history.h" // POKEPVP (ADR-168): MATCH HISTORY buffer
 #include "list_menu.h" // POKEPVP (ADR-093): the move editor's scrolling lists
 #include "data.h"        // POKEPVP (ADR-093): gSpeciesNames, gMoveNames
@@ -69,6 +71,29 @@ enum MainMenuWindow
 #define POKEPVP_MATCH_MODE_AUTO     0u
 #define POKEPVP_MATCH_MODE_INVITE   1u
 #define POKEPVP_MATCH_MODE_PRACTICE 2u
+// POKEPVP (UI plan slice 3, Phase C): the picker tree's explicit modes
+// (Build Plan §8 item 2: Quick / Custom / Invite / Practice). MATCH_CONFIG
+// carries these to the host; the submenu now hides rows whose server flag
+// is off (POKEPVP_FLAG_*, packs_catalog.h).
+#define POKEPVP_MATCH_MODE_QUICK_EARLY 11u
+#define POKEPVP_MATCH_MODE_QUICK_ELITE 12u
+#define POKEPVP_MATCH_MODE_CUSTOM_ELITE 13u
+// Picker tree stages (tPickerStage): 0 = START MATCH submenu, 1 = battle
+// class picker, 2 = pack picker, 3 = team selector.
+#define POKEPVP_PICKER_STAGE_MENU 0u
+#define POKEPVP_PICKER_STAGE_CLASS 1u
+#define POKEPVP_PICKER_STAGE_PACK 2u
+#define POKEPVP_PICKER_STAGE_TEAM 3u
+// Pack picker rows beyond the 5 catalog rows: RANDOM (the host picks a
+// pack of this class). A dedicated RULES row was designed and dropped in
+// the same slice: its static rules line (team size/level/ranked status,
+// Build Plan §8 item 6) is rendered as the picker's summary line instead,
+// leaving the row count at 5 packs + RANDOM = 6 -- a 7th row would only
+// have duplicated RANDOM's behavior, since A on it resolved to the same
+// "unpicked" state (dead UI). If a richer full-screen rules view is ever
+// wanted it is a new stage, not a 7th row.
+#define POKEPVP_PICKER_ROW_RANDOM 5u
+#define POKEPVP_PICKER_ROW_COUNT 6u
 
 // POKEPVP (ADR-093): move-editor state. data[3..7] are unused by every
 // other menu type here, and the editor is only ever reachable from the
@@ -85,6 +110,13 @@ enum MainMenuWindow
 #define tSubMode         data[8]
 #define tMGErrorMsgState data[9]
 #define tMGErrorType     data[10]
+// POKEPVP (UI plan slice 3): picker-tree state for the START MATCH flow
+// (data[14]/data[15] were unused): which stage the walk is on, and the
+// battle-class byte the QUICK flow carries into the pack picker and then
+// into MATCH_CONFIG. data[3] (tTeamSlot) is free while this task chain
+// owns the screen and is reused for the picked pack row.
+#define tPickerStage     data[14]
+#define tPickerClass     data[15]
 
 // POKEPVP (ADR-096): the move info panel shown alongside the move-slot and
 // movepool lists. tMoveInfoWindowId is WINDOW_NONE when no panel is open
@@ -130,7 +162,18 @@ static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId);
 static void DrawPokePvPMenuItems(u8 selectedIdx);
 // POKEPVP (ADR-091): START MATCH -> AUTO-MATCH/INVITE MATCH submenu.
 static void DrawStartMatchSubmenuItems(u8 selectedIdx);
+// POKEPVP (UI plan slice 3): the START MATCH mode tree -- class picker
+// (QUICK) and pack picker (QUICK), plus the ready-check prompt state;
+// see each function below.
+static void DrawClassPickerItems(u8 selectedIdx);
+static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass);
+static void Task_PokePvPClassPicker(u8 taskId);
+static void Task_PokePvPPackPicker(u8 taskId);
 static void Task_PokePvPStartMatchSubmenu(u8 taskId);
+// POKEPVP (UI plan slice 3): ready-check prompt helpers, used by the
+// wait tasks above before their own definition below.
+static bool8 PokePvP_IsReadyCheckCancelled(void);
+static bool8 TickReadyCheckPrompt(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId);
 // POKEPVP (ADR-095): AUTO-MATCH -> team-selector screen, a deliberately
 // separate picker from TEAM BUILDER's own team-slot list below -- no
@@ -280,9 +323,27 @@ static const u8 sText_MoveInfoPP[] = _("PP");
 // POKEPVP (ADR-099): the panel's header stripe.
 static const u8 sText_MoveInfoHeader[] = _("MOVE INFO");
 static const u8 sText_AutoMatch[] = _("AUTO-MATCH");
+// POKEPVP (UI plan slot 3, Phase C): the START MATCH submenu now serves
+// the Build Plan §8 mode tree -- QUICK EARLY / QUICK ELITE (battle class
+// picker -> 5 packs + RANDOM), CUSTOM ELITE (saved team), INVITE
+// MATCH, PRACTICE. Rows whose server feature flag is off stay hidden.
+static const u8 sText_QuickEarly[] = _("QUICK EARLY");
+static const u8 sText_QuickElite[] = _("QUICK ELITE");
+static const u8 sText_CustomElite[] = _("CUSTOM ELITE");
 static const u8 sText_InviteMatch[] = _("INVITE MATCH");
-// POKEPVP (Phase J v2): PRACTICE runs a match against the server-side AI.
 static const u8 sText_PracticeMatch[] = _("PRACTICE");
+// POKEPVP (UI plan slice 3): the battle-class and pack-picker rows.
+static const u8 sText_RandomPack[] = _("RANDOM");
+// Pack picker screen labels: "EARLY PACKS" / "ELITE PACKS" header row
+// and the pack picker's summary line (team size/level/frozen/ranked --
+// Build Plan §8 item 6's rules view, static-render lean).
+static const u8 sText_EarlyPacks[] = _("EARLY PACKS");
+static const u8 sText_ElitePacks[] = _("ELITE PACKS");
+static const u8 sText_QuickRulesLine[] = _("3v3 LVL100 FROZEN");
+// POKEPVP (UI plan slice 3): the ready-check prompt (Build Plan §8 item
+// 2 -- both players must confirm within the window; the gateway's
+// timeout frame budget is held ROM-side by ready_check.c).
+static const u8 sText_ReadyPrompt[] = _("READY?  A=YES B=NO");
 
 static const struct WindowTemplate sWindowTemplate[] = {
     [MAIN_MENU_WINDOW_NEWGAME_ONLY] = {
@@ -1332,8 +1393,124 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
         MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
         MAIN_MENU_WINDOW_POKEPVP_4,
     };
+    /* The visible rows, in the same order StartMatchModeForRow maps them
+     * (QUICK EARLY, QUICK ELITE, CUSTOM ELITE, INVITE MATCH, PRACTICE),
+     * compressed upward as flags hide modes -- a hidden mode never
+     * occupies a row, so no phantom unselectable slot can render. The
+     * flags==0 -> 0x0F rule keeps an offline build (no LAUNCH_CONFIG
+     * ever pushed) at the legacy dense five. */
+    static const u8 *const sAllLabels[] = {
+        sText_QuickEarly, sText_QuickElite, sText_CustomElite, sText_InviteMatch, sText_PracticeMatch,
+    };
+    u8 flags = PokePvPPacks_Flags();
+    const u8 *visible[5];
+    u8 n = 0;
+    u8 i;
+
+    if (flags == 0)
+        flags = 0x0F;
+    if (flags & POKEPVP_FLAG_QUICK)
+    {
+        visible[n++] = sAllLabels[0];
+        visible[n++] = sAllLabels[1];
+    }
+    if (flags & POKEPVP_FLAG_CUSTOM)
+        visible[n++] = sAllLabels[2];
+    if (flags & POKEPVP_FLAG_INVITE)
+        visible[n++] = sAllLabels[3];
+    if (flags & POKEPVP_FLAG_PRACTICE)
+        visible[n++] = sAllLabels[4];
+
+    for (i = 0; i < 5; i++)
+    {
+        bool8 selected = (i == selectedIdx);
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        if (i < n)
+        {
+            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                selected ? sTextColorSelected : sTextColor1, -1, visible[i]);
+        }
+    }
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 5; i++)
+        PutWindowTilemap(sWindowIds[i]);
+    for (i = 0; i < 4; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+}
+
+/* POKEPVP (UI plan slice 3): the START MATCH mode tree (Build Plan §2.2
+ * categories, §8 item 2). Five fixed rows -- QUICK EARLY / QUICK ELITE /
+ * CUSTOM ELITE / INVITE MATCH / PRACTICE -- with rows hidden by the
+ * server's feature flags (PacksCatalog_Flags, pushed via LAUNCH_CONFIG).
+ * flags == 0 means "no configuration received at all" (offline build,
+ * fetch failed): the ROM cannot tell that from an explicit all-disabled
+ * push, and the real server always enables invite+practice, so 0 is
+ * treated as the legacy dense tree -- every mode visible, exactly the
+ * pre-slice-3 behavior. The row count is what the submenu task's D-pad
+ * bounds clamp to. */
+static u8 StartMatchRowCount(void)
+{
+    u8 flags = PokePvPPacks_Flags();
+    u8 n = 0;
+
+    if (flags == 0)
+        flags = 0x0F; /* unconfigured -> all modes visible (legacy dense) */
+    if (flags & POKEPVP_FLAG_QUICK)
+        n += 2;
+    if (flags & POKEPVP_FLAG_CUSTOM)
+        n++;
+    if (flags & POKEPVP_FLAG_INVITE)
+        n++;
+    if (flags & POKEPVP_FLAG_PRACTICE)
+        n++;
+    return n;
+}
+
+/* Row index -> submenu mode (POKEPVP_MATCH_MODE_*), walking the same
+ * order and visibility as StartMatchRowCount. Returns POKEPVP_MATCH_MODE_
+ * AUTO (0) for an out-of-range row -- the caller never passes one. */
+static u8 StartMatchModeForRow(u8 row)
+{
+    u8 flags = PokePvPPacks_Flags();
+
+    if (flags == 0)
+        flags = 0x0F;
+    if (flags & POKEPVP_FLAG_QUICK)
+    {
+        if (row == 0)
+            return POKEPVP_MATCH_MODE_QUICK_EARLY;
+        if (row == 1)
+            return POKEPVP_MATCH_MODE_QUICK_ELITE;
+        row -= 2;
+    }
+    if (flags & POKEPVP_FLAG_CUSTOM)
+    {
+        if (row == 0)
+            return POKEPVP_MATCH_MODE_CUSTOM_ELITE;
+        row--;
+    }
+    if (flags & POKEPVP_FLAG_INVITE)
+    {
+        if (row == 0)
+            return POKEPVP_MATCH_MODE_INVITE;
+        row--;
+    }
+    return POKEPVP_MATCH_MODE_PRACTICE;
+}
+
+/* POKEPVP (UI plan slice 3): the battle-class picker inside the QUICK
+ * flow (Build Plan §8 item 3: "Battle Class -> five Battle Packs"). Two
+ * rows, same window style as every other list here. */
+static void DrawClassPickerItems(u8 selectedIdx)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
     const u8 *const sLabels[] = {
-        sText_AutoMatch, sText_InviteMatch, sText_PracticeMatch, sString_Dummy, sString_Dummy,
+        sText_EarlyPacks, sText_ElitePacks, sString_Dummy, sString_Dummy, sString_Dummy,
     };
     u8 i;
 
@@ -1352,12 +1529,74 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
     CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
 }
 
-// POKEPVP (ADR-091): drives the 2-item submenu -- D-pad moves the WIN0
-// highlight between rows 0/1 (reusing MoveWindowByMenuTypeAndCursorPos's
-// existing MAIN_MENU_POKEPVP 32px-slot geometry, which already matches
-// these windows' tilemapTop spacing exactly), A selects, B returns to the
-// top-level 5-item menu.
-static void Task_PokePvPStartMatchSubmenu(u8 taskId)
+/* POKEPVP (UI plan slice 3): the pack picker (Build Plan §8 items 3-4:
+ * five Battle Packs + RANDOM + a rules/overview line). A 5-row scroll
+ * window over a 6-row list (5 packs, then RANDOM): at the bottom the
+ * window slides by one so RANDOM is reachable without dropping pack 4.
+ * The overview line -- the hovered pack's title plus the static format
+ * line -- draws in the ERROR band below the panel (the "pack overview"
+ * of §8 item 3, lean: title + rules; the full description stays a
+ * server-side summary the catalog could later carry). */
+static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    u8 start;
+    u8 i;
+    u8 buf2[32];
+
+    start = (selectedIdx < 5) ? 0 : 1;
+    for (i = 0; i < 5; i++)
+    {
+        u8 row = (u8)(start + i);
+        bool8 selected = (row == selectedIdx);
+
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        if (row < POKEPVP_PACKS_PER_CLASS)
+        {
+            PokePvPPackEntry pack;
+
+            if (PokePvPPacks_Get(battleClass, row, &pack))
+            {
+                AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                    selected ? sTextColorSelected : sTextColor1, -1, pack.title);
+            }
+            else
+            {
+                AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                    selected ? sTextColorSelected : sTextColor1, -1, sText_NoMove);
+            }
+        }
+        else
+        {
+            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                selected ? sTextColorSelected : sTextColor1, -1, sText_RandomPack);
+        }
+        PutWindowTilemap(sWindowIds[i]);
+    }
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    /* Overview line in the ERROR band. */
+    {
+        u8 *dst;
+
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+        dst = StringCopy(buf2, sText_QuickRulesLine);
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 2, sTextColor1, -1, buf2);
+        PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+        CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
+    }
+    for (i = 0; i < 4; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+}
+
+/* POKEPVP (UI plan slice 3): class picker task -- EARLY opens the early
+ * pack list, ELITE the elite list; B returns to the START MATCH submenu. */
+static void Task_PokePvPClassPicker(u8 taskId)
 {
     if (gPaletteFade.active)
         return;
@@ -1367,28 +1606,115 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
     if (JOY_NEW(A_BUTTON))
     {
         PlaySE(SE_SELECT);
-        // POKEPVP (Phase J v2): all three submenu items now open the same
-        // team-selector screen; the mode byte tells the selector whether
-        // the A-press sends MATCH_REQUEST (AUTO/INVITE -- the launcher's
-        // join mode, CLI or future ROM picker) or PRACTICE_REQUEST.
-        // INVITE MATCH is no longer the pre-Phase-B "not yet
-        // implemented" stub: its flow is the same team selector, and the
-        // launcher joins blind pairing when no queue was configured
-        // (--queue invite is the default).
-        if (gTasks[taskId].tSubCursorPos == 2)
+        gTasks[taskId].tPickerClass = (u8)((gTasks[taskId].tSubCursorPos == 0) ? 0 : 1);
+        gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_PACK;
+        gTasks[taskId].tSubCursorPos = 0;
+        gTasks[taskId].func = Task_PokePvPPackPicker;
+        DrawPackPickerItems(0, gTasks[taskId].tPickerClass);
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_MENU;
+        gTasks[taskId].tSubCursorPos = 0;
+        gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+        DrawStartMatchSubmenuItems(0);
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+        DrawClassPickerItems(gTasks[taskId].tSubCursorPos);
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+        DrawClassPickerItems(gTasks[taskId].tSubCursorPos);
+    }
+}
+
+/* POKEPVP (UI plan slice 3): pack picker task -- A on a pack row (or
+ * RANDOM) lands on the team selector with the pick in tTeamSlot; B
+ * returns to the class picker. */
+static void Task_PokePvPPackPicker(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        u8 row = gTasks[taskId].tSubCursorPos;
+
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tTeamSlot = (row < POKEPVP_PACKS_PER_CLASS) ? row : POKEPVP_PICKER_ROW_RANDOM;
+        gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_TEAM;
+        gTasks[taskId].tSubMode = (gTasks[taskId].tPickerClass == 0)
+            ? POKEPVP_MATCH_MODE_QUICK_EARLY
+            : POKEPVP_MATCH_MODE_QUICK_ELITE;
+        gTasks[taskId].tSubCursorPos = 0;
+        DrawTeamSelectorItems(0);
+        gTasks[taskId].func = Task_PokePvPTeamSelector;
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_CLASS;
+        gTasks[taskId].tSubCursorPos = gTasks[taskId].tPickerClass;
+        DrawClassPickerItems(gTasks[taskId].tSubCursorPos);
+        gTasks[taskId].func = Task_PokePvPClassPicker;
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+        DrawPackPickerItems(gTasks[taskId].tSubCursorPos, gTasks[taskId].tPickerClass);
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < POKEPVP_PICKER_ROW_COUNT - 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+        DrawPackPickerItems(gTasks[taskId].tSubCursorPos, gTasks[taskId].tPickerClass);
+    }
+}
+
+// POKEPVP (ADR-091): drives the START MATCH submenu -- D-pad moves the
+// WIN0 highlight between the visible mode rows (START MATCH submenu's own
+// 32px-slot geometry), A selects, B returns to the top-level 5-item menu.
+// POKEPVP (UI plan slice 3): the rows are QUICK / CUSTOM / INVITE /
+// PRACTICE in the Build Plan §2.2 category order (flag-hidden); QUICK
+// descends into the class -> pack -> team picker stack, every other mode
+// goes straight to the team selector like the pre-slice-3 AUTO MATCH did.
+static void Task_PokePvPStartMatchSubmenu(u8 taskId)
+{
+    u8 rowCount;
+
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    rowCount = StartMatchRowCount();
+    if (rowCount == 0)
+        rowCount = 1;
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        u8 mode = StartMatchModeForRow(gTasks[taskId].tSubCursorPos);
+
+        PlaySE(SE_SELECT);
+        if (mode == POKEPVP_MATCH_MODE_QUICK_EARLY || mode == POKEPVP_MATCH_MODE_QUICK_ELITE)
         {
-            DrawTeamSelectorItems(0);
-            gTasks[taskId].tSubMode = POKEPVP_MATCH_MODE_PRACTICE;
-            gTasks[taskId].tSubCursorPos = 0;
-            gTasks[taskId].func = Task_PokePvPTeamSelector;
+            gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_CLASS;
+            gTasks[taskId].tSubCursorPos = (mode == POKEPVP_MATCH_MODE_QUICK_EARLY) ? 0 : 1;
+            gTasks[taskId].tPickerClass = gTasks[taskId].tSubCursorPos;
+            DrawClassPickerItems(gTasks[taskId].tSubCursorPos);
+            gTasks[taskId].func = Task_PokePvPClassPicker;
         }
         else
         {
-            DrawTeamSelectorItems(0);
-            gTasks[taskId].tSubMode = (gTasks[taskId].tSubCursorPos == 0)
-                ? POKEPVP_MATCH_MODE_AUTO
-                : POKEPVP_MATCH_MODE_INVITE;
+            gTasks[taskId].tSubMode = mode;
+            gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_TEAM;
             gTasks[taskId].tSubCursorPos = 0;
+            DrawTeamSelectorItems(0);
             gTasks[taskId].func = Task_PokePvPTeamSelector;
         }
     }
@@ -1403,7 +1729,7 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
         gTasks[taskId].tSubCursorPos--;
         DrawStartMatchSubmenuItems(gTasks[taskId].tSubCursorPos);
     }
-    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 2)
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < rowCount - 1)
     {
         gTasks[taskId].tSubCursorPos++;
         DrawStartMatchSubmenuItems(gTasks[taskId].tSubCursorPos);
@@ -1558,6 +1884,24 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
     {
         bool8 ready = PokePvP_IsRealOpponentReady();
 
+        /* POKEPVP (UI plan slice 3): while this wait is on screen, a
+         * gateway ready-check gets a real A/B prompt. The prompt's own
+         * A/B handling consumes the frame (returns TRUE); a cancel
+         * returns to the START MATCH submenu the player came from. */
+        if (!ready && TickReadyCheckPrompt(taskId))
+        {
+            if (PokePvP_IsReadyCheckCancelled())
+            {
+                PokePvP_ClearRealMatchPending();
+                ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+                MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+                DrawStartMatchSubmenuItems(0);
+                gTasks[taskId].tSubCursorPos = 0;
+                gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+            }
+            break;
+        }
+
         gTasks[taskId].tWaitFrames++;
         if (ready)
         {
@@ -1667,6 +2011,97 @@ static void SendPostMatchAction(u8 action)
                                 &action,
                                 sizeof(action));
     DebugPrintf("POKEPVP: post-match action=%d sent", action);
+}
+
+/* POKEPVP (UI plan slice 3): the ready-check prompt (Build Plan §8 item
+ * 2's "must both confirm" gate). Called every frame from the waiting
+ * tasks (Task_PokePvPWaitForRealOpponent and
+ * Task_PokePvPPostMatchWait); returns TRUE when it consumed the frame
+ * (prompt shown / input handled / budget ticked), FALSE when no prompt
+ * is pending so the caller's own wait logic runs unchanged.
+ *
+ * A=YES answers READY (accept), B=NO or budget lapse answers CANCEL;
+ * both clear the prompt and emit POKEPVP_MSG_READY_CHOICE (host
+ * forwards readyCheckAck). B additionally prints "Match cancelled." and
+ * routes the caller back through the same honest message flow as
+ * Task_PokePvPNoOpponentFound by clearing the real-match pending state;
+ * the caller detects that via PokePvP_IsReadyCheckCancelled() and
+ * returns to its own previous screen. */
+static bool8 sReadyCheckCancelled;
+static bool8 sReadyPromptShown;
+
+static bool8 PokePvP_IsReadyCheckCancelled(void)
+{
+    return sReadyCheckCancelled;
+}
+
+static void SendReadyChoice(u8 accept)
+{
+    u8 payload = accept;
+
+    PokePvPMailboxRing_TryWrite(&gPokePvPMailbox.romToHost,
+                                POKEPVP_MAILBOX_ROM_TO_HOST_MAGIC,
+                                POKEPVP_MSG_READY_CHOICE,
+                                0,
+                                accept,
+                                &payload,
+                                sizeof(payload));
+    DebugPrintf("POKEPVP: ready choice accept=%d sent", accept);
+}
+
+/* POKEPVP (UI plan slice 3): the ready-check prompt (Build Plan §8 item
+ * 2's "must both confirm" gate). Called every frame from the waiting
+ * tasks (Task_PokePvPWaitForRealOpponent and
+ * Task_PokePvPPostMatchWait); returns TRUE when it consumed the frame
+ * (prompt shown / input handled / budget ticked), FALSE when no prompt
+ * is pending so the caller's own wait logic runs unchanged.
+ *
+ * A=YES answers READY (accept), B=NO or budget lapse answers CANCEL;
+ * both clear the prompt and emit POKEPVP_MSG_READY_CHOICE (the host
+ * forwards readyCheckAck). A cancel sets
+ * PokePvP_IsReadyCheckCancelled() so the caller returns to its own
+ * previous screen immediately -- the prompt text on screen already told
+ * the player what B means, so a silent return is unambiguous. */
+static bool8 TickReadyCheckPrompt(u8 taskId)
+{
+    if (!PokePvPReadyCheck_IsPending())
+    {
+        sReadyPromptShown = FALSE;
+        return FALSE;
+    }
+
+    if (!sReadyPromptShown)
+    {
+        PrintMessageOnWindow4(sText_ReadyPrompt);
+        sReadyPromptShown = TRUE;
+    }
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        sReadyCheckCancelled = FALSE;
+        PokePvPReadyCheck_Clear();
+        SendReadyChoice(1);
+        return FALSE; /* let the caller's own wait continue */
+    }
+    if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        sReadyCheckCancelled = TRUE;
+        PokePvPReadyCheck_Clear();
+        SendReadyChoice(0);
+        return TRUE; /* caller returns to its previous screen */
+    }
+    if (!PokePvPReadyCheck_Tick())
+    {
+        /* Window lapsed: treat as declined, same as B. */
+        sReadyCheckCancelled = TRUE;
+        PokePvPReadyCheck_Clear();
+        SendReadyChoice(0);
+        return TRUE;
+    }
+    /* Prompt on screen; keep it. */
+    return TRUE;
 }
 
 static void DrawPostMatchResultLine(u8 windowId)
@@ -1911,6 +2346,18 @@ static void Task_PokePvPPostMatchWait(u8 taskId)
             }
             break;
         }
+        /* POKEPVP (UI plan slice 3): the ready-check prompt, same hook
+         * as the AUTO-MATCH wait. A cancel returns to the post-match
+         * screen. */
+        if (TickReadyCheckPrompt(taskId))
+        {
+            if (PokePvP_IsReadyCheckCancelled())
+            {
+                PokePvP_ClearRealMatchPending();
+                ReturnToPostMatchScreen(taskId);
+            }
+            break;
+        }
         gTasks[taskId].tWaitFrames++;
         if (PokePvP_IsRealOpponentReady())
         {
@@ -2033,7 +2480,58 @@ static void Task_PokePvPTeamSelector(u8 taskId)
         // POKEPVP (Phase J v2): PRACTICE (submenu item 2) sends
         // PRACTICE_REQUEST instead of MATCH_REQUEST -- the host starts a
         // practice match against the server AI with this same team.
+        // POKEPVP (UI plan slice 3): the mode chosen in the START MATCH
+        // tree rides ahead as MATCH_CONFIG so the host applies it to this
+        // session's queue/pack selection before the join request arrives
+        // (FIFO order). The short modes map straight to the old AUTO
+        // behavior; the quick modes carry the picked class + pack row
+        // (pack row 5 = RANDOM).
         PokePvPTeamBuilder_SendTeam(gTasks[taskId].tSubCursorPos);
+        {
+            u8 payload[3];
+            u8 mode = 0;
+            u8 cls = 0;
+            u8 packRow = 0;
+            u8 len = 3;
+
+            switch (gTasks[taskId].tSubMode)
+            {
+            case POKEPVP_MATCH_MODE_INVITE:
+            case POKEPVP_MATCH_MODE_AUTO:
+                mode = 0;
+                break;
+            case POKEPVP_MATCH_MODE_QUICK_EARLY:
+                mode = 1;
+                cls = 0;
+                packRow = gTasks[taskId].tTeamSlot;
+                break;
+            case POKEPVP_MATCH_MODE_QUICK_ELITE:
+                mode = 2;
+                cls = 1;
+                packRow = gTasks[taskId].tTeamSlot;
+                break;
+            case POKEPVP_MATCH_MODE_CUSTOM_ELITE:
+                mode = 3;
+                break;
+            default: /* PRACTICE */
+                len = 0;
+                break;
+            }
+            if (len != 0)
+            {
+                payload[0] = mode;
+                payload[1] = cls;
+                payload[2] = packRow;
+                PokePvPMailboxRing_TryWrite(&gPokePvPMailbox.romToHost,
+                                            POKEPVP_MAILBOX_ROM_TO_HOST_MAGIC,
+                                            POKEPVP_MSG_MATCH_CONFIG,
+                                            0,
+                                            mode,
+                                            payload,
+                                            len);
+                DebugPrintf("POKEPVP: match config mode=%d class=%d packRow=%d sent", mode, cls, packRow);
+            }
+        }
         if (gTasks[taskId].tSubMode == POKEPVP_MATCH_MODE_PRACTICE)
             PokePvPTeamBuilder_RequestPractice(gTasks[taskId].tSubCursorPos);
         else
