@@ -21,6 +21,7 @@
 #include "profile.h" // POKEPVP (UI plan slice 5): PROFILE screen buffer
 #include "pokepvp/social.h" // POKEPVP (UI plan slice 6): SOCIAL screen buffer (friends/rivals/blocks)
 #include "history.h" // POKEPVP (ADR-168): MATCH HISTORY buffer
+#include "leaderboard.h" // POKEPVP (ADR-188): LEADERBOARD buffer
 #include "list_menu.h" // POKEPVP (ADR-093): the move editor's scrolling lists
 #include "data.h"        // POKEPVP (ADR-093): gSpeciesNames, gMoveNames
 #include "pokemon.h"     // POKEPVP (ADR-096): gBattleMoves, for the move info panel
@@ -55,12 +56,15 @@ enum MainMenuWindow
     MAIN_MENU_WINDOW_CONTINUE,
     MAIN_MENU_WINDOW_NEWGAME,
     MAIN_MENU_WINDOW_MYSTERYGIFT,
-    // POKEPVP (ADR-085): the five real menu slots, top to bottom.
+    // POKEPVP (ADR-085, extended ADR-188): the six real menu slots, top
+    // to bottom. Comments below reflect current real behavior, not the
+    // ADR-085-era stub labels this enum was first written with.
     MAIN_MENU_WINDOW_POKEPVP_0, // START MATCH
-    MAIN_MENU_WINDOW_POKEPVP_1, // TEAM BUILDER (stub)
-    MAIN_MENU_WINDOW_POKEPVP_2, // PLAYER SETTINGS (stub)
-    MAIN_MENU_WINDOW_POKEPVP_3, // LEADERBOARD (stub)
-    MAIN_MENU_WINDOW_POKEPVP_4, // OPTIONS (stub)
+    MAIN_MENU_WINDOW_POKEPVP_1, // TEAM BUILDER
+    MAIN_MENU_WINDOW_POKEPVP_2, // PROFILE
+    MAIN_MENU_WINDOW_POKEPVP_3, // MATCH HISTORY
+    MAIN_MENU_WINDOW_POKEPVP_4, // OPTIONS
+    MAIN_MENU_WINDOW_POKEPVP_5, // LEADERBOARD (ADR-188)
     MAIN_MENU_WINDOW_ERROR,
     MAIN_MENU_WINDOW_COUNT
 };
@@ -164,6 +168,10 @@ static void Task_MysteryGiftError(u8 taskId);
 static void Task_PokePvPMenuStub(u8 taskId);
 static void Task_PokePvPMatchHistory(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromHistory(u8 taskId);
+// POKEPVP (ADR-188): LEADERBOARD -- same "one window, newline-joined
+// rows" shape as MATCH HISTORY above; see that task for the pattern.
+static void Task_PokePvPLeaderboard(u8 taskId);
+static void Task_PokePvPReturnToTopMenuFromLeaderboard(u8 taskId);
 static void Task_PokePvPNoOpponentFound(u8 taskId); // POKEPVP (ADR-124)
 // POKEPVP (UI plan slice 4, Phase H): the challenge inbox -- surfaced
 // from Task_HandleMenuInput while the player idles on the top menu and a
@@ -301,6 +309,12 @@ static const u8 sText_MatchHistory[] = _("MATCH HISTORY");
 static const u8 sText_HistoryWSep[] = _("   W: ");
 static const u8 sText_HistoryL[] = _("  L: ");
 static const u8 sText_HistoryEmpty[] = _("No matches yet.");
+// POKEPVP (ADR-188): the real 6th top-menu row, and LEADERBOARD's own
+// one-window rank/name/rating dump (same shape as MATCH HISTORY's
+// W/L dump above).
+static const u8 sText_Leaderboard[] = _("LEADERBOARD");
+static const u8 sText_LeaderboardRSep[] = _(" ");
+static const u8 sText_LeaderboardEmpty[] = _("No ranked players yet.");
 static const u8 sText_Options[] = _("OPTIONS");
 static const u8 sText_NotYetImplemented[] = _("Not yet implemented.");
 // POKEPVP (UI plan slice 2, Phase I): the post-match screen -- result
@@ -406,9 +420,14 @@ static const u8 sText_ProfileW[] = _("W:");
 static const u8 sText_ProfileL[] = _("L:");
 static const u8 sText_ProfileT[] = _("T:");
 static const u8 sText_ProfileM[] = _("M:");
-static const u8 sText_ProfileTop[] = _("TOP");
-static const u8 sText_ProfileRecent[] = _("RECENT");
+static const u8 sText_ProfileTop[] = _("TOP: ");
+static const u8 sText_ProfileRecent[] = _("RECENT: ");
 static const u8 sText_ProfileEmpty[] = _("No matches yet.");
+static const u8 sText_ProfileStatSep[] = _("  ");
+static const u8 sText_ProfileSpeciesSep[] = _(", ");
+static const u8 sText_ProfileNoTag[] = _("(no tag yet)");
+static const u8 sText_ProfileNoSpecies[] = _("(no matches yet)");
+static const u8 sText_ProfileNoOpponent[] = _("(none yet)");
 // POKEPVP (UI plan slice 6): the SOCIAL screen (Build Plan §12) --
 // friends / rivals / blocks lists with per-row CHALLENGE and
 // REMOVE/UNBLOCK, plus the NAME action moved here from the old
@@ -495,6 +514,16 @@ static const struct WindowTemplate sWindowTemplate[] = {
         .bg = 0, .tilemapLeft = 3, .tilemapTop = 14, .width = 24, .height = 2,
         .paletteNum = 15, .baseBlock = 0x211
     },
+    // POKEPVP (ADR-188): a 6th slot for LEADERBOARD, packed the same way
+    // as POKEPVP_0..4 -- rows 16-17 were freed by ADR-186's backdrop
+    // removal. Only the top-menu screen (DrawPokePvPMenuItems) uses this
+    // window; PROFILE's own screen deliberately does not (its ERROR-band
+    // use for extra recent opponents would visually collide with these
+    // same rows -- see Task_PokePvPProfile's comment).
+    [MAIN_MENU_WINDOW_POKEPVP_5] = {
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 16, .width = 24, .height = 2,
+        .paletteNum = 15, .baseBlock = 0x241
+    },
     [MAIN_MENU_WINDOW_ERROR] = {
         .bg = 0,
         .tilemapLeft = 3,
@@ -512,8 +541,22 @@ static const struct WindowTemplate sWindowTemplate[] = {
 // (rows 6-15) instead of a separate border per row. tilemapLeft/Top/width/
 // height must bound the POKEPVP_0..4 windows exactly (left=3, top=6,
 // spanning to top+height=16, matching POKEPVP_4's tilemapTop 14 + height 2).
+// Deliberately NOT widened for ADR-188's 6th row (window 5) -- every
+// *other* screen in this file still only ever populates 5 rows and
+// shares this exact template, and widening it to 12 was found (via a
+// golden-slice regression, see docs/adr/188) to corrupt those screens'
+// own frame graphics elsewhere in this VRAM-tile-budget-tight ROM.
+// DrawPokePvPMenuItems alone uses sPokePvPMenuPanelTemplateWide below.
 static const struct WindowTemplate sPokePvPMenuPanelTemplate = {
     .bg = 0, .tilemapLeft = 3, .tilemapTop = 6, .width = 24, .height = 10
+};
+
+// POKEPVP (ADR-188): the top-menu screen's own wider panel, covering the
+// real 6th row (window 5) ADR-186's backdrop removal freed. Kept
+// separate from sPokePvPMenuPanelTemplate above rather than widening it
+// globally -- see that template's own comment for why.
+static const struct WindowTemplate sPokePvPMenuPanelTemplateWide = {
+    .bg = 0, .tilemapLeft = 3, .tilemapTop = 6, .width = 24, .height = 12
 };
 
 // POKEPVP (ADR-093): the move editor's list window. Added and removed on
@@ -522,7 +565,12 @@ static const struct WindowTemplate sPokePvPMenuPanelTemplate = {
 // hold for the whole life of a menu that mostly is not the move editor.
 // baseBlock 0x241 starts past MAIN_MENU_WINDOW_POKEPVP_4's own tiles
 // (0x211 + 24*2), the same "fresh blocks past everything already in use"
-// rule ADR-085 followed for the five menu slots.
+// rule ADR-085 followed for the five menu slots. ADR-188's window 5
+// deliberately reuses this SAME address (see that window's own comment)
+// rather than taking a fresh one -- a wider shared range was tried and
+// found (via a golden-slice regression) to push the move-info window
+// and the frame-graphics base tile far enough out to corrupt rendering
+// elsewhere in this VRAM-tile-budget-tight ROM.
 //
 // POKEPVP (menu redesign): tilemapTop 1 / height 18 assumed the screen
 // had no header/footer competing for rows -- true before the backdrop
@@ -576,6 +624,8 @@ static const u16 sTextbox_Pal[] = INCBIN_U16("graphics/main_menu/textbox.gbapal"
 // a plain offset constant even though the frame graphics themselves are
 // now FireRed's own stock GetUserWindowGraphics() output (see
 // LoadUserFrameToBg/SetStdFrame0OnBg below), not a hand-drawn asset.
+// ADR-188: deliberately NOT pushed out further for window 5 (which
+// reuses 0x241, not a fresh address) -- see that window's own comment.
 #define POKEPVP_PANEL_FRAME_BASE_TILE 0x400
 
 static const u8 sTextColor1[] = { 10, 11, 12 };
@@ -607,7 +657,7 @@ static const struct BgTemplate sBgTemplate[] = {
     // layer) is the only background this menu uses now.
 };
 
-static const u8 sMenuCursorYMax[] = { 0, 1, 2, 4 }; // POKEPVP (ADR-085): 5 items, cursor 0-4
+static const u8 sMenuCursorYMax[] = { 0, 1, 2, 5 }; // POKEPVP (ADR-188): 6 items, cursor 0-5
 
 static void CB2_MainMenu(void)
 {
@@ -908,30 +958,32 @@ static void Task_PrintMainMenuText(u8 taskId)
 // path below.
 static void DrawPokePvPMenuItems(u8 selectedIdx)
 {
+    // POKEPVP (ADR-188): 6 rows now -- LEADERBOARD is the real 6th slot
+    // ADR-186's backdrop removal freed room for.
     static const u8 sWindowIds[] = {
         MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
         MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
-        MAIN_MENU_WINDOW_POKEPVP_4,
+        MAIN_MENU_WINDOW_POKEPVP_4, MAIN_MENU_WINDOW_POKEPVP_5,
     };
     const u8 *const sLabels[] = {
         sText_StartMatch, sText_TeamBuilder, sText_Profile,
-        sText_MatchHistory, sText_Options,
+        sText_MatchHistory, sText_Options, sText_Leaderboard,
     };
     u8 i;
 
-    for (i = 0; i < 5; i++)
+    for (i = 0; i < 6; i++)
     {
         bool8 selected = (i == selectedIdx);
         FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
         AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
             selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
     }
-    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
-    for (i = 0; i < 5; i++)
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplateWide);
+    for (i = 0; i < 6; i++)
         PutWindowTilemap(sWindowIds[i]);
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < 5; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
-    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    CopyWindowToVram(sWindowIds[5], COPYWIN_FULL);
 }
 
 static void Task_WaitDma3AndFadeIn(u8 taskId)
@@ -1098,6 +1150,14 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
                 gTasks[taskId].func = Task_PokePvPMatchHistory;
                 BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
             }
+            else if (gTasks[taskId].tCursorPos == 5)
+            {
+                // POKEPVP (ADR-188): LEADERBOARD -- the real 6th row, on
+                // the room ADR-186's backdrop removal freed. Same
+                // redraw-and-fade-in shape as MATCH HISTORY above.
+                gTasks[taskId].func = Task_PokePvPLeaderboard;
+                BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+            }
             else
             {
                 // ADR-086 fix: HandleMenuInput's A-press already fades the
@@ -1108,11 +1168,9 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
                 // call, so "Not yet implemented." was drawn into a fully
                 // black palette and was never visible until the final
                 // dismiss-time fade (added in ADR-085) flashed the menu back.
-                // Live this reads as "select a stub -> black screen", not a
-                // hang -- confirmed distinct from ADR-085's already-fixed
-                // permanently-black dismissal bug. Still true for
-                // LEADERBOARD (3) -- PLAYER SETTINGS (2) and OPTIONS (4)
-                // are both handled above now, real behavior, not stubs.
+                // Unreachable now that cursor 0-5 are all handled above --
+                // sMenuCursorYMax caps the cursor at 5 -- kept only as a
+                // defensive default.
                 gTasks[taskId].tMGErrorMsgState = 0;
                 gTasks[taskId].func = Task_PokePvPMenuStub;
                 BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
@@ -1330,6 +1388,72 @@ static void Task_PokePvPReturnToTopMenuFromHistory(u8 taskId)
     gTasks[taskId].func = Task_UpdateVisualSelection;
 }
 
+// POKEPVP (ADR-188): LEADERBOARD -- identical shape to MATCH HISTORY
+// above (one window, rank/name/rating dumped as newline-joined rows),
+// reusing sMenuCursorYMax's now-6-item range this same phase added.
+static void Task_PokePvPLeaderboard(u8 taskId)
+{
+    u8 count = PokePvPLeaderboard_Count();
+    u8 buf[256];
+    u8 *dst = buf;
+    u8 i;
+
+    if (gPaletteFade.active)
+        return;
+
+    if (gTasks[taskId].data[0] == 0)
+    {
+        gTasks[taskId].data[0] = 1;
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(0));
+
+        if (count == 0)
+        {
+            dst = StringCopy(dst, sText_LeaderboardEmpty);
+        }
+        else
+        {
+            for (i = 0; i < count && i < POKEPVP_LEADERBOARD_MAX_ENTRIES; i++)
+            {
+                PokePvPLeaderboardEntry entry;
+
+                if (PokePvPLeaderboard_Get(i, &entry))
+                {
+                    dst = ConvertIntToDecimalStringN(dst, i + 1, STR_CONV_MODE_LEFT_ALIGN, 2);
+                    dst = StringCopy(dst, sText_LeaderboardRSep);
+                    dst = StringCopy(dst, entry.name);
+                    dst = StringCopy(dst, sText_LeaderboardRSep);
+                    dst = ConvertIntToDecimalStringN(dst, entry.rating, STR_CONV_MODE_LEFT_ALIGN, 5);
+                    dst = StringCopy(dst, sString_Newline);
+                }
+            }
+        }
+        *dst = EOS;
+
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 0, 0, sTextColorSelected, -1, buf);
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_FULL);
+    }
+
+    if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+        gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromLeaderboard;
+    }
+}
+
+/* POKEPVP (ADR-188): fade-out already ran (B above); redraw the top menu
+ * and hand back to selection, same as Task_PokePvPReturnToTopMenuFromHistory. */
+static void Task_PokePvPReturnToTopMenuFromLeaderboard(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+    DrawPokePvPMenuItems(0);
+    BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+    gTasks[taskId].tCursorPos = 0;
+    gTasks[taskId].func = Task_UpdateVisualSelection;
+}
+
 // POKEPVP (ADR-091): draws the 2-item AUTO-MATCH/INVITE MATCH submenu into
 // the same 5 window slots DrawPokePvPMenuItems uses -- rows 0/1 get real
 // labels, rows 2-4 are left blank (still drawn/tilemapped so any leftover
@@ -1387,12 +1511,20 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
                 selected ? sTextColorSelected : sTextColor1, -1, visible[i]);
         }
     }
+    // POKEPVP (ADR-188): this screen only ever populates 5 rows, but the
+    // shared panel border now spans 6 (window 5's rows, freed by
+    // ADR-186) -- blank it too, same "erase, don't just occlude"
+    // discipline as the unused rows above, so LEADERBOARD text left over
+    // from the top menu never bleeds through.
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
     MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
     for (i = 0; i < 5; i++)
         PutWindowTilemap(sWindowIds[i]);
     for (i = 0; i < 4; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
-    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_GFX);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
 /* POKEPVP (UI plan slice 3): the START MATCH mode tree (Build Plan §2.2
@@ -1483,6 +1615,15 @@ static void DrawClassPickerItems(u8 selectedIdx)
     for (i = 0; i < 4; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
     CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    // POKEPVP (ADR-188): this screen only ever populates 5 rows, but the
+    // shared panel border now spans 6 (window 5's rows, freed by
+    // ADR-186) -- blank it too, so leftover LEADERBOARD text from the
+    // top menu never bleeds through (same "erase, don't just occlude"
+    // discipline DrawStartMatchSubmenuItems already used for its own
+    // unused rows).
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
 /* POKEPVP (UI plan slice 3): the pack picker (Build Plan §8 items 3-4:
@@ -1534,6 +1675,19 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
         PutWindowTilemap(sWindowIds[i]);
     }
     MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    // POKEPVP (ADR-188): this screen only ever populates 5 rows, but the
+    // shared panel border now spans 6 (window 5's rows, freed by
+    // ADR-186) -- blank it too, so leftover LEADERBOARD text from the
+    // top menu never bleeds through (same "erase, don't just occlude"
+    // discipline DrawStartMatchSubmenuItems already used for its own
+    // unused rows). Done BEFORE the ERROR-band overview line below,
+    // deliberately -- window 5's screen rows (16-17) fall inside the
+    // ERROR window's own rows (15-18), and drawing them in the other
+    // order let window 5's blank tiles clobber the bottom half of the
+    // overview text (a real regression a golden-slice test caught).
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
     /* Overview line in the ERROR band. */
     {
         u8 *dst;
@@ -1767,6 +1921,12 @@ static void DrawTeamSelectorItems(u8 selectedIdx)
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+    // POKEPVP (ADR-188): see DrawStartMatchSubmenuItems's identical
+    // comment -- blank window 5 too so leftover LEADERBOARD text never
+    // bleeds through the now-taller shared panel.
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
 // POKEPVP (ADR-095): drives the team-selector list. Same D-pad/32px-slot
@@ -2160,6 +2320,15 @@ static void DrawPostMatchItems(u8 selectedIdx)
     for (i = 0; i < 4; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
     CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    // POKEPVP (ADR-188): this screen only ever populates 5 rows, but the
+    // shared panel border now spans 6 (window 5's rows, freed by
+    // ADR-186) -- blank it too, so leftover LEADERBOARD text from the
+    // top menu never bleeds through (same "erase, don't just occlude"
+    // discipline DrawStartMatchSubmenuItems already used for its own
+    // unused rows).
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
 static void ReturnToPostMatchScreen(u8 taskId)
@@ -2416,11 +2585,25 @@ static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId)
 // Stripped display: just profile data, no frames or backgrounds.
 // ---------------------------------------------------------------------------
 
+// POKEPVP (ADR-188): completes ADR-185's original PROFILE design, which
+// had only ever shipped as a stats-only "(minimalist)" placeholder. Six
+// single-line rows are available now (windows 0, 2, 3, 4 plus the ERROR
+// band -- window 1 stays SOCIAL's permanent action row); window 5 is
+// deliberately NOT used here even though it now exists (ADR-188's own
+// 6th top-menu slot) -- its tile rows (16-17) sit inside the ERROR
+// band's own rows (15-18), and this screen already uses the ERROR band
+// for the overflow recent-opponent rows, so drawing into both at once
+// would visually collide.
 static void Task_PokePvPProfile(u8 taskId)
 {
     PokePvPProfile profile;
-    u8 buf[32];
+    bool8 haveProfile;
+    u8 recentCount;
+    // Sized for the worst case (the ERROR band's two "name vs tag" lines
+    // below, each up to 16+4+16 chars, joined by a newline).
+    u8 buf[96];
     u8 *dst;
+    u8 i;
 
     if (gPaletteFade.active)
         return;
@@ -2428,37 +2611,28 @@ static void Task_PokePvPProfile(u8 taskId)
     if (gTasks[taskId].data[0] == 0)
     {
         gTasks[taskId].data[0] = 1;
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(0));
+        haveProfile = PokePvPProfile_Get(&profile);
+        recentCount = PokePvPProfile_RecentCount();
 
+        // POKEPVP (ADR-188): this screen never uses window 5 (see the
+        // function's own doc comment above), but blank it anyway --
+        // otherwise leftover LEADERBOARD text from the top menu bleeds
+        // through the shared panel's now-taller border.
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
+
+        // Window 0: the permanent NAME#1234 tag (ADR-185 decision 1's
+        // "header" row, minus the redundant literal "PROFILE" label --
+        // the top menu already named this screen).
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
         dst = buf;
-        if (PokePvPProfile_Get(&profile))
-        {
-            dst = StringCopy(dst, sText_ProfileM);
-            *dst++ = ' ';
-            dst = ConvertIntToDecimalStringN(dst, profile.matches, STR_CONV_MODE_LEFT_ALIGN, 5);
-            dst = StringCopy(dst, sString_Newline);
-
-            dst = StringCopy(dst, sText_ProfileW);
-            *dst++ = ' ';
-            dst = ConvertIntToDecimalStringN(dst, profile.wins, STR_CONV_MODE_LEFT_ALIGN, 5);
-            dst = StringCopy(dst, sString_Newline);
-
-            dst = StringCopy(dst, sText_ProfileL);
-            *dst++ = ' ';
-            dst = ConvertIntToDecimalStringN(dst, profile.losses, STR_CONV_MODE_LEFT_ALIGN, 5);
-            dst = StringCopy(dst, sString_Newline);
-
-            dst = StringCopy(dst, sText_ProfileT);
-            *dst++ = ' ';
-            dst = ConvertIntToDecimalStringN(dst, profile.ties, STR_CONV_MODE_LEFT_ALIGN, 5);
-        }
+        if (haveProfile && profile.tag[0] != EOS)
+            dst = StringCopy(dst, profile.tag);
         else
-        {
-            dst = StringCopy(dst, sText_ProfileEmpty);
-        }
+            dst = StringCopy(dst, sText_ProfileNoTag);
         *dst = EOS;
-
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 0, 0, sTextColorSelected, -1, buf);
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
         PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
         CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_FULL);
 
@@ -2473,6 +2647,105 @@ static void Task_PokePvPProfile(u8 taskId)
         AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColorSelected, -1, sText_Social);
         PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
         CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_FULL);
+
+        // Window 2: M/W/L/T on one line (qualifying matches only, per
+        // ADR-175's counts_for_stats).
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
+        dst = buf;
+        if (haveProfile)
+        {
+            dst = StringCopy(dst, sText_ProfileM);
+            dst = ConvertIntToDecimalStringN(dst, profile.matches, STR_CONV_MODE_LEFT_ALIGN, 4);
+            dst = StringCopy(dst, sText_ProfileStatSep);
+            dst = StringCopy(dst, sText_ProfileW);
+            dst = ConvertIntToDecimalStringN(dst, profile.wins, STR_CONV_MODE_LEFT_ALIGN, 4);
+            dst = StringCopy(dst, sText_ProfileStatSep);
+            dst = StringCopy(dst, sText_ProfileL);
+            dst = ConvertIntToDecimalStringN(dst, profile.losses, STR_CONV_MODE_LEFT_ALIGN, 4);
+            dst = StringCopy(dst, sText_ProfileStatSep);
+            dst = StringCopy(dst, sText_ProfileT);
+            dst = ConvertIntToDecimalStringN(dst, profile.ties, STR_CONV_MODE_LEFT_ALIGN, 4);
+        }
+        else
+        {
+            dst = StringCopy(dst, sText_ProfileEmpty);
+        }
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_2, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_FULL);
+
+        // Window 3: up to 3 most-used species (ADR-175's mostUsedSpecies).
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
+        dst = buf;
+        dst = StringCopy(dst, sText_ProfileTop);
+        if (haveProfile && profile.topCount > 0)
+        {
+            for (i = 0; i < profile.topCount && i < POKEPVP_PROFILE_MAX_TOP_SPECIES; i++)
+            {
+                if (i > 0)
+                    dst = StringCopy(dst, sText_ProfileSpeciesSep);
+                dst = StringCopy(dst, gSpeciesNames[profile.topSpecies[i]]);
+            }
+        }
+        else
+        {
+            dst = StringCopy(dst, sText_ProfileNoSpecies);
+        }
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_3, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_FULL);
+
+        // Window 4: the most recent opponent.
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
+        dst = buf;
+        dst = StringCopy(dst, sText_ProfileRecent);
+        if (recentCount > 0)
+        {
+            PokePvPRecentOpponent opp;
+            if (PokePvPProfile_GetRecent(0, &opp))
+            {
+                dst = StringCopy(dst, opp.name);
+                dst = StringCopy(dst, sText_PostMatchVs);
+                dst = StringCopy(dst, opp.tag);
+            }
+        }
+        else
+        {
+            dst = StringCopy(dst, sText_ProfileNoOpponent);
+        }
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+
+        // ERROR band: recent opponents 2-3 (its 4-tile height fits two
+        // 16px lines), matching ADR-185 decision 1's original intent.
+        // Left blank (no frame drawn) when there's nothing more to show,
+        // rather than drawing an empty box.
+        if (recentCount > 1)
+        {
+            FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+            MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+            dst = buf;
+            for (i = 1; i < recentCount && i < 3; i++)
+            {
+                PokePvPRecentOpponent opp;
+                if (PokePvPProfile_GetRecent(i, &opp))
+                {
+                    dst = StringCopy(dst, opp.name);
+                    dst = StringCopy(dst, sText_PostMatchVs);
+                    dst = StringCopy(dst, opp.tag);
+                    if (i + 1 < recentCount && i + 1 < 3)
+                        dst = StringCopy(dst, sString_Newline);
+                }
+            }
+            *dst = EOS;
+            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 2, sTextColor1, -1, buf);
+            PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
+        }
     }
 
     MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, 1);
@@ -2487,6 +2760,7 @@ static void Task_PokePvPProfile(u8 taskId)
     else if (JOY_NEW(B_BUTTON))
     {
         PlaySE(SE_SELECT);
+        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
         BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
         gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromHistory;
     }
@@ -2553,6 +2827,15 @@ static void DrawSocialItems(u8 selectedIdx)
     for (i = 0; i < 4; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
     CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    // POKEPVP (ADR-188): this screen only ever populates 5 rows, but the
+    // shared panel border now spans 6 (window 5's rows, freed by
+    // ADR-186) -- blank it too, so leftover LEADERBOARD text from the
+    // top menu never bleeds through (same "erase, don't just occlude"
+    // discipline DrawStartMatchSubmenuItems already used for its own
+    // unused rows).
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
 static void Task_PokePvPSocial(u8 taskId)
@@ -2673,6 +2956,15 @@ static void DrawSocialListItems(u8 list, u8 selectedIdx)
     for (i = 0; i < 4; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
     CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    // POKEPVP (ADR-188): this screen only ever populates 5 rows, but the
+    // shared panel border now spans 6 (window 5's rows, freed by
+    // ADR-186) -- blank it too, so leftover LEADERBOARD text from the
+    // top menu never bleeds through (same "erase, don't just occlude"
+    // discipline DrawStartMatchSubmenuItems already used for its own
+    // unused rows).
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
 static void Task_PokePvPSocialList(u8 taskId)
@@ -2740,6 +3032,15 @@ static void DrawSocialRowMenuItems(u8 list, u8 selectedIdx)
     for (i = 0; i < 4; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
     CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    // POKEPVP (ADR-188): this screen only ever populates 5 rows, but the
+    // shared panel border now spans 6 (window 5's rows, freed by
+    // ADR-186) -- blank it too, so leftover LEADERBOARD text from the
+    // top menu never bleeds through (same "erase, don't just occlude"
+    // discipline DrawStartMatchSubmenuItems already used for its own
+    // unused rows).
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
 static void Task_PokePvPSocialRowMenu(u8 taskId)
@@ -2884,6 +3185,16 @@ static void DrawInboxItems(u8 inboxSlot, u8 cursor)
         buf[23] = EOS; /* one tile per char, 24-tile window */
     AddTextPrinterParameterized3(sWindowIds[0], FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
     PutWindowTilemap(sWindowIds[0]);
+
+    // POKEPVP (ADR-188): blank window 5 BEFORE the ERROR-band type line
+    // below -- window 5's screen rows (16-17) fall inside the ERROR
+    // window's own rows (15-18), and blanking it after let window 5's
+    // tiles clobber the bottom half of that line (a real regression a
+    // golden-slice test caught in DrawPackPickerItems's identical
+    // overview line; same fix here, done up front instead).
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 
     /* Type line in the ERROR band (same pattern as the post-match and
        pack-picker summary lines). */
@@ -3183,6 +3494,12 @@ static void DrawTeamListItems(u8 selectedIdx)
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+    // POKEPVP (ADR-188): see DrawStartMatchSubmenuItems's identical
+    // comment -- blank window 5 too so leftover LEADERBOARD text never
+    // bleeds through the now-taller shared panel.
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
 // POKEPVP (ADR-093): drives the team-slot list. Identical input shape to
@@ -3302,6 +3619,12 @@ static void DrawSlotMenuItems(u8 selectedIdx)
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+    // POKEPVP (ADR-188): see DrawStartMatchSubmenuItems's identical
+    // comment -- blank window 5 too so leftover LEADERBOARD text never
+    // bleeds through the now-taller shared panel.
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
 // POKEPVP (ADR-093): EDIT TEAM / EDIT MOVES / BACK for one team slot.
