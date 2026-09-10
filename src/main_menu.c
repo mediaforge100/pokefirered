@@ -12,6 +12,9 @@
 #include "option_menu.h" // POKEPVP (ADR-112): OPTIONS reuses FireRed's own real screen
 #include "naming_screen.h" // POKEPVP (ADR-113): PLAYER SETTINGS name entry
 #include "pokepvp_team_builder.h" // POKEPVP (ADR-093): TEAM BUILDER
+#include "pokepvp/mailbox.h" // POKEPVP (UI plan slice 2): ROM->host post-match action records (quoted-relative to src/, as battle_controller_pokepvp.c does)
+#include "pokepvp/presentation_types.h" // POKEPVP (UI plan slice 2): POST_MATCH_ACTION message id
+#include "post_match.h" // POKEPVP (UI plan slice 2): POST-MATCH screen buffer
 #include "history.h" // POKEPVP (ADR-168): MATCH HISTORY buffer
 #include "list_menu.h" // POKEPVP (ADR-093): the move editor's scrolling lists
 #include "data.h"        // POKEPVP (ADR-093): gSpeciesNames, gMoveNames
@@ -113,6 +116,17 @@ static void Task_PokePvPMenuStub(u8 taskId);
 static void Task_PokePvPMatchHistory(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromHistory(u8 taskId);
 static void Task_PokePvPNoOpponentFound(u8 taskId); // POKEPVP (ADR-124)
+// POKEPVP (UI plan slice 2, Phase I): the post-match screen -- result +
+// REMATCH / PLAY AGAIN / ADD RIVAL / EXIT, reached from
+// Task_WaitFadeAndPrintMainMenuText whenever a post-match session is
+// pending (a match just ended; the launcher holds the authoritative
+// result). The wait tasks below park the player while the host acts on
+// their choice (rematch/requeue = waiting-for-opponent, add-rival =
+// API round trip), and surface POKEPVP_MSG_POST_MATCH_RESULT messages.
+static void Task_PokePvPPostMatch(u8 taskId);
+static void Task_PokePvPPostMatchWait(u8 taskId);
+static void Task_PokePvPPostMatchRivalWait(u8 taskId);
+static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId);
 static void DrawPokePvPMenuItems(u8 selectedIdx);
 // POKEPVP (ADR-091): START MATCH -> AUTO-MATCH/INVITE MATCH submenu.
 static void DrawStartMatchSubmenuItems(u8 selectedIdx);
@@ -174,6 +188,13 @@ static void MainMenu_EraseWindow(const struct WindowTemplate * template);
 // the player on the top-level menu, two levels away from where they were.
 static EWRAM_DATA bool8 sPokePvPReturnToTeamList = FALSE;
 
+/* POKEPVP (UI plan slice 2): the one mailbox per PokePvP battle, owned
+ * by the ROM at the linker-reserved gPokePvPMailbox symbol (ld_script.ld
+ * -- see battle_controller_pokepvp.c's identical extern for the full
+ * contract). main_menu.c only ever *writes* rom->host records (post-match
+ * actions); the presentation pump is the reader. */
+extern PokePvPMailbox gPokePvPMailbox;
+
 static const u8 sString_Dummy[] = _("");
 static const u8 sString_Newline[] = _("\n");
 // POKEPVP (ADR-079/080, D7 step 1): replaces "NEW GAME" -- this screen's
@@ -197,6 +218,25 @@ static const u8 sText_HistoryL[] = _("  L: ");
 static const u8 sText_HistoryEmpty[] = _("No matches yet.");
 static const u8 sText_Options[] = _("OPTIONS");
 static const u8 sText_NotYetImplemented[] = _("Not yet implemented.");
+// POKEPVP (UI plan slice 2, Phase I): the post-match screen -- result
+// line and the four actions the Build Plan §14 post-match set defines
+// (Replay stays hidden until Phase K's playback gate passes). " vs "
+// joins result and opponent name; the name/tag themselves are charmap
+// text already (post_match.c converts), and the line is clipped to the
+// window's 24 tiles rather than wrapping into the 16px line below.
+static const u8 sText_PostMatchWin[] = _("YOU WIN");
+static const u8 sText_PostMatchLose[] = _("YOU LOSE");
+static const u8 sText_PostMatchDraw[] = _("DRAW");
+static const u8 sText_PostMatchVs[] = _(" vs ");
+static const u8 sText_Rematch[] = _("REMATCH");
+static const u8 sText_PlayAgain[] = _("PLAY AGAIN");
+static const u8 sText_AddRival[] = _("ADD RIVAL");
+static const u8 sText_Exit[] = _("EXIT");
+static const u8 sText_AddingRival[] = _("Adding rival…");
+static const u8 sText_RivalAdded[] = _("Rival added.");
+static const u8 sText_OpponentUnavailable[] = _("Opponent unavailable.");
+static const u8 sText_TooManyRequests[] = _("Too many requests.");
+static const u8 sText_RequestFailed[] = _("Request failed.");
 // POKEPVP (ADR-091, D7 refinement): START MATCH now opens a submenu
 // instead of acting directly. AUTO-MATCH is the only one wired to real
 // (well, real-server-integration-pending -- see battle_setup.c) behavior;
@@ -754,6 +794,20 @@ static void Task_WaitFadeAndPrintMainMenuText(u8 taskId)
 {
     if (!gPaletteFade.active)
     {
+        /* POKEPVP (UI plan slice 2): a pending post-match session (a
+         * match just ended and CB2_EndPokePvPBattle re-init'ed this
+         * menu) routes to the post-match screen instead of the top-level
+         * menu. Checked here, not in CB2_InitMainMenu, because the whole
+         * save-status chain above must run unchanged first (a corrupted
+         * save still reports before anything else); this task is the
+         * first point every valid-save path converges on. The screen
+         * draws and fades in itself; the top menu stays untouched below
+         * it. */
+        if (PokePvPPostMatch_IsPending())
+        {
+            gTasks[taskId].func = Task_PokePvPPostMatch;
+            return;
+        }
         Task_PrintMainMenuText(taskId);
     }
 }
@@ -1577,6 +1631,381 @@ static void Task_PokePvPNoOpponentFound(u8 taskId)
         }
         break;
     }
+}
+
+// ---------------------------------------------------------------------------
+// POKEPVP (UI plan slice 2, Phase I): POST-MATCH screen.
+//
+// Reached from Task_WaitFadeAndPrintMainMenuText while a post-match
+// session is pending. Layout reuses the five menu windows exactly like
+// every other screen here: window 0 shows the result line, windows 1-4
+// are REMATCH / PLAY AGAIN / ADD RIVAL / EXIT (cursor = action value,
+// matching POKEPVP_POST_MATCH_ACTION_*), and the ERROR window below the
+// panel shows the summary line (duration / turns / remaining Pokemon) or
+// a one-off message during the wait states. EXIT (and B) clears the
+// session in-ROM and returns to the top-level menu; every other action
+// reports POST_MATCH_ACTION to the host and waits -- the host owns the
+// network call each implies (rematchRequest, queue re-join,
+// rivals API) and answers with POST_MATCH_RESULT, which the wait tasks
+// surface as a message and then return to this screen.
+// ---------------------------------------------------------------------------
+
+// The bound for the ADD RIVAL wait: the host always answers a
+// POST_MATCH_ACTION immediately, so 600 frames (10s) is a generous
+// backstop, never the expected path.
+#define POKEPVP_POST_MATCH_RESULT_WAIT_FRAMES 600
+
+static void SendPostMatchAction(u8 action)
+{
+    if (action > POKEPVP_POST_MATCH_ACTION_EXIT)
+        return;
+    PokePvPMailboxRing_TryWrite(&gPokePvPMailbox.romToHost,
+                                POKEPVP_MAILBOX_ROM_TO_HOST_MAGIC,
+                                POKEPVP_MSG_POST_MATCH_ACTION,
+                                0,
+                                action,
+                                &action,
+                                sizeof(action));
+    DebugPrintf("POKEPVP: post-match action=%d sent", action);
+}
+
+static void DrawPostMatchResultLine(u8 windowId)
+{
+    PokePvPPostMatch pm;
+    u8 buf[25];
+    u8 *dst;
+
+    FillWindowPixelBuffer(windowId, PIXEL_FILL(10));
+    if (!PokePvPPostMatch_Get(&pm))
+    {
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColor1, -1, sString_Dummy);
+        PutWindowTilemap(windowId);
+        return;
+    }
+    dst = buf;
+    switch (pm.outcome)
+    {
+    case POKEPVP_POST_MATCH_WIN:
+        dst = StringCopy(dst, sText_PostMatchWin);
+        break;
+    case POKEPVP_POST_MATCH_LOSS:
+        dst = StringCopy(dst, sText_PostMatchLose);
+        break;
+    default:
+        dst = StringCopy(dst, sText_PostMatchDraw);
+        break;
+    }
+    if (pm.oppName[0] != EOS)
+    {
+        dst = StringCopy(dst, sText_PostMatchVs);
+        dst = StringCopy(dst, pm.oppName);
+        *dst++ = CHAR_SPACE;
+        dst = StringCopy(dst, pm.oppTag);
+        *dst = EOS;
+    }
+    /* The window is 24 tiles wide; a wrapped second line would be cut off
+     * by the 16px-tall row (ADR-098) -- clip instead. */
+    if ((u32)(dst - buf) > 24u)
+        buf[23] = EOS;
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+    PutWindowTilemap(windowId);
+}
+
+/* "1m05s 14T 3-2" -- duration, turn count, and the remaining-Pokemon
+ * scoreline the Build Plan §14 post-match set asks for, drawn as a plain
+ * line in the ERROR window band (no box; PrintMessageOnWindow4's own
+ * wait states overwrite it with their messages). */
+static void DrawPostMatchMeta(void)
+{
+    PokePvPPostMatch pm;
+    u8 buf[32];
+    u8 *dst;
+
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+    if (PokePvPPostMatch_Get(&pm))
+    {
+        dst = buf;
+        dst = ConvertIntToDecimalStringN(dst, pm.durationSec / 60, STR_CONV_MODE_LEFT_ALIGN, 1);
+        *dst++ = (u8)'m';
+        dst = ConvertIntToDecimalStringN(dst, pm.durationSec % 60, STR_CONV_MODE_LEADING_ZEROS, 2);
+        *dst++ = (u8)'s';
+        *dst++ = CHAR_SPACE;
+        dst = ConvertIntToDecimalStringN(dst, pm.turnCount, STR_CONV_MODE_LEFT_ALIGN, 1);
+        *dst++ = (u8)'T';
+        *dst++ = CHAR_SPACE;
+        dst = ConvertIntToDecimalStringN(dst, pm.myRemaining, STR_CONV_MODE_LEFT_ALIGN, 1);
+        *dst++ = (u8)'-';
+        dst = ConvertIntToDecimalStringN(dst, pm.oppRemaining, STR_CONV_MODE_LEFT_ALIGN, 1);
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 2, sTextColor1, -1, buf);
+    }
+    PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+    CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
+}
+
+static void DrawPostMatchItems(u8 selectedIdx)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    const u8 *const sLabels[] = {
+        sText_Rematch, sText_PlayAgain, sText_AddRival, sText_Exit, sString_Dummy,
+    };
+    u8 i;
+
+    DrawPostMatchResultLine(sWindowIds[0]);
+    for (i = 0; i < 5; i++)
+    {
+        bool8 selected = (i != 0 && (i - 1) == selectedIdx);
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+            selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
+    }
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 5; i++)
+        PutWindowTilemap(sWindowIds[i]);
+    for (i = 0; i < 4; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+}
+
+static void ReturnToPostMatchScreen(u8 taskId)
+{
+    ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    DrawPostMatchItems(gTasks[taskId].tSubCursorPos);
+    DrawPostMatchMeta();
+    gTasks[taskId].tMGErrorMsgState = 1;
+    gTasks[taskId].func = Task_PokePvPPostMatch;
+}
+
+static void ShowPostMatchResultMessage(u8 result)
+{
+    const u8 *msg;
+
+    switch (result)
+    {
+    case POKEPVP_POST_MATCH_RESULT_OK:
+        msg = sText_RivalAdded;
+        break;
+    case POKEPVP_POST_MATCH_RESULT_OPPONENT_UNAVAILABLE:
+        msg = sText_OpponentUnavailable;
+        break;
+    case POKEPVP_POST_MATCH_RESULT_RATE_LIMITED:
+        msg = sText_TooManyRequests;
+        break;
+    default:
+        msg = sText_RequestFailed;
+        break;
+    }
+    PrintMessageOnWindow4(msg);
+}
+
+static void Task_PokePvPPostMatch(u8 taskId)
+{
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        /* First entry (from the menu-init chain): draw everything, then
+         * fade in exactly like Task_WaitDma3AndFadeIn does for the top
+         * menu (incl. the temp-tile-buffer release that prevents the
+         * ADR-158 backdrop leak on repeated inits). */
+        DrawPostMatchItems(0);
+        DrawPostMatchMeta();
+        FreeTempTileDataBuffersIfPossible();
+        ResetTempTileDataBuffers();
+        gTasks[taskId].tSubCursorPos = 0;
+        ShowBg(0);
+        ShowBg(2);
+        SetVBlankCallback(VBlankCB_MainMenu);
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+        gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        if (gPaletteFade.active)
+            return;
+        MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+        if (JOY_NEW(A_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            SendPostMatchAction((u8)gTasks[taskId].tSubCursorPos);
+            if (gTasks[taskId].tSubCursorPos == POKEPVP_POST_MATCH_ACTION_EXIT)
+            {
+                PokePvPPostMatch_Clear();
+                BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+                gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromPostMatch;
+            }
+            else if (gTasks[taskId].tSubCursorPos == POKEPVP_POST_MATCH_ACTION_ADD_RIVAL)
+            {
+                gTasks[taskId].tMGErrorMsgState = 0;
+                gTasks[taskId].func = Task_PokePvPPostMatchRivalWait;
+            }
+            else
+            {
+                gTasks[taskId].tMGErrorMsgState = 0;
+                gTasks[taskId].func = Task_PokePvPPostMatchWait;
+            }
+        }
+        else if (JOY_NEW(B_BUTTON))
+        {
+            /* B = EXIT, same as the menu item (Build Plan §14's "Exit"). */
+            PlaySE(SE_SELECT);
+            SendPostMatchAction(POKEPVP_POST_MATCH_ACTION_EXIT);
+            PokePvPPostMatch_Clear();
+            BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+            gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromPostMatch;
+        }
+        else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+        {
+            gTasks[taskId].tSubCursorPos--;
+            DrawPostMatchItems(gTasks[taskId].tSubCursorPos);
+        }
+        else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 3)
+        {
+            gTasks[taskId].tSubCursorPos++;
+            DrawPostMatchItems(gTasks[taskId].tSubCursorPos);
+        }
+        break;
+    }
+}
+
+/* REMATCH / PLAY AGAIN: the host is joining matchmaking (a rematch
+ * request or a fresh queue/invite join). Mirrors
+ * Task_PokePvPWaitForRealOpponent's shape -- same waiting text, same
+ * real-opponent-ready completion into StartPokePvPAutoMatch -- but a
+ * host result message (opponent unavailable / rate-limited / failed)
+ * and the 30s timeout both return to the post-match screen instead of
+ * the START MATCH submenu, since the player came from a match, not
+ * matchmaking. The post-match session is cleared only when a new battle
+ * actually starts (the launcher re-pushes it on the next matchEnd). */
+static void Task_PokePvPPostMatchWait(u8 taskId)
+{
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        PrintMessageOnWindow4(gText_PokePvPWaitingForOpponent);
+        gTasks[taskId].tWaitFrames = 0;
+        gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 2:
+    {
+        u8 result;
+
+        if (PokePvPPostMatch_ConsumeResult(&result))
+        {
+            if (result == POKEPVP_POST_MATCH_RESULT_OK)
+            {
+                ReturnToPostMatchScreen(taskId);
+            }
+            else
+            {
+                ShowPostMatchResultMessage(result);
+                gTasks[taskId].tMGErrorMsgState = 3;
+            }
+            break;
+        }
+        gTasks[taskId].tWaitFrames++;
+        if (PokePvP_IsRealOpponentReady())
+        {
+            DebugPrintf("POKEPVP: post-match wait resolved by real opponent after %d frames", gTasks[taskId].tWaitFrames);
+            PokePvP_ClearRealMatchPending();
+            PokePvPPostMatch_Clear();
+            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+            FreeAllWindowBuffers();
+            DestroyTask(taskId);
+            StartPokePvPAutoMatch();
+        }
+        else if (gTasks[taskId].tWaitFrames >= POKEPVP_AUTO_MATCH_WAIT_FRAMES)
+        {
+            DebugPrintf("POKEPVP: post-match wait found no opponent in %d frames", gTasks[taskId].tWaitFrames);
+            PokePvP_ClearRealMatchPending();
+            ReturnToPostMatchScreen(taskId);
+        }
+        break;
+    }
+    case 3:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 4:
+        if (JOY_NEW(A_BUTTON | B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            ReturnToPostMatchScreen(taskId);
+        }
+        break;
+    }
+}
+
+/* ADD RIVAL: the host is doing an API round trip against the rivals
+ * endpoint. Same message/dismiss shape as the match wait's result path;
+ * a hard 10s backstop rather than an infinite wait, though the host
+ * always answers. */
+static void Task_PokePvPPostMatchRivalWait(u8 taskId)
+{
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        PrintMessageOnWindow4(sText_AddingRival);
+        gTasks[taskId].tWaitFrames = 0;
+        gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 2:
+    {
+        u8 result;
+
+        gTasks[taskId].tWaitFrames++;
+        if (PokePvPPostMatch_ConsumeResult(&result))
+        {
+            ShowPostMatchResultMessage(result); /* OK -> "Rival added." */
+            gTasks[taskId].tMGErrorMsgState = 3;
+        }
+        else if (gTasks[taskId].tWaitFrames >= POKEPVP_POST_MATCH_RESULT_WAIT_FRAMES)
+        {
+            ShowPostMatchResultMessage(POKEPVP_POST_MATCH_RESULT_FAILED);
+            gTasks[taskId].tMGErrorMsgState = 3;
+        }
+        break;
+    }
+    case 3:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 4:
+        if (JOY_NEW(A_BUTTON | B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            ReturnToPostMatchScreen(taskId);
+        }
+        break;
+    }
+}
+
+/* EXIT (or B): fade-out already ran; redraw the top-level menu and hand
+ * back to selection, same as the history/submenu return tasks. */
+static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+    DrawPokePvPMenuItems(0);
+    BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+    gTasks[taskId].tCursorPos = 0;
+    gTasks[taskId].func = Task_UpdateVisualSelection;
 }
 
 static void Task_PokePvPTeamSelector(u8 taskId)
