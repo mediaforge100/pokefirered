@@ -17,6 +17,7 @@
 #include "post_match.h" // POKEPVP (UI plan slice 2): POST-MATCH screen buffer
 #include "ready_check.h" // POKEPVP (UI plan slice 3): ready-check prompt buffer
 #include "packs_catalog.h" // POKEPVP (UI plan slice 3): pack catalog + launch-config flags
+#include "inbox.h" // POKEPVP (UI plan slice 4): challenge inbox buffer
 #include "history.h" // POKEPVP (ADR-168): MATCH HISTORY buffer
 #include "list_menu.h" // POKEPVP (ADR-093): the move editor's scrolling lists
 #include "data.h"        // POKEPVP (ADR-093): gSpeciesNames, gMoveNames
@@ -71,6 +72,10 @@ enum MainMenuWindow
 #define POKEPVP_MATCH_MODE_AUTO     0u
 #define POKEPVP_MATCH_MODE_INVITE   1u
 #define POKEPVP_MATCH_MODE_PRACTICE 2u
+// POKEPVP (UI plan slice 4): the team selector opened from the inbox's
+// ACCEPT action -- its A-press sends the slot's team records + a
+// CHALLENGE_ACTION accept instead of MATCH_REQUEST/MATCH_CONFIG.
+#define POKEPVP_MATCH_MODE_ACCEPT_CHALLENGE 3u
 // POKEPVP (UI plan slice 3, Phase C): the picker tree's explicit modes
 // (Build Plan §8 item 2: Quick / Custom / Invite / Practice). MATCH_CONFIG
 // carries these to the host; the submenu now hides rows whose server flag
@@ -117,6 +122,11 @@ enum MainMenuWindow
 // owns the screen and is reused for the picked pack row.
 #define tPickerStage     data[14]
 #define tPickerClass     data[15]
+// POKEPVP (UI plan slice 4): which inbox entry the inbox task is showing.
+// data[14] (tPickerStage) belongs to the START MATCH picker tasks, which
+// are never running while the inbox owns the screen -- ACCEPT hands off
+// to the team selector without those tasks.
+#define tInboxSlot       data[14]
 
 // POKEPVP (ADR-096): the move info panel shown alongside the move-slot and
 // movepool lists. tMoveInfoWindowId is WINDOW_NONE when no panel is open
@@ -148,6 +158,11 @@ static void Task_PokePvPMenuStub(u8 taskId);
 static void Task_PokePvPMatchHistory(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromHistory(u8 taskId);
 static void Task_PokePvPNoOpponentFound(u8 taskId); // POKEPVP (ADR-124)
+// POKEPVP (UI plan slice 4, Phase H): the challenge inbox -- surfaced
+// from Task_HandleMenuInput while the player idles on the top menu and a
+// challenge is buffered (and not snoozed). ACCEPT hands to the team
+// selector; DECLINE/BLOCK send a CHALLENGE_ACTION; B snoozes.
+static void Task_PokePvPInbox(u8 taskId);
 // POKEPVP (UI plan slice 2, Phase I): the post-match screen -- result +
 // REMATCH / PLAY AGAIN / ADD RIVAL / EXIT, reached from
 // Task_WaitFadeAndPrintMainMenuText whenever a post-match session is
@@ -230,6 +245,13 @@ static void MainMenu_EraseWindow(const struct WindowTemplate * template);
 // back into this screen from a foreign CB2), which would otherwise land
 // the player on the top-level menu, two levels away from where they were.
 static EWRAM_DATA bool8 sPokePvPReturnToTeamList = FALSE;
+
+/* POKEPVP (UI plan slice 4): set when the player dismisses the challenge
+ * inbox with B ("later"); cleared on every fresh menu init
+ * (MainMenuGpuInit) so an unanswered challenge re-surfaces at the next
+ * menu entry but never nags the idle frame loop. ACCEPT/DECLINE/BLOCK
+ * act on the entry itself (removing it), so they leave this unset. */
+static EWRAM_DATA bool8 gPokePvPInboxSnoozed = FALSE;
 
 /* POKEPVP (UI plan slice 2): the one mailbox per PokePvP battle, owned
  * by the ROM at the linker-reserved gPokePvPMailbox symbol (ld_script.ld
@@ -344,6 +366,18 @@ static const u8 sText_QuickRulesLine[] = _("3v3 LVL100 FROZEN");
 // 2 -- both players must confirm within the window; the gateway's
 // timeout frame budget is held ROM-side by ready_check.c).
 static const u8 sText_ReadyPrompt[] = _("READY?  A=YES B=NO");
+// POKEPVP (UI plan slice 4): the challenge inbox (Build Plan §13 item 3:
+// challenger identity, category, expiry, Accept, Decline, Block). The
+// expiry clock is the gateway's own (late accepts are rejected there);
+// the ROM shows the requester and the matching type line.
+static const u8 sText_ChallengeFrom[] = _("CHALLENGE FROM");
+static const u8 sText_RematchLabel[] = _("REMATCH");
+static const u8 sText_EarlyLabel[] = _("QUICK EARLY");
+static const u8 sText_EliteLabel[] = _("QUICK ELITE");
+static const u8 sText_Accept[] = _("ACCEPT");
+static const u8 sText_Decline[] = _("DECLINE");
+static const u8 sText_BlockPlayer[] = _("BLOCK");
+static const u8 sText_ChallengeBlocked[] = _("Player blocked.");
 
 static const struct WindowTemplate sWindowTemplate[] = {
     [MAIN_MENU_WINDOW_NEWGAME_ONLY] = {
@@ -704,6 +738,7 @@ static bool32 MainMenuGpuInit(u8 a0)
     u8 taskId;
 
     PokePvP_SanitizePlayerName(); /* POKEPVP (ADR-159) */
+    gPokePvPInboxSnoozed = FALSE; /* POKEPVP (UI plan slice 4): a fresh menu init re-arms the inbox popup for an unanswered challenge */
     SetVBlankCallback(NULL);
     SetGpuReg(REG_OFFSET_DISPCNT, 0);
     SetGpuReg(REG_OFFSET_BG2CNT, 0);
@@ -1034,6 +1069,26 @@ static void Task_UpdateVisualSelection(u8 taskId)
 
 static void Task_HandleMenuInput(u8 taskId)
 {
+    /* POKEPVP (UI plan slice 4): while the player idles on the top menu
+     * (the only surface this task drives), a buffered challenge surfaces
+     * the inbox -- unless the player already dismissed it
+     * (gPokePvPInboxSnoozed, cleared on every fresh menu init). A
+     * battle, team-builder, naming, options, or post-match flow never
+     * reaches this task -- those own their own funcs -- so "don't
+     * interrupt battles or destructive flows" (Build Plan2 item 6) is
+     * structural, not a flag. */
+    if (!gPaletteFade.active
+     && gTasks[taskId].tMenuType == MAIN_MENU_POKEPVP
+     && PokePvPInbox_Count() > 0
+     && !gPokePvPInboxSnoozed)
+    {
+        gTasks[taskId].tInboxSlot = 0;
+        gTasks[taskId].tSubCursorPos = 0;
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+        gTasks[taskId].tMGErrorMsgState = 0;
+        gTasks[taskId].func = Task_PokePvPInbox;
+        return;
+    }
     if (!gPaletteFade.active && HandleMenuInput(taskId))
     {
         gTasks[taskId].func = Task_UpdateVisualSelection;
@@ -2455,6 +2510,185 @@ static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId)
     gTasks[taskId].func = Task_UpdateVisualSelection;
 }
 
+// ---------------------------------------------------------------------------
+// POKEPVP (UI plan slice 4, Phase H): CHALLENGE INBOX.
+//
+// Reached from Task_HandleMenuInput while a challenge is buffered (and
+// not snoozed). Window 0 shows the challenger line ("CHALLENGE FROM" +
+// name + tag, clipped to the 24-tile window), the ERROR band below shows
+// the challenge type (REMATCH / QUICK EARLY / QUICK ELITE), and windows
+// 1-3 are ACCEPT / DECLINE / BLOCK. A on ACCEPT hands to the team
+// selector (subMode POKEPVP_MATCH_MODE_ACCEPT_CHALLENGE, inbox slot kept
+// in tInboxSlot); DECLINE/BLOCK send a CHALLENGE_ACTION immediately and
+// return to the top menu. B snoozes (the popup re-arms on the next menu
+// init -- an unanswered challenge is never dropped, but never nags the
+// idle frame loop either).
+// ---------------------------------------------------------------------------
+
+static void SendInboxAction(u8 inboxSlot, u8 action, u8 teamSlot)
+{
+    u8 payload[3];
+
+    payload[0] = inboxSlot;
+    payload[1] = action;
+    payload[2] = teamSlot; /* only meaningful for action 0 (ACCEPT) */
+    PokePvPMailboxRing_TryWrite(&gPokePvPMailbox.romToHost,
+                                POKEPVP_MAILBOX_ROM_TO_HOST_MAGIC,
+                                POKEPVP_MSG_CHALLENGE_ACTION,
+                                0,
+                                inboxSlot,
+                                payload,
+                                sizeof(payload));
+    DebugPrintf("POKEPVP: inbox action slot=%u action=%u teamSlot=%u sent", inboxSlot, action, teamSlot);
+}
+
+/* Clears the message band and returns to the top menu (shared by every
+ * inbox exit -- DECLINE / BLOCK dismissal / entry-vanished fallback). */
+static void LeaveInboxToMenu(u8 taskId)
+{
+    ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    DrawPokePvPMenuItems(0);
+    BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+    gTasks[taskId].tCursorPos = 0;
+    gTasks[taskId].func = Task_UpdateVisualSelection;
+}
+
+static void DrawInboxItems(u8 inboxSlot, u8 cursor)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    const u8 *const sActions[] = { sText_Accept, sText_Decline, sText_BlockPlayer };
+    PokePvPInboxEntry entry;
+    u8 i;
+    u8 buf[25];
+    u8 *dst;
+
+    if (!PokePvPInbox_Get(inboxSlot, &entry))
+        return; /* stale -- the task falls back to the menu */
+
+    /* Window 0: the challenger line. */
+    FillWindowPixelBuffer(sWindowIds[0], PIXEL_FILL(10));
+    dst = StringCopy(buf, sText_ChallengeFrom);
+    *dst++ = CHAR_SPACE;
+    dst = StringCopy(dst, entry.name);
+    *dst++ = CHAR_SPACE;
+    dst = StringCopy(dst, entry.tag);
+    if ((u32)(dst - buf) > 23u)
+        buf[23] = EOS; /* one tile per char, 24-tile window */
+    AddTextPrinterParameterized3(sWindowIds[0], FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+    PutWindowTilemap(sWindowIds[0]);
+
+    /* Type line in the ERROR band (same pattern as the post-match and
+       pack-picker summary lines). */
+    if (entry.flags & POKEPVP_INBOX_FLAG_REMATCH)
+        PrintMessageOnWindow4(sText_RematchLabel);
+    else if (entry.flags & POKEPVP_INBOX_FLAG_EARLY)
+        PrintMessageOnWindow4(sText_EarlyLabel);
+    else
+        PrintMessageOnWindow4(sText_EliteLabel);
+
+    for (i = 1; i < 5; i++)
+    {
+        bool8 selected = (i - 1) == cursor;
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        if (i < 4)
+            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                selected ? sTextColorSelected : sTextColor1, -1, sActions[i - 1]);
+        PutWindowTilemap(sWindowIds[i]);
+    }
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 4; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+}
+
+static void Task_PokePvPInbox(u8 taskId)
+{
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        /* The caller (Task_HandleMenuInput) already faded OUT. */
+        FreeTempTileDataBuffersIfPossible();
+        ResetTempTileDataBuffers();
+        ShowBg(0);
+        ShowBg(2);
+        SetVBlankCallback(VBlankCB_MainMenu);
+        DrawInboxItems(gTasks[taskId].tInboxSlot, gTasks[taskId].tSubCursorPos);
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+        gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        if (gPaletteFade.active)
+            return;
+        if (!PokePvPInbox_Count())
+        {
+            /* The host ended the burst while the popup was up. */
+            LeaveInboxToMenu(taskId);
+            break;
+        }
+        MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+        if (JOY_NEW(A_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            switch (gTasks[taskId].tSubCursorPos)
+            {
+            case 0: /* ACCEPT */
+                DrawTeamSelectorItems(0);
+                gTasks[taskId].tSubMode = POKEPVP_MATCH_MODE_ACCEPT_CHALLENGE;
+                gTasks[taskId].tSubCursorPos = 0;
+                gTasks[taskId].func = Task_PokePvPTeamSelector;
+                break;
+            case 1: /* DECLINE */
+                SendInboxAction(gTasks[taskId].tInboxSlot, 1, 0);
+                PokePvPInbox_Remove(gTasks[taskId].tInboxSlot);
+                LeaveInboxToMenu(taskId);
+                break;
+            case 2: /* BLOCK */
+                SendInboxAction(gTasks[taskId].tInboxSlot, 2, 0);
+                PrintMessageOnWindow4(sText_ChallengeBlocked);
+                gTasks[taskId].tMGErrorMsgState = 2;
+                break;
+            }
+        }
+        else if (JOY_NEW(B_BUTTON))
+        {
+            /* Dismiss = "later": re-arm only on the next menu init. */
+            PlaySE(SE_SELECT);
+            gPokePvPInboxSnoozed = TRUE;
+            LeaveInboxToMenu(taskId);
+        }
+        else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+        {
+            gTasks[taskId].tSubCursorPos--;
+            DrawInboxItems(gTasks[taskId].tInboxSlot, gTasks[taskId].tSubCursorPos);
+        }
+        else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 2)
+        {
+            gTasks[taskId].tSubCursorPos++;
+            DrawInboxItems(gTasks[taskId].tInboxSlot, gTasks[taskId].tSubCursorPos);
+        }
+        break;
+    case 2: /* BLOCK result message, dismiss then remove + menu */
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 3:
+        if (JOY_NEW(A_BUTTON | B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            PokePvPInbox_Remove(gTasks[taskId].tInboxSlot);
+            LeaveInboxToMenu(taskId);
+            break;
+        }
+        break;
+    }
+}
+
 static void Task_PokePvPTeamSelector(u8 taskId)
 {
     if (gPaletteFade.active)
@@ -2534,6 +2768,12 @@ static void Task_PokePvPTeamSelector(u8 taskId)
         }
         if (gTasks[taskId].tSubMode == POKEPVP_MATCH_MODE_PRACTICE)
             PokePvPTeamBuilder_RequestPractice(gTasks[taskId].tSubCursorPos);
+        // POKEPVP (UI plan slice 4): ACCEPT_CHALLENGE sends the chosen
+        // team's records (already above via SendTeam) then a CHALLENGE_ACTION
+        // accept -- the host pairs via challengeAccept, not matchmaking, so
+        // no MATCH_REQUEST and no MATCH_CONFIG ride along.
+        else if (gTasks[taskId].tSubMode == POKEPVP_MATCH_MODE_ACCEPT_CHALLENGE)
+            SendInboxAction(gTasks[taskId].tInboxSlot, 0, gTasks[taskId].tSubCursorPos);
         else
             PokePvPTeamBuilder_RequestMatch(gTasks[taskId].tSubCursorPos);
         gExitStairsMovementDisabled = FALSE;
