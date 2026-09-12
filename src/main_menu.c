@@ -426,6 +426,10 @@ static const u8 sText_PreparingTeamBuilder[] = _("Preparing team builder…");
 const u8 gText_PokePvPWaitingForOpponent[] = _("Waiting for opponent…");
 // POKEPVP (ADR-124): the AUTO-MATCH wait's honest timeout message.
 static const u8 sText_NoOpponentFound[] = _("No opponent found.");
+// POKEPVP (ADR-207, HANDOFF item 7): the AUTO-MATCH/INVITE wait's honest
+// decline message -- distinct text from sText_NoOpponentFound just above
+// so a real, immediate decline never reads as an indistinguishable timeout.
+static const u8 sText_ChallengeDeclined[] = _("Challenge declined.");
 // POKEPVP (ADR-193, Gap 2): INVITE MATCH's target picker, empty-list case
 // -- same "say so instead of doing nothing" shape as sText_TeamIsEmpty.
 static const u8 sText_NoFriendsToInvite[] = _("Add a FRIEND from SOCIAL first.");
@@ -2174,6 +2178,12 @@ static void DrawTeamSelectorItems(u8 selectedIdx)
 // (checking the same flag again there, right before it matters), so this
 // task's only real job is deciding *when* to stop waiting, never which
 // battle starts.
+// POKEPVP (ADR-207): set immediately before Task_PokePvPWaitForRealOpponent
+// hands off to Task_PokePvPNoOpponentFound on a real decline (rather than a
+// genuine timeout), so that shared screen's own case 0 knows which of the
+// two distinct messages to print. Consumed (cleared) the instant it's read.
+static bool8 sPokePvPShowDeclinedMessage;
+
 static void Task_PokePvPWaitForRealOpponent(u8 taskId)
 {
     switch (gTasks[taskId].tMGErrorMsgState)
@@ -2191,6 +2201,14 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
         PrintMessageOnWindow4(gText_PokePvPWaitingForOpponent);
         gTasks[taskId].tWaitFrames = 0;
         gTasks[taskId].tMGErrorMsgState++;
+        // POKEPVP (ADR-207): clear any stale decline left over from an
+        // earlier, unrelated invite that arrived after the ROM had
+        // already locally bailed on it (its own 30s timeout or a B-button
+        // cancel) -- see POKEPVP_MSG_CHALLENGE_DECLINED's own doc comment
+        // (presentation_types.h) for why this is safe here, unlike
+        // sPokePvPRealOpponentReady just below, which is deliberately NOT
+        // cleared at this same point.
+        PokePvP_ClearChallengeDeclined();
         break;
     case 1:
         RunTextPrinters();
@@ -2200,6 +2218,24 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
     case 2:
     {
         bool8 ready = PokePvP_IsRealOpponentReady();
+
+        // POKEPVP (ADR-207, HANDOFF item 7): a real, immediate decline
+        // ends this wait exactly like the 30s timeout below (same target
+        // task, same fade/dismiss shape), but with an honest, distinct
+        // message instead of silently running out the clock. Checked
+        // before the ready-check prompt below for the same reason the
+        // B-cancel further down is: a real opponent can't both be ready
+        // and have declined, so `!ready` gates all three the same way.
+        if (!ready && PokePvP_IsChallengeDeclined())
+        {
+            PokePvP_ClearChallengeDeclined();
+            PokePvP_ClearRealMatchPending();
+            DebugPrintf("POKEPVP: AUTO-MATCH/INVITE challenge declined by target after %d frames", gTasks[taskId].tWaitFrames);
+            sPokePvPShowDeclinedMessage = TRUE;
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_PokePvPNoOpponentFound;
+            break;
+        }
 
         /* POKEPVP (UI plan slice 3): while this wait is on screen, a
          * gateway ready-check gets a real A/B prompt. The prompt's own
@@ -2299,7 +2335,15 @@ static void Task_PokePvPNoOpponentFound(u8 taskId)
     switch (gTasks[taskId].tMGErrorMsgState)
     {
     case 0:
-        PrintMessageOnWindow4(sText_NoOpponentFound);
+        // POKEPVP (ADR-207, HANDOFF item 7): shared entry point for both
+        // the honest 30s timeout (Task_PokePvPWaitForRealOpponent's own
+        // fall-through) and a real, immediate decline
+        // (sPokePvPShowDeclinedMessage, set right before that same
+        // transition) -- distinct text, same dismiss/return shape either
+        // way. Consumed immediately so a later, unrelated timeout never
+        // shows the wrong message.
+        PrintMessageOnWindow4(sPokePvPShowDeclinedMessage ? sText_ChallengeDeclined : sText_NoOpponentFound);
+        sPokePvPShowDeclinedMessage = FALSE;
         gTasks[taskId].tMGErrorMsgState++;
         break;
     case 1:
@@ -2652,6 +2696,13 @@ static void ShowPostMatchResultMessage(u8 result)
         break;
     case POKEPVP_POST_MATCH_RESULT_RATE_LIMITED:
         msg = sText_TooManyRequests;
+        break;
+    case POKEPVP_POST_MATCH_RESULT_DECLINED:
+        /* ADR-207 (HANDOFF item 7): reuses the same distinct string
+         * Task_PokePvPNoOpponentFound shows for a declined fresh INVITE --
+         * one real-world event ("the target said no"), one honest message,
+         * regardless of which wait screen it's shown from. */
+        msg = sText_ChallengeDeclined;
         break;
     default:
         msg = sText_RequestFailed;

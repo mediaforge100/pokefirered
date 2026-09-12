@@ -50,6 +50,17 @@ void PokePvP_SetOpponentRevealedCount(u8 count);
 bool8 PokePvP_IsOnlineMode(void);
 bool8 PokePvP_IsRealMatchPending(void);
 void PokePvP_ClearRealMatchPending(void);
+// POKEPVP (ADR-207): HANDOFF item 7 -- the wait-task counterpart to
+// PokePvP_IsRealOpponentReady() above, for the opposite outcome: the
+// target declined the ROM's one outbound invite/challenge. Defined in
+// battle_controller_pokepvp.c (POKEPVP_MSG_CHALLENGE_DECLINED is decoded
+// there); declared here so main_menu.c's two wait tasks
+// (Task_PokePvPWaitForRealOpponent, Task_PokePvPPostMatchWait) can both
+// use them. See that message's own doc comment (presentation_types.h)
+// for the full design and its "only one outbound request at a time"
+// invariant.
+bool8 PokePvP_IsChallengeDeclined(void);
+void PokePvP_ClearChallengeDeclined(void);
 // POKEPVP (ADR-122): set TRUE by StartPokePvPRealMatch, FALSE by
 // StartPokePvPDebugBattle -- both are the only two real entry points for a
 // new BATTLE_TYPE_POKEPVP battle, so exactly one of them is authoritative

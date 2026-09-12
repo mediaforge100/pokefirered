@@ -48,6 +48,16 @@
 #define POKEPVP_POST_MATCH_RESULT_OPPONENT_UNAVAILABLE 1
 #define POKEPVP_POST_MATCH_RESULT_RATE_LIMITED 2
 #define POKEPVP_POST_MATCH_RESULT_FAILED 3
+/* ADR-207 (HANDOFF item 7): the target explicitly declined a REMATCH/
+ * PLAY AGAIN challenge -- distinct from OPPONENT_UNAVAILABLE (which covers
+ * "couldn't even reach them") so the wait screen tells the truth instead
+ * of a generic failure. See POKEPVP_MSG_CHALLENGE_DECLINED's own doc
+ * comment (presentation_types.h) for the shared launcher-side gateway
+ * event (`challengeDeclined`) this and that message both come from --
+ * this is the existing MSG_POST_MATCH_RESULT channel, not a new message,
+ * since Task_PokePvPPostMatchWait already consumes result codes on this
+ * channel every frame it's waiting. */
+#define POKEPVP_POST_MATCH_RESULT_DECLINED 4
 
 typedef struct
 {
