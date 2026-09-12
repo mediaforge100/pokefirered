@@ -2770,14 +2770,39 @@ static void Task_PokePvPPostMatchWait(u8 taskId)
         /* POKEPVP (UI plan slice 3): the ready-check prompt, same hook
          * as the AUTO-MATCH wait. A cancel returns to the post-match
          * screen. */
-        if (TickReadyCheckPrompt(taskId))
         {
-            if (PokePvP_IsReadyCheckCancelled())
+            bool8 ready = PokePvP_IsRealOpponentReady();
+
+            if (!ready && TickReadyCheckPrompt(taskId))
             {
+                if (PokePvP_IsReadyCheckCancelled())
+                {
+                    PokePvP_ClearRealMatchPending();
+                    ReturnToPostMatchScreen(taskId);
+                }
+                break;
+            }
+
+            // POKEPVP (owner playtest, 2026-09-12): same gap
+            // Task_PokePvPWaitForRealOpponent's own plain-wait cancel
+            // closed for AUTO-MATCH (ADR-192) but this screen's earlier,
+            // plain "Waiting for opponent..." state -- reached before any
+            // real ready-check has arrived, for a rematch/PLAY AGAIN
+            // requeue exactly like AUTO-MATCH's own queue join -- was
+            // never given the same fix (HANDOFF item 22 named this
+            // explicitly as an out-of-scope follow-up). A player who
+            // requeued and changed their mind had no way out except the
+            // full 1800-frame (30s) timeout. Same shape, same limitation:
+            // clears the pending real match locally and returns to the
+            // post-match screen; sends nothing over the wire (no "leave
+            // queue" mailbox message exists today).
+            if (!ready && JOY_NEW(B_BUTTON))
+            {
+                PlaySE(SE_SELECT);
                 PokePvP_ClearRealMatchPending();
                 ReturnToPostMatchScreen(taskId);
+                break;
             }
-            break;
         }
         gTasks[taskId].tWaitFrames++;
         if (PokePvP_IsRealOpponentReady())
@@ -3179,8 +3204,9 @@ static void Task_PokePvPSocial(u8 taskId)
     }
 }
 
-/* One row of a social list: name + tag (+ presence letter for friends).
- * The presence letter is appended after the tag, clipped to the window. */
+/* One row of a social list: name + tag (+ presence letter for friends
+ * and rivals -- ADR-200; blocks never get one). The presence letter is
+ * appended after the tag, clipped to the window. */
 static void DrawSocialListRow(u8 windowId, u8 list, u8 index, bool8 selected)
 {
     PokePvPSocialEntry entry;
@@ -3210,7 +3236,7 @@ static void DrawSocialListRow(u8 windowId, u8 list, u8 index, bool8 selected)
     dst = StringCopy(buf, entry.name);
     *dst++ = CHAR_SPACE;
     dst = StringCopy(dst, entry.tag);
-    if (list == 0)
+    if (list == 0 || list == 1) /* ADR-200: friends and rivals both get presence */
     {
         *dst++ = CHAR_SPACE;
         switch (entry.presence)
