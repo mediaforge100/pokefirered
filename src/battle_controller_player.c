@@ -1431,17 +1431,72 @@ static void MoveSelectionDisplayPpNumber(void)
     BattlePutTextOnWindow(gDisplayedStringBattle, B_WIN_PP_REMAINING);
 }
 
+// POKEPVP (ADR-203, item 5 enhancement): a per-type ink color for the FIGHT
+// menu's TYPE line and the four move-name windows -- HeartGold-style
+// colored move types, adapted to this ROM's own real palette budget rather
+// than a ported graphic. `gText_MoveInterfaceDynamicColors`'s own name
+// ("dynamic") already signals this project's own text engine reserves
+// exactly these three indices (fg=13, highlight=14, shadow=15 of BG
+// palette 5) for runtime-computed color, separate from the fixed 10/11/12
+// trio (`sTextColor1`-shaped) everything else on this screen uses -- see
+// `SetPpNumbersPaletteInMoveSelection` (battle_message.c) for the existing
+// precedent of writing this exact bank live, and ADR-099/100
+// (rom/pokefirered's own earlier per-move-type accent-color work on the
+// launcher's main menu) for the same technique on a different screen. No
+// new LoadPalette call, no new bank, no tile/OAM budget spent -- just a
+// live RGB overwrite of an index this screen's text already reads from.
+// Real, deliberate side effect: because B_WIN_MOVE_TYPE and all four
+// B_WIN_MOVE_NAME_* windows share this same palette and this same index
+// triple (both opt in via the identical `gText_MoveInterfaceDynamicColors`
+// control code), recoloring index 13 for the hovered move's type also
+// recolors the four already-drawn move names to match, live, the instant
+// the cursor moves -- there is no free, unshared index left in this bank
+// to isolate the TYPE line alone (checked: 0-10 are the window-frame/text
+// chrome, 11-12 are SetPpNumbersPaletteInMoveSelection's own PP-color
+// gradient). Treated as intentional here, not a bug: it reads as the
+// whole move list highlighting to match the hovered move's type, a
+// coherent effect this text engine's own "dynamic colors" naming already
+// implies it was built to support.
+static void SetPokePvPMoveTypeColor(u8 type)
+{
+    u16 rgb;
+
+    switch (type)
+    {
+    case TYPE_FIRE:                      rgb = RGB(29,  8,  4); break;
+    case TYPE_WATER:                     rgb = RGB( 6, 15, 29); break;
+    case TYPE_ICE:                       rgb = RGB( 6, 15, 29); break;
+    case TYPE_ELECTRIC:                  rgb = RGB(29, 22,  2); break;
+    case TYPE_GRASS:                     rgb = RGB( 5, 20,  6); break;
+    case TYPE_BUG:                       rgb = RGB( 5, 20,  6); break;
+    case TYPE_POISON:                    rgb = RGB(16,  4, 20); break;
+    case TYPE_FLYING: case TYPE_STEEL: case TYPE_DRAGON:
+                                          rgb = RGB(12, 22, 29); break;
+    case TYPE_FIGHTING: case TYPE_GROUND: case TYPE_ROCK:
+                                          rgb = RGB(22, 14,  3); break;
+    case TYPE_GHOST: case TYPE_PSYCHIC: case TYPE_DARK:
+                                          rgb = RGB(20,  4, 16); break;
+    default: /* TYPE_NORMAL, TYPE_MYSTERY */
+                                          rgb = RGB( 9,  9,  9); break;
+    }
+    gPlttBufferUnfaded[BG_PLTT_ID(5) + 13] = rgb;
+    CpuCopy16(&gPlttBufferUnfaded[BG_PLTT_ID(5) + 13], &gPlttBufferFaded[BG_PLTT_ID(5) + 13], PLTT_SIZEOF(1));
+}
+
 static void MoveSelectionDisplayMoveType(void)
 {
     u8 *txtPtr;
     struct ChooseMoveStruct *moveInfo = (struct ChooseMoveStruct *)(&gBattleBufferA[gActiveBattler][4]);
+    u8 type = gBattleMoves[moveInfo->moves[gMoveSelectionCursor[gActiveBattler]]].type;
+
+    SetPokePvPMoveTypeColor(type);
 
     txtPtr = StringCopy(gDisplayedStringBattle, gText_MoveInterfaceType);
     *txtPtr++ = EXT_CTRL_CODE_BEGIN;
     *txtPtr++ = 6;
     *txtPtr++ = 1;
     txtPtr = StringCopy(txtPtr, gText_MoveInterfaceDynamicColors);
-    StringCopy(txtPtr, gTypeNames[gBattleMoves[moveInfo->moves[gMoveSelectionCursor[gActiveBattler]]].type]);
+    StringCopy(txtPtr, gTypeNames[type]);
     BattlePutTextOnWindow(gDisplayedStringBattle, B_WIN_MOVE_TYPE);
 }
 
