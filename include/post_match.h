@@ -88,4 +88,22 @@ void PokePvPPostMatch_SetResult(u8 result);
 /* Consumes the pending result code into `out`; returns FALSE if none. */
 bool8 PokePvPPostMatch_ConsumeResult(u8 *out);
 
+/* ADR-196: closes ADR-195's "part 2" race. Called from
+ * CB2_EndPokePvPBattle, before the menu re-init runs, to record that a
+ * real (BATTLE_TYPE_TRAINER) PvP battle just ended -- distinct from every
+ * other path into CB2_InitMainMenu (cold boot, PC/team-builder return,
+ * naming-screen return, options return), none of which ever call this.
+ * main_menu.c's Task_WaitFadeAndPrintMainMenuText consumes this flag once
+ * to decide whether it's worth a short, bounded wait for a POST_MATCH
+ * write that may still be in flight on the launcher side (matchEnd ->
+ * fetch_last_match -> POST_MATCH is a real, bounded-latency async
+ * pipeline, not instant) before committing to the ordinary top menu. */
+void PokePvPPostMatch_NotifyBattleEnded(void);
+
+/* Consumes (clears) the "a real battle just ended" flag and returns its
+ * value from before clearing. Idempotent after the first call per battle
+ * end -- returns FALSE on every subsequent call until the next
+ * PokePvPPostMatch_NotifyBattleEnded(). */
+bool8 PokePvPPostMatch_ConsumeJustEndedBattle(void);
+
 #endif /* POKEPVP_POST_MATCH_H */

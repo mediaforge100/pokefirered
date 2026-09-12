@@ -28,6 +28,8 @@
 #include "battle_transition.h"
 #include "battle_controllers.h"
 #include "main_menu.h" // POKEPVP (ADR-094): CB2_InitMainMenu, post-battle return target
+#include "post_match.h" // POKEPVP (ADR-196): NotifyBattleEnded, closes the post-match one-shot-check race
+#include "pokepvp_team_builder.h" // POKEPVP (ADR-193): HasPackTeam/LoadPackTeamForBattle
 #include "constants/battle_setup.h"
 #include "constants/event_objects.h"
 #include "constants/heal_locations.h"
@@ -471,6 +473,22 @@ void StartPokePvPRealMatch(void)
     // (battle_controller_pokepvp.c) for the full race-condition finding.
     PokePvP_SetRealMatchActive(TRUE);
 
+    // POKEPVP (ADR-193, Gap 1): the real fix for "wrong levels"/"all packs
+    // give the same Pokemon" (ADR-190/191/192). Deliberately the LAST
+    // write to gPlayerParty before this function trusts it: whatever
+    // StartPokePvPMatchWithTeam already loaded (main_menu.c, a
+    // *placeholder* local saved team, loaded purely so FireRed's engine
+    // had non-empty party data to render with before pairing completed)
+    // is overwritten here with the match's real, server-materialized pack
+    // roster the instant one has actually arrived
+    // (POKEPVP_MSG_PACK_TEAM_MEMBER, sent at matchStart -- see that
+    // message's own doc comment, presentation_types.h). A no-op for every
+    // non-pack real match (CUSTOM ELITE/INVITE/PRACTICE/etc.): no pack
+    // team is ever sent for those, so HasPackTeam() stays FALSE and
+    // gPlayerParty keeps the player's own already-correct saved team.
+    if (PokePvPTeamBuilder_HasPackTeam())
+        PokePvPTeamBuilder_LoadPackTeamForBattle();
+
     DebugPrintf("POKEPVP: StartPokePvPRealMatch entry, gPlayerPartyCount=%d species=%d level=%d",
                 gPlayerPartyCount, species, level);
 
@@ -568,8 +586,27 @@ void StartPokePvPRealMatch(void)
     // what a real Pokemon trainer battle's own opponent always looks
     // like.
     CreateMon(&gEnemyParty[0], species, level, 0, TRUE, 0, OT_ID_PRESET, POKEPVP_OPPONENT_OT_ID);
-    gEnemyPartyCount = PARTY_SIZE;
-    DebugPrintf("POKEPVP: real opponent mon created (species=%d level=%d)", species, level);
+    // POKEPVP (ADR-199): this was `PARTY_SIZE` (hardcoded 6) unconditionally,
+    // on the premise (this function's own comment above, "ADR-123") that
+    // "this project's own format is a fixed 6-member team" -- true when
+    // that comment was written (CUSTOM ELITE and Elite-class packs are
+    // both real 6v6), but no longer true project-wide once QUICK EARLY's
+    // packs shipped as real 3v3 (`docs/HANDOFF.md` item 19: "Elite packs
+    // are genuinely 6v6... [confirmed] from their own format YAMLs",
+    // implying Early is not). Owner-reported live: a real 3v3 Early-pack
+    // match's party-status summary showed six balls for the opponent
+    // instead of three -- exactly the inverse of ADR-125's own "opponent
+    // shows with 1 pokemon" bug this same hardcoding was written to fix,
+    // just for the other packSize. `gPlayerPartyCount` is already the
+    // real, correct size for *this* match by this point (set from the
+    // server-materialized pack roster by `PokePvPTeamBuilder_
+    // LoadPackTeamForBattle` above for a pack match, or already a real
+    // full 6-member team for CUSTOM ELITE/INVITE/PRACTICE, which never
+    // reach here with an empty slot) -- both sides of a real match always
+    // share the same format's team size, so mirroring it here is exact,
+    // not a guess.
+    gEnemyPartyCount = gPlayerPartyCount;
+    DebugPrintf("POKEPVP: real opponent mon created (species=%d level=%d) gEnemyPartyCount=%d", species, level, gEnemyPartyCount);
 
     // Consumed exactly once -- a later real match this same process plays
     // must not silently reuse a stale species/level from this one.
@@ -859,6 +896,12 @@ static void CB2_EndPokePvPBattle(void)
 {
     CpuFill16(0, (void *)BG_PLTT, BG_PLTT_SIZE);
     ResetOamRange(0, 128);
+    // POKEPVP (ADR-196): flag that a real battle just ended so
+    // Task_WaitFadeAndPrintMainMenuText knows this CB2_InitMainMenu entry
+    // (unlike a cold boot or a PC/team-builder/naming/options return) may
+    // still have a POST_MATCH write in flight and is worth a short,
+    // bounded wait for before committing to the ordinary top menu.
+    PokePvPPostMatch_NotifyBattleEnded();
     SetMainCallback2(CB2_InitMainMenu);
 }
 

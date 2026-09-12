@@ -107,4 +107,31 @@ void PokePvPTeamBuilder_RequestPractice(u8 slot);
 // directory, so PokePvPTeamBuilder_ReceiveMemberRecord's own prototype
 // lives there instead of in this header.
 
+// POKEPVP (ADR-193, Gap 1): the same load-back direction as
+// PokePvPTeamBuilder_ReceiveMemberRecord above, but for
+// POKEPVP_MSG_PACK_TEAM_MEMBER's own dedicated buffer (never aliases a
+// real Team Builder slot) -- see that message's own doc comment
+// (presentation_types.h) for the full design. Its own
+// PokePvPTeamBuilder_ReceivePackTeamRecord prototype lives next to
+// PokePvPTeamBuilder_ReceiveMemberRecord's, in battle_controller_pokepvp.c,
+// for the identical PokePvPTeamMemberRecord-visibility reason.
+
+// TRUE once a real POKEPVP_MSG_PACK_TEAM_MEMBER burst has landed for the
+// current match -- StartPokePvPRealMatch's own signal to prefer the pack
+// team over whatever PokePvPTeamBuilder_LoadTeamForBattle already loaded.
+bool8 PokePvPTeamBuilder_HasPackTeam(void);
+
+// Loads the received pack team into gPlayerParty, the same shape as
+// PokePvPTeamBuilder_LoadTeamForBattle but sourced from the dedicated pack
+// buffer. A no-op (party left untouched) if no pack team has arrived --
+// callers must check PokePvPTeamBuilder_HasPackTeam first, same
+// fail-closed discipline as the saved-slot loader.
+void PokePvPTeamBuilder_LoadPackTeamForBattle(void);
+
+// Clears any previously-received pack team -- called the instant a new
+// pairing begins (POKEPVP_MSG_REAL_MATCH_PENDING's own handler,
+// battle_controller_pokepvp.c) so a real match can never render a stale
+// pack roster left over from an earlier match in the same process.
+void PokePvPTeamBuilder_ClearPackTeam(void);
+
 #endif // GUARD_POKEPVP_TEAM_BUILDER_H
