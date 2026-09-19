@@ -70,6 +70,16 @@ void PokePvP_ClearChallengeDeclined(void);
 // through to FireRed's native AI -- fixes a real bug found live where the
 // opponent visibly played like the AI, not the actual remote human.
 void PokePvP_SetRealMatchActive(bool8 active);
+// POKEPVP (ADR-227): resets every per-match pending-dispatch static
+// PokePvPMailbox_PumpPresentation privately owns (sPendingAck,
+// sPendingOutboundAck, sPokePvPLocalSwitchState, and siblings) -- none of
+// which CB2_EndPokePvPBattle cleared before this, the same "a CB2 never
+// resets a static that's supposed to be per-match" bug class as
+// PokePvP_SetRealMatchActive/PokePvP_ClearRealMatchPending just above.
+// Left stuck, any of them silently and permanently jams the hostToRom
+// ring's only reader with no diagnostic output at all. See that function's
+// own doc comment (battle_controller_pokepvp.c) for the live evidence.
+void PokePvP_ResetMailboxPumpState(void);
 // POKEPVP (ADR-124): the trainer identity a real match's opponent is drawn
 // and named with -- defined in battle_controller_pokepvp.c (that's where
 // POKEPVP_MSG_REAL_OPPONENT_NAME is decoded), declared here so the two

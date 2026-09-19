@@ -54,6 +54,12 @@ bool8 PokePvPProfile_Receive(const u8 *payload, u16 length);
 /* Copies the profile into `out`. Returns FALSE if none received yet. */
 bool8 PokePvPProfile_Get(PokePvPProfile *out);
 
+/* ADR-209: updates spriteId only, immediately, the instant the trainer-
+ * sprite picker confirms a pick -- does not wait on (or touch) whether a
+ * real PROFILE record has ever arrived, so the PROFILE screen's own
+ * render reflects the pick right away regardless of push timing. */
+void PokePvPProfile_SetSpriteId(u8 spriteId);
+
 /* Handles a POKEPVP_MSG_RECENT_OPPONENT record (host -> ROM). A
  * zero-length payload resets the list (burst reset-first, same contract
  * as history.c). Returns FALSE for a rejected record. */

@@ -11,6 +11,7 @@
 #include "battle_setup.h" // POKEPVP (ADR-079/080): StartPokePvPMenuMatch
 #include "option_menu.h" // POKEPVP (ADR-112): OPTIONS reuses FireRed's own real screen
 #include "naming_screen.h" // POKEPVP (ADR-113): PLAYER SETTINGS name entry
+#include "trainer_pokemon_sprites.h" // POKEPVP (ADR-209): trainer-sprite picker preview (CreateTrainerPicSprite)
 #include "pokepvp_team_builder.h" // POKEPVP (ADR-093): TEAM BUILDER
 #include "pokepvp/mailbox.h" // POKEPVP (UI plan slice 2): ROM->host post-match action records (quoted-relative to src/, as battle_controller_pokepvp.c does)
 #include "pokepvp/presentation_types.h" // POKEPVP (UI plan slice 2): POST_MATCH_ACTION message id
@@ -29,8 +30,11 @@
 #include "data.h"        // POKEPVP (ADR-093): gSpeciesNames, gMoveNames
 #include "pokemon.h"     // POKEPVP (ADR-096): gBattleMoves, for the move info panel
 #include "battle_main.h" // POKEPVP (ADR-096): gTypeNames, for the move info panel
+#include "pokemon_summary_screen.h" // POKEPVP (ADR-217): gMoveDescriptionPointers, for the move info panel's page 2
+#include "pokemon_storage_system.h" // POKEPVP (ADR-217): BOX_NAME_LENGTH, for the ADD FRIEND naming-screen buffer
 #include "constants/moves.h"
 #include "constants/species.h" // POKEPVP (UI plan slice 5): NUM_SPECIES for the PROFILE top-species bounds
+#include "constants/trainers.h" // POKEPVP (ADR-209): TRAINER_PIC_RED/LEAF/RS_BRENDAN_1/RS_MAY_1 for the sprite picker
 #include "quest_log.h"
 #include "mystery_gift_menu.h"
 #include "strings.h"
@@ -114,12 +118,15 @@ enum MainMenuWindow
 // pack of this class). A dedicated RULES row was designed and dropped in
 // the same slice: its static rules line (team size/level/ranked status,
 // Build Plan §8 item 6) is rendered as the picker's summary line instead,
-// leaving the row count at 5 packs + RANDOM = 6 -- a 7th row would only
-// have duplicated RANDOM's behavior, since A on it resolved to the same
-// "unpicked" state (dead UI). If a richer full-screen rules view is ever
-// wanted it is a new stage, not a 7th row.
-#define POKEPVP_PICKER_ROW_RANDOM 5u
-#define POKEPVP_PICKER_ROW_COUNT 6u
+// leaving the row count at POKEPVP_PACKS_PER_CLASS packs + RANDOM -- an
+// extra row would only have duplicated RANDOM's behavior, since A on it
+// resolved to the same "unpicked" state (dead UI). If a richer full-screen
+// rules view is ever wanted it is a new stage, not an extra row.
+// Kept as its own literal (not `POKEPVP_PACKS_PER_CLASS`) because the two
+// happen to move together only by content coincidence -- see
+// packs_catalog.h's own count; update both together if that count changes.
+#define POKEPVP_PICKER_ROW_RANDOM 4u
+#define POKEPVP_PICKER_ROW_COUNT 5u
 
 // POKEPVP (ADR-093): move-editor state. data[3..7] are unused by every
 // other menu type here, and the editor is only ever reachable from the
@@ -166,6 +173,17 @@ enum MainMenuWindow
 // opening always draws, then only redraws on an actual hover change.
 #define tMoveInfoWindowId data[11]
 #define tLastInfoMoveId   data[12]
+
+// POKEPVP (ADR-217): which of the move info panel's two pages is showing
+// (0 = stats, 1 = description). Lives on data[13] -- free within this
+// task's own context (Task_PokePvPPickMoveSlot/Task_PokePvPPickMove never
+// use tWaitFrames/tScreenDrawn/tPostMatchWaitFrames's slot, all of which
+// belong to entirely different screens' task functions; same documented
+// per-screen multiplexing precedent as tPickerStage/tInboxSlot/
+// tSocialList above). Reset to 0 on open (OpenPokePvPList) and on every
+// real hover change (UpdatePokePvPMoveInfo), so flipping to page 2 for
+// one move never leaks into the next move hovered.
+#define tMoveInfoPage data[13]
 
 // POKEPVP (ADR-121): Task_PokePvPWaitForRealOpponent's own bounded-wait
 // frame counter. Reuses tMGErrorMsgState for its 0/1/2 state machine, same
@@ -234,15 +252,23 @@ static void Task_PokePvPInbox(u8 taskId);
 // most-used species, recent opponents. Reached from the top menu's
 // PROFILE row (cursor 2); B returns to the top menu.
 static void Task_PokePvPProfile(u8 taskId);
+static void DrawProfileItems(u8 selectedIdx);
+static void Task_PokePvPPlayerMenu(u8 taskId);
+static void DrawPlayerMenuItems(u8 selectedIdx);
 // POKEPVP (UI plan slice 6, Phase G): the SOCIAL screen (friends /
 // rivals / blocks / name) and the per-list screens with per-row
 // CHALLENGE / REMOVE / UNBLOCK actions.
 static void Task_PokePvPSocial(u8 taskId);
+static void Task_PokePvPSpritePicker(u8 taskId);
 static void Task_PokePvPSocialList(u8 taskId);
 static void Task_PokePvPSocialRowMenu(u8 taskId);
 static void Task_PokePvPSocialRowMenuDismiss(u8 taskId);
+static void Task_PokePvPAddFriendResultDismiss(u8 taskId);
+static void Task_PokePvPAddFriendPrompt(u8 taskId);
+static void ShowAddFriendResultIfPending(u8 taskId);
+static void CB2_PokePvPAddFriendNameEntered(void);
 static void DrawSocialItems(u8 selectedIdx);
-static void DrawSocialListItems(u8 list, u8 selectedIdx);
+static void DrawSocialListItems(u8 list, u8 selectedIdx, bool8 addFriendFirst);
 static void DrawSocialRowMenuItems(u8 list, u8 selectedIdx);
 // POKEPVP (UI plan slice 2, Phase I): the post-match screen -- result +
 // REMATCH / PLAY AGAIN / ADD RIVAL / EXIT, reached from
@@ -255,9 +281,13 @@ static void Task_PokePvPPostMatch(u8 taskId);
 static void Task_PokePvPPostMatchWait(u8 taskId);
 static void Task_PokePvPPostMatchRivalWait(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId);
+static void SendLeaveQueue(void);
+static void SendSetSprite(u8 spriteId);
 static void DrawPokePvPMenuItems(u8 selectedIdx);
 // POKEPVP (ADR-091): START MATCH -> AUTO-MATCH/INVITE MATCH submenu.
 static void DrawStartMatchSubmenuItems(u8 selectedIdx);
+static u8 StartMatchRowCount(void);
+static u8 StartMatchModeForRow(u8 row);
 // POKEPVP (UI plan slice 3, simplified ADR-192): the START MATCH mode
 // tree -- pack picker (QUICK), plus the ready-check prompt state; see each
 // function below. The separate EARLY/ELITE class-picker screen this used
@@ -266,13 +296,17 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx);
 static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass);
 static void Task_PokePvPPackPicker(u8 taskId);
 static void Task_PokePvPStartMatchSubmenu(u8 taskId);
-// POKEPVP (ADR-193, Gap 2): INVITE MATCH's real target picker -- a
-// friends-list reuse of the SOCIAL screen's own list rendering
-// (DrawSocialListItems, forward-declared below at its own existing site)
-// and its existing CHALLENGE pipeline (tSocialList/tInboxSlot ->
-// POKEPVP_MATCH_MODE_CHALLENGE_TARGET -> Task_PokePvPTeamSelector), not a
-// second targeting mechanism. See Task_PokePvPInviteTargetPicker's own
-// doc comment for the full design.
+// POKEPVP (ADR-193, Gap 2, extended HANDOFF item 23 follow-up): INVITE
+// MATCH's real target picker -- a friends/rivals-list reuse of the SOCIAL
+// screen's own list rendering (DrawSocialListItems, forward-declared below
+// at its own existing site) and its existing CHALLENGE pipeline
+// (tSocialList/tInboxSlot -> POKEPVP_MATCH_MODE_CHALLENGE_TARGET ->
+// Task_PokePvPTeamSelector), not a second targeting mechanism. See
+// Task_PokePvPInviteTargetPicker's own doc comment for the full design.
+// Task_PokePvPInviteTargetTypePicker is the new FRIENDS/RIVALS chooser in
+// front of it, mirroring Task_PokePvPSocial's own two-level shape.
+static void DrawInviteTargetTypeItems(u8 selectedIdx);
+static void Task_PokePvPInviteTargetTypePicker(u8 taskId);
 static void Task_PokePvPInviteTargetPicker(u8 taskId);
 // POKEPVP (ADR-192): shared match-start sequence, defined alongside
 // Task_PokePvPTeamSelector below but called earlier in the file too (by
@@ -300,6 +334,12 @@ static void Task_PokePvPPrepareRoster(u8 taskId);
 // ListMenu pickers (member -> move slot -> legal move).
 static void DrawSlotMenuItems(u8 selectedIdx);
 static void Task_PokePvPSlotMenu(u8 taskId);
+// Team management options: RENAME's naming-screen round trip, COPY TO...'s
+// destination picker, and the two new ROM -> host sends.
+static void CB2_PokePvPTeamRenamed(void);
+static void Task_PokePvPTeamCopyPicker(u8 taskId);
+static void SendTeamRename(u8 slot, const u8 *name);
+static void SendActiveTeamSlot(u8 slot);
 static void Task_PokePvPPickMember(u8 taskId);
 static void Task_PokePvPReturnToTeamListFromSlotMenu(u8 taskId);
 static void Task_PokePvPEmptyTeamMessage(u8 taskId);
@@ -310,7 +350,7 @@ static void OpenPokePvPList(u8 taskId, u16 count, bool8 withMoveInfo);
 // POKEPVP (ADR-096): the move info panel -- Type/Power/Accuracy/PP for the
 // currently-hovered row, in the unused ~80px right of the move-slot and
 // movepool lists (not shown for the member/species list).
-static void DrawPokePvPMoveInfo(u8 windowId, u16 move);
+static void DrawPokePvPMoveInfo(u8 windowId, u16 move, u8 page);
 static u16 GetHoveredMoveId(u8 taskId, bool8 isMoveSlotList);
 static void UpdatePokePvPMoveInfo(u8 taskId, bool8 isMoveSlotList);
 static void ClosePokePvPList(u8 taskId);
@@ -338,6 +378,23 @@ static void MainMenu_EraseWindow(const struct WindowTemplate * template);
 // back into this screen from a foreign CB2), which would otherwise land
 // the player on the top-level menu, two levels away from where they were.
 static EWRAM_DATA bool8 sPokePvPReturnToTeamList = FALSE;
+
+// POKEPVP (ADR-233, owner-reported live: "the ADD FRIEND error only
+// shows after re-entering the FRIENDS menu, not right after submitting
+// the username"): same shape and same reason as
+// sPokePvPReturnToTeamList just above -- set right before
+// CB2_PokePvPAddFriendNameEntered hands off to CB2_InitMainMenu (the
+// naming screen's own round trip always lands there, never directly back
+// into this screen), consumed in Task_UpdateVisualSelection to skip the
+// top menu entirely and land straight back on FRIENDS with the result
+// message already showing.
+static EWRAM_DATA bool8 sPokePvPReturnToSocialFriends = FALSE;
+
+// POKEPVP (ADR-238): same shape again -- set right before the PLAYER
+// submenu's own NAME action hands off to CB2_InitMainMenu via
+// DoNamingScreen, consumed in Task_UpdateVisualSelection to land straight
+// back on the PLAYER submenu (SPRITE/NAME) instead of the top menu.
+static EWRAM_DATA bool8 sPokePvPReturnToPlayerMenu = FALSE;
 
 /* POKEPVP (UI plan slice 4): set when the player dismisses the challenge
  * inbox with B ("later"); cleared on every fresh menu init
@@ -374,6 +431,10 @@ static const u8 sText_MatchHistory[] = _("MATCH HISTORY");
 static const u8 sText_HistoryWSep[] = _("   W: ");
 static const u8 sText_HistoryL[] = _("  L: ");
 static const u8 sText_HistoryEmpty[] = _("No matches yet.");
+// POKEPVP (ADR-238): divider label ahead of the per-opponent list, now
+// that MATCH HISTORY also shows PROFILE's old tag/stats/species/recent
+// rows above it.
+static const u8 sText_MatchHistoryDivider[] = _("RECORD:");
 // POKEPVP (ADR-189): sText_Leaderboard/sText_LeaderboardRSep/
 // sText_LeaderboardEmpty (ADR-188) removed with the top menu's 6th row
 // and Task_PokePvPLeaderboard -- see docs/adr/189.
@@ -433,9 +494,14 @@ static const u8 sText_ChallengeDeclined[] = _("Challenge declined.");
 // POKEPVP (ADR-193, Gap 2): INVITE MATCH's target picker, empty-list case
 // -- same "say so instead of doing nothing" shape as sText_TeamIsEmpty.
 static const u8 sText_NoFriendsToInvite[] = _("Add a FRIEND from SOCIAL first.");
+static const u8 sText_NoRivalsToInvite[] = _("Add a RIVAL from SOCIAL first.");
 static const u8 sText_EditTeam[] = _("EDIT TEAM");
 static const u8 sText_EditMoves[] = _("EDIT MOVES");
-static const u8 sText_Back[] = _("BACK");
+// Team management options (owner ask): DrawSlotMenuItems' own explicit
+// BACK row (sText_Back) is gone -- these five fill all its rows instead.
+static const u8 sText_RenameTeam[] = _("RENAME");
+static const u8 sText_CopyTeamTo[] = _("COPY TO...");
+static const u8 sText_SetActiveTeam[] = _("SET AS ACTIVE");
 static const u8 sText_TeamIsEmpty[] = _("This team has no POKéMON yet.");
 // The empty move slot, and the "clear this slot" row. One dash, used as
 // both -- a slot showing "-" and a choice reading "-" are the same idea.
@@ -447,6 +513,8 @@ static const u8 sText_MoveInfoAcc[] = _("ACC.");
 static const u8 sText_MoveInfoPP[] = _("PP");
 // POKEPVP (ADR-099): the panel's header stripe.
 static const u8 sText_MoveInfoHeader[] = _("MOVE INFO");
+static const u8 sText_MoveInfoPage1[] = _("1/2"); // POKEPVP (ADR-217)
+static const u8 sText_MoveInfoPage2[] = _("2/2"); // POKEPVP (ADR-217)
 static const u8 sText_AutoMatch[] = _("AUTO-MATCH");
 // POKEPVP (UI plan slot 3, Phase C): the START MATCH submenu now serves
 // the Build Plan §8 mode tree -- QUICK EARLY / QUICK ELITE (battle class
@@ -457,6 +525,17 @@ static const u8 sText_QuickElite[] = _("QUICK ELITE");
 static const u8 sText_CustomElite[] = _("CUSTOM ELITE");
 static const u8 sText_InviteMatch[] = _("INVITE MATCH");
 static const u8 sText_PracticeMatch[] = _("PRACTICE");
+// POKEPVP (owner ask, 2026-09-13, item 6): the START MATCH submenu never
+// told the player what each row actually means before committing to it
+// (team size / level / premade-vs-own-team). One static description per
+// mode, shown in the ERROR band below the row list -- same window/spot
+// the pack picker's own rules line already uses, just for this screen's
+// own five rows instead of a hovered pack.
+static const u8 sText_ModeDescQuickEarly[] = _("3v3, Level 20, Premade");
+static const u8 sText_ModeDescQuickElite[] = _("6v6, Level 100, Premade");
+static const u8 sText_ModeDescCustomElite[] = _("6v6, Level 100, Custom");
+static const u8 sText_ModeDescInvite[] = _("6v6, Level 100, Custom");
+static const u8 sText_ModeDescPractice[] = _("6v6, Level 100, Practice");
 // POKEPVP (UI plan slice 3): the pack-picker rows. (ADR-192: the separate
 // "EARLY PACKS"/"ELITE PACKS" class-picker header strings this file used
 // to carry are gone along with that now-removed screen.)
@@ -469,8 +548,15 @@ static const u8 sText_RandomPack[] = _("RANDOM");
 // formatId: pokepvp-frlg-kanto-singles -- teamSize 6, per that format's own
 // YAML. Split into a per-class pair so the label always matches what the
 // class's own packs actually are, not just what EARLY's happens to be.
-static const u8 sText_QuickRulesLineEarly[] = _("3v3 LVL100 FROZEN");
-static const u8 sText_QuickRulesLineElite[] = _("6v6 LVL100 FROZEN");
+// POKEPVP (owner ask, 2026-09-13): dropped "FROZEN" (a leftover from an
+// earlier draft, never a real ROM/protocol guarantee this text needs to
+// assert) and fixed EARLY's own level -- ADR-219 moved
+// pokepvp-frlg-kanto-early to level 20 (`defaultLevel`/`levelRange`
+// 100 -> 20) but this literal string was never updated to match, so it
+// was quietly showing the wrong level ever since. ELITE is genuinely
+// still level 100 -- only the FROZEN suffix drops there.
+static const u8 sText_QuickRulesLineEarly[] = _("3v3 LVL20");
+static const u8 sText_QuickRulesLineElite[] = _("6v6 LVL100");
 // POKEPVP (UI plan slice 3): the ready-check prompt (Build Plan §8 item
 // 2 -- both players must confirm within the window; the gateway's
 // timeout frame budget is held ROM-side by ready_check.c).
@@ -481,6 +567,12 @@ static const u8 sText_QuickRulesLineElite[] = _("6v6 LVL100 FROZEN");
 // file. "CANCEL" says what actually happens; "NO" implied the prompt
 // would just reappear or continue waiting, which it doesn't.
 static const u8 sText_ReadyPrompt[] = _("READY?  A=YES B=CANCEL");
+// HANDOFF item 37 (owner UX ask, deferred at ADR-199 pending a way to
+// live-verify a timing change without recreating a real match -- the
+// firered-real-match-slice recalibration this same session did (see
+// SIX_TEAM_SCRIPT's own comment) now gives exactly that harness, so this
+// is built and live-verified here rather than staying deferred).
+static const u8 sText_ReadyForBattle[] = _("READY FOR BATTLE!");
 // POKEPVP (UI plan slice 4): the challenge inbox (Build Plan §13 item 3:
 // challenger identity, category, expiry, Accept, Decline, Block). The
 // expiry clock is the gateway's own (late accepts are rejected there);
@@ -518,12 +610,41 @@ static const u8 sText_Social[] = _("SOCIAL");
 static const u8 sText_Friends[] = _("FRIENDS");
 static const u8 sText_Rivals[] = _("RIVALS");
 static const u8 sText_Blocks[] = _("BLOCKS");
+// POKEPVP (ADR-238, owner-directed PROFILE restructure): PROFILE's own
+// two real rows, and the PLAYER submenu's own two -- see Task_PokePvP
+// Profile/Task_PokePvPPlayerMenu's own doc comments.
+static const u8 sText_ProfileSocialRow[] = _("SOCIAL");
+static const u8 sText_ProfilePlayerRow[] = _("PLAYER");
+static const u8 sText_PlayerMenuSprite[] = _("SPRITE");
+static const u8 sText_PlayerMenuName[] = _("NAME");
 static const u8 sText_Challenge[] = _("CHALLENGE");
 static const u8 sText_Remove[] = _("REMOVE");
 static const u8 sText_Unblock[] = _("UNBLOCK");
 static const u8 sText_Empty[] = _("EMPTY");
 static const u8 sText_Removed[] = _("Removed.");
 static const u8 sText_ChallengeSent[] = _("Challenge sent.");
+// POKEPVP (ADR-217): SOCIAL FRIENDS' "ADD FRIEND" row + its naming-screen
+// round trip's real response cases.
+static const u8 sText_AddFriendRow[] = _("ADD FRIEND");
+static const u8 sText_AddFriendPrompt[] = _("Sending...");
+static const u8 sText_AddFriendSuccess[] = _("Friend added!");
+static const u8 sText_AddFriendUnknown[] = _("No player has\nthat username.");
+static const u8 sText_AddFriendSelf[] = _("You can't add\nyourself.");
+static const u8 sText_AddFriendBlocked[] = _("Couldn't add\nthat player.");
+static const u8 sText_AddFriendFailed[] = _("No response.\nTry again later.");
+// POKEPVP (ADR-226): the one real invalid-input case left once the
+// numeric-only requirement was dropped is an empty/all-unconvertible
+// result (nothing legible was typed) -- BOX_NAME_LENGTH itself already
+// bounds the naming screen to 8 characters, so "too long" can't happen.
+static const u8 sText_AddFriendInvalid[] = _("Enter a\nusername.");
+// POKEPVP (ADR-224 follow-up): shown before the naming screen opens --
+// ADR-224 named "no on-screen indication of what to type until after a
+// bad entry" as a real, small, unbuilt gap. NAMING_SCREEN_BOX's own
+// vendored title text (gText_BoxName, "BOX's name?") is shared with Team
+// Builder's RENAME and can't be changed for just this use without editing
+// naming_screen.c (prohibition #16) -- so the explanation is printed here,
+// on SOCIAL's own screen, immediately before the handoff instead.
+static const u8 sText_AddFriendLeadIn[] = _("Enter the exact\nusername to add.");
 static const u8 sText_PresenceOnline[] = _("O");
 static const u8 sText_PresenceSearching[] = _("S");
 static const u8 sText_PresenceBattle[] = _("B");
@@ -1182,6 +1303,39 @@ static void Task_UpdateVisualSelection(u8 taskId)
         gTasks[taskId].func = Task_PokePvPTeamList;
         return;
     }
+    // POKEPVP (ADR-233): same shape as sPokePvPReturnToTeamList just
+    // above -- skip the top menu (and PROFILE) entirely and land straight
+    // back on FRIENDS, with any pending ADD FRIEND result shown
+    // immediately instead of only on the next ordinary visit.
+    // tCursorPos = 2 documents PROFILE as this screen's real top-menu
+    // parent (see DrawPokePvPMenuItems's own row order); B from SOCIAL
+    // always jumps straight to the top menu's row 0 by existing design
+    // (Task_PokePvPReturnToTopMenuFromHistory), so this value is never
+    // actually read for navigation, only for consistency with that
+    // parent relationship.
+    if (sPokePvPReturnToSocialFriends)
+    {
+        sPokePvPReturnToSocialFriends = FALSE;
+        gTasks[taskId].tSocialList = 0;
+        gTasks[taskId].tSubCursorPos = 0;
+        gTasks[taskId].tCursorPos = 2;
+        DrawSocialListItems(0, 0, TRUE);
+        ShowAddFriendResultIfPending(taskId);
+        return;
+    }
+    // POKEPVP (ADR-238): same shape again -- lands straight back on the
+    // PLAYER submenu (SPRITE/NAME), cursor on NAME (the row just used),
+    // instead of the top menu, after the naming screen's own
+    // CB2_InitMainMenu round trip.
+    if (sPokePvPReturnToPlayerMenu)
+    {
+        sPokePvPReturnToPlayerMenu = FALSE;
+        gTasks[taskId].tSubCursorPos = 1;
+        gTasks[taskId].tCursorPos = 2;
+        DrawPlayerMenuItems(1);
+        gTasks[taskId].func = Task_PokePvPPlayerMenu;
+        return;
+    }
     MoveWindowByMenuTypeAndCursorPos(gTasks[taskId].tMenuType, gTasks[taskId].tCursorPos);
     // POKEPVP (menu redesign): the selected-row red-bar/white-text look
     // is a real color swap, not the old WIN0-darken trick (BLDY is 0 now
@@ -1257,18 +1411,16 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
             }
             else if (gTasks[taskId].tCursorPos == 2)
             {
-                // POKEPVP (UI plan slice 5, Phase E): PROFILE -- the
-                // real screen now (was PLAYER SETTINGS/name entry,
-                // ADR-113). Shows the permanent NAME#1234 tag, stats,
-                // most-used species, and recent opponents; the NAME row
-                // inside it re-enters the naming screen (moved here per
-                // Build Plan §10 item 3). Same redraw-and-fade-in shape
-                // as the START MATCH/Team Builder branches above.
+                // POKEPVP (ADR-238, owner-directed restructure): PROFILE
+                // is now a plain 2-row action selector (SOCIAL/PLAYER),
+                // not a stats display (see Task_PokePvPProfile's own doc
+                // comment) -- drawn eagerly here, same "redraw into the
+                // existing windows and fade back in" shape as the START
+                // MATCH/Team Builder branches above, not the lazy
+                // tScreenDrawn-gated draw this screen used to need for its
+                // old stats content.
                 gTasks[taskId].tSubCursorPos = 0;
-                // POKEPVP (ADR-189): reset the draw-once latch explicitly --
-                // see tScreenDrawn's own comment for why this can't be
-                // trusted to already be 0.
-                gTasks[taskId].tScreenDrawn = 0;
+                DrawProfileItems(0);
                 gTasks[taskId].func = Task_PokePvPProfile;
                 BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
             }
@@ -1475,12 +1627,34 @@ static void Task_PokePvPMenuStub(u8 taskId)
     }
 }
 
-/* POKEPVP (ADR-168): MATCH HISTORY screen (minimalist). */
+// POKEPVP (ADR-238, owner-directed restructure, 2026-09-19): MATCH
+// HISTORY now also shows the tag/aggregate-stats/top-species/recent-
+// opponent content PROFILE used to (ADR-188) -- the owner's own read was
+// that a player's record belongs with the rest of their match history,
+// not mixed into a plain action-selector menu. Windows 0-3 take the same
+// four rows PROFILE's own layout used (tag, M/W/L/T, top species, most
+// recent opponent); window 4 is a plain divider label; the ERROR band
+// (4 tile rows, twice window 0's own old height) now holds the per-
+// opponent win/loss list this screen already showed, relocated here from
+// window 0 alone -- strictly more room than before for that list, not
+// less, though the list's own worst case (8 entries) still would not
+// fully fit even in 4 rows; this was already true of the original
+// window-0-only layout and is not a new regression, just not fully
+// solved by this pass either.
 static void Task_PokePvPMatchHistory(u8 taskId)
 {
-    u8 count = PokePvPMatchHistory_Count();
-    u8 buf[256];
-    u8 *dst = buf;
+    PokePvPProfile profile;
+    bool8 haveProfile;
+    u8 recentCount;
+    u8 historyCount = PokePvPMatchHistory_Count();
+    // Sized for the worst case of the ERROR band's own combined buffer:
+    // "RECORD:" (7) + newline (1) + POKEPVP_HISTORY_MAX_ENTRIES (8) list
+    // lines ("NAME" (16) + "   W: " (6) + 2 digits + "  L: " (5) + 2
+    // digits + newline = 32 each) = 8 + 256 = 264, plus EOS -- reused
+    // per-window below, so sized for its own single largest user, not
+    // the sum of all of them (ADR-198's own lesson).
+    u8 buf[265];
+    u8 *dst;
     u8 i;
 
     if (gPaletteFade.active)
@@ -1489,15 +1663,129 @@ static void Task_PokePvPMatchHistory(u8 taskId)
     if (gTasks[taskId].tScreenDrawn == 0)
     {
         gTasks[taskId].tScreenDrawn = 1;
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(0));
+        haveProfile = PokePvPProfile_Get(&profile);
+        recentCount = PokePvPProfile_RecentCount();
 
-        if (count == 0)
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
+
+        // Window 0: the permanent NAME#1234 tag.
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
+        dst = buf;
+        if (haveProfile && profile.tag[0] != EOS)
+            dst = StringCopy(dst, profile.tag);
+        else
+            dst = StringCopy(dst, sText_ProfileNoTag);
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_FULL);
+
+        // Window 1: M/W/L/T on one line (qualifying matches only, per
+        // ADR-175's counts_for_stats).
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(10));
+        dst = buf;
+        if (haveProfile)
+        {
+            dst = StringCopy(dst, sText_ProfileM);
+            dst = ConvertIntToDecimalStringN(dst, profile.matches, STR_CONV_MODE_LEFT_ALIGN, 4);
+            dst = StringCopy(dst, sText_ProfileStatSep);
+            dst = StringCopy(dst, sText_ProfileW);
+            dst = ConvertIntToDecimalStringN(dst, profile.wins, STR_CONV_MODE_LEFT_ALIGN, 4);
+            dst = StringCopy(dst, sText_ProfileStatSep);
+            dst = StringCopy(dst, sText_ProfileL);
+            dst = ConvertIntToDecimalStringN(dst, profile.losses, STR_CONV_MODE_LEFT_ALIGN, 4);
+            dst = StringCopy(dst, sText_ProfileStatSep);
+            dst = StringCopy(dst, sText_ProfileT);
+            dst = ConvertIntToDecimalStringN(dst, profile.ties, STR_CONV_MODE_LEFT_ALIGN, 4);
+        }
+        else
+        {
+            dst = StringCopy(dst, sText_ProfileEmpty);
+        }
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_FULL);
+
+        // Window 2: up to 3 most-used species (ADR-175's mostUsedSpecies).
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
+        dst = buf;
+        dst = StringCopy(dst, sText_ProfileTop);
+        if (haveProfile && profile.topCount > 0)
+        {
+            for (i = 0; i < profile.topCount && i < POKEPVP_PROFILE_MAX_TOP_SPECIES; i++)
+            {
+                if (i > 0)
+                    dst = StringCopy(dst, sText_ProfileSpeciesSep);
+                dst = StringCopy(dst, gSpeciesNames[profile.topSpecies[i]]);
+            }
+        }
+        else
+        {
+            dst = StringCopy(dst, sText_ProfileNoSpecies);
+        }
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_2, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_FULL);
+
+        // Window 3: the most recent opponent.
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
+        dst = buf;
+        dst = StringCopy(dst, sText_ProfileRecent);
+        if (recentCount > 0)
+        {
+            PokePvPRecentOpponent opp;
+            if (PokePvPProfile_GetRecent(0, &opp))
+            {
+                dst = StringCopy(dst, opp.name);
+                dst = StringCopy(dst, sText_PostMatchVs);
+                dst = StringCopy(dst, opp.tag);
+            }
+        }
+        else
+        {
+            dst = StringCopy(dst, sText_ProfileNoOpponent);
+        }
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_3, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_FULL);
+
+        // Window 4: left blank ("erase, don't occlude" -- same discipline
+        // every sibling screen uses for an unused row). A first attempt
+        // here put a plain "RECORD:" divider label in this window, but
+        // window 4 (tilemapTop=14, height=2, rows 14-15) and the ERROR
+        // band drawn just below (tilemapTop=15, height=4, rows 15-18)
+        // share tilemap row 15 -- the exact same class of overlap ADR-192
+        // already found and fixed once for a different pair of windows.
+        // Confirmed live via a headless capture: the ERROR band's own
+        // later PutWindowTilemap/CopyWindowToVram call for row 15 silently
+        // erased the label. Fixed by not drawing anything into window 4
+        // at all and prepending the divider text to the ERROR band's own
+        // buffer instead (below), which owns that shared row outright.
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+
+        // ERROR band: a "RECORD:" divider line followed by the per-
+        // opponent win/loss list (unchanged content and format from
+        // before this screen absorbed PROFILE's own rows -- just
+        // relocated from window 0 alone into this taller, 4-tile band).
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+        MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+        dst = buf;
+        dst = StringCopy(dst, sText_MatchHistoryDivider);
+        dst = StringCopy(dst, sString_Newline);
+        if (historyCount == 0)
         {
             dst = StringCopy(dst, sText_HistoryEmpty);
         }
         else
         {
-            for (i = 0; i < count && i < POKEPVP_HISTORY_MAX_ENTRIES; i++)
+            for (i = 0; i < historyCount && i < POKEPVP_HISTORY_MAX_ENTRIES; i++)
             {
                 PokePvPHistoryEntry entry;
 
@@ -1513,15 +1801,15 @@ static void Task_PokePvPMatchHistory(u8 taskId)
             }
         }
         *dst = EOS;
-
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 0, 0, sTextColorSelected, -1, buf);
-        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
-        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_FULL);
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 2, sTextColor1, -1, buf);
+        PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+        CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
     }
 
     if (JOY_NEW(B_BUTTON))
     {
         PlaySE(SE_SELECT);
+        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
         BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
         gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromHistory;
     }
@@ -1618,6 +1906,41 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
     CopyWindowToVram(sWindowIds[4], COPYWIN_GFX);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
+
+    /* Owner ask (2026-09-13, item 6): show the hovered row's own mode
+     * description in the ERROR band, same window the pack picker's own
+     * rules line already uses. Only drawn when the row is real
+     * (selectedIdx < n) -- StartMatchModeForRow's own contract never maps
+     * an out-of-range row, so this mirrors that bound. */
+    {
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+        if (selectedIdx < n)
+        {
+            const u8 *desc;
+
+            switch (StartMatchModeForRow(selectedIdx))
+            {
+            case POKEPVP_MATCH_MODE_QUICK_EARLY:
+                desc = sText_ModeDescQuickEarly;
+                break;
+            case POKEPVP_MATCH_MODE_QUICK_ELITE:
+                desc = sText_ModeDescQuickElite;
+                break;
+            case POKEPVP_MATCH_MODE_CUSTOM_ELITE:
+                desc = sText_ModeDescCustomElite;
+                break;
+            case POKEPVP_MATCH_MODE_INVITE:
+                desc = sText_ModeDescInvite;
+                break;
+            default:
+                desc = sText_ModeDescPractice;
+                break;
+            }
+            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 2, sTextColor1, -1, desc);
+        }
+        PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+        CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
+    }
 }
 
 /* POKEPVP (UI plan slice 3): the START MATCH mode tree (Build Plan §2.2
@@ -1717,7 +2040,7 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
     // this file), so nothing this screen draws ever reaches row 15 at all.
     start = 0;
     if (selectedIdx > 3)
-        start = (u8)(selectedIdx - 3); /* selectedIdx max 5 (RANDOM) -> start max 2 */
+        start = (u8)(selectedIdx - 3); /* selectedIdx max 4 (RANDOM) -> start max 1 */
     for (i = 0; i < 4; i++)
     {
         u8 row = (u8)(start + i);
@@ -1764,7 +2087,19 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
-    /* Overview line in the ERROR band. */
+    /* Overview line(s) in the ERROR band. Pack overview (owner ask,
+     * 2026-09-13 revision): the ERROR window reserves 4 rows
+     * (naming_screen-style message box height) and only the top one was
+     * ever used, for the static per-class rules line -- real, spare room
+     * for a real second line showing the *hovered pack's own* playstyle
+     * (server data, `POKEPVP_MSG_PACK_CATALOG_ENTRY`'s playstyle field),
+     * not just the class-wide rules every row already shared. `difficulty`
+     * used to prefix this line ("difficulty - playstyle") -- removed
+     * entirely (owner ask), so this is now just the playstyle string
+     * alone (an abbreviated species list, e.g. "Sno/Tau/Gen/Ala/Sta/Rhy").
+     * RANDOM (selectedIdx == POKEPVP_PACKS_PER_CLASS) has no specific pack
+     * to describe, so it keeps the rules line as its only line, same as
+     * before this ADR. */
     {
         u8 *dst;
 
@@ -1772,6 +2107,19 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
         dst = StringCopy(buf2, (battleClass == 0) ? sText_QuickRulesLineEarly : sText_QuickRulesLineElite);
         *dst = EOS;
         AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 2, sTextColor1, -1, buf2);
+        if (selectedIdx < POKEPVP_PACKS_PER_CLASS)
+        {
+            PokePvPPackEntry pack;
+
+            if (PokePvPPacks_Get(battleClass, selectedIdx, &pack) && pack.playstyle[0] != EOS)
+            {
+                u8 buf3[POKEPVP_PACKS_MAX_PLAYSTYLE_LEN + 1];
+
+                dst = StringCopy(buf3, pack.playstyle);
+                *dst = EOS;
+                AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 18, sTextColor1, -1, buf3);
+            }
+        }
         PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
         CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
     }
@@ -1923,11 +2271,12 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
             // (StartPokePvPMatchWithTeam's own mode==0 mapping) sends the
             // exact same blind inviteJoin as AUTO-MATCH -- no way to name
             // *who* to invite (ADR-181/190/192, confirmed real missing
-            // scope, not a bug). Goes to a real target picker instead; see
-            // that screen's own doc comment for the reused pipeline.
+            // scope, not a bug). Goes to a FRIENDS/RIVALS type picker
+            // first (HANDOFF item 23 follow-up), then the real target
+            // picker; see each screen's own doc comment.
             gTasks[taskId].tSubCursorPos = 0;
-            DrawSocialListItems(0, 0);
-            gTasks[taskId].func = Task_PokePvPInviteTargetPicker;
+            DrawInviteTargetTypeItems(0);
+            gTasks[taskId].func = Task_PokePvPInviteTargetTypePicker;
         }
         else
         {
@@ -1975,7 +2324,82 @@ static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId)
     gTasks[taskId].func = Task_UpdateVisualSelection;
 }
 
-// POKEPVP (ADR-193, Gap 2): INVITE MATCH's real target picker.
+// HANDOFF item 23 follow-up (user ask): a FRIENDS/RIVALS chooser in front
+// of Task_PokePvPInviteTargetPicker, mirroring Task_PokePvPSocial's own
+// two-level shape (tSubCursorPos 0/1 picks the list, stored into
+// tSocialList before handing off) rather than growing a second targeting
+// mechanism. Two fixed rows, same draw pattern as DrawStartMatchSubmenuItems
+// (fill selected/unselected, blank the panel's unused rows).
+static void DrawInviteTargetTypeItems(u8 selectedIdx)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+    };
+    static const u8 *const sLabels[] = { sText_Friends, sText_Rivals };
+    u8 i;
+
+    for (i = 0; i < 2; i++)
+    {
+        bool8 selected = (i == selectedIdx);
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+            selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
+    }
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 2; i++)
+        PutWindowTilemap(sWindowIds[i]);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(sWindowIds[0], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[1], COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
+}
+
+static void Task_PokePvPInviteTargetTypePicker(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tSocialList = gTasks[taskId].tSubCursorPos; // 0 FRIENDS, 1 RIVALS
+        gTasks[taskId].tSubCursorPos = 0;
+        DrawSocialListItems(gTasks[taskId].tSocialList, 0, FALSE);
+        gTasks[taskId].func = Task_PokePvPInviteTargetPicker;
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        DrawStartMatchSubmenuItems(0);
+        gTasks[taskId].tSubCursorPos = 0;
+        gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+        DrawInviteTargetTypeItems(gTasks[taskId].tSubCursorPos);
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+        DrawInviteTargetTypeItems(gTasks[taskId].tSubCursorPos);
+    }
+}
+
+// POKEPVP (ADR-193, Gap 2, extended HANDOFF item 23 follow-up): INVITE
+// MATCH's real target picker.
 //
 // The gap (ADR-181/190/192, confirmed real, not a bug): INVITE MATCH used
 // to send the exact same blind inviteJoin as AUTO-MATCH -- no way to name
@@ -1984,8 +2408,8 @@ static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId)
 // inviteJoin handler is unconditionally blind pairing (gateway-server.ts).
 //
 // The real, already-working addressed mechanism (per ADR-192's own
-// scoping note) is the SOCIAL screen's own per-friend CHALLENGE action
-// (Task_PokePvPSocialRowMenu, this file) -- it sends a real
+// scoping note) is the SOCIAL screen's own per-friend/rival CHALLENGE
+// action (Task_PokePvPSocialRowMenu, this file) -- it sends a real
 // SOCIAL_ACTION{list, action=0 CHALLENGE, index} that the launcher
 // resolves against its own cached friends/rivals accountIds
 // (client/launcher/src/main.rs's SOCIAL_ACTION handler) into a real,
@@ -1995,24 +2419,27 @@ static void Task_PokePvPReturnToTopMenuFromSubmenu(u8 taskId)
 // screen is a second *entry point* into that exact pipeline, not a
 // second targeting mechanism: it reuses DrawSocialListItems/
 // PokePvPSocial_Count/PokePvPSocial_Get verbatim (same rendering SOCIAL's
-// own FRIENDS list already uses) and, on a real selection, sets the exact
-// same state (tSocialList/tInboxSlot, tSubMode = POKEPVP_MATCH_MODE_
+// own lists already use) and, on a real selection, sets the exact same
+// state (tSocialList/tInboxSlot, tSubMode = POKEPVP_MATCH_MODE_
 // CHALLENGE_TARGET) Task_PokePvPSocialRowMenu's own CHALLENGE branch
 // already sets before handing to Task_PokePvPTeamSelector -- the shared
 // team-pick -> SendSocialAction tail (StartPokePvPMatchWithTeam) is
 // completely unchanged.
 //
-// Scoped to FRIENDS only (list 0), not RIVALS: the owner's own ADR-192
-// scoping note named friends specifically ("reuse the SOCIAL screen's
-// existing CHALLENGE_TARGET/SendSocialAction pipeline"), and a rival is a
-// per-opponent *record*, not necessarily someone with a live, invitable
-// session the way a friend relationship implies -- narrower-than-ideal,
-// documented rather than silently expanded. RIVALS is a real, small,
-// symmetric follow-up (change the one hardcoded `0` below to a second
-// FRIENDS/RIVALS chooser row, mirroring Task_PokePvPSocial's own two-level
-// shape) if the owner wants it.
+// Now works for both FRIENDS and RIVALS (HANDOFF item 23 follow-up, user
+// ask): tSocialList is set by the new Task_PokePvPInviteTargetTypePicker
+// above instead of being hardcoded to 0, and the launcher's own
+// handle_social_action CHALLENGE branch (main.rs) resolves a rival's
+// accountId exactly like a friend's now (ADR-201 already cached it for
+// the rival presence subscription). BLOCKS is deliberately not offered as
+// a third type-picker row -- a block is someone explicitly kept out, an
+// odd thing to invite, and the launcher's block cache has no accountId at
+// all (team_persistence::fetch_blocks returns name/tag pairs only), so
+// there is nothing to resolve a challenge against even if a row existed.
 static void Task_PokePvPInviteTargetPicker(u8 taskId)
 {
+    u8 list = gTasks[taskId].tSocialList;
+
     if (gPaletteFade.active)
         return;
 
@@ -2020,7 +2447,7 @@ static void Task_PokePvPInviteTargetPicker(u8 taskId)
 
     if (JOY_NEW(A_BUTTON))
     {
-        if (gTasks[taskId].tSubCursorPos >= PokePvPSocial_Count(0))
+        if (gTasks[taskId].tSubCursorPos >= PokePvPSocial_Count(list))
         {
             // Same "say so instead of doing nothing" shape as
             // Task_PokePvPTeamSelector's own empty-slot fix (ADR-190) --
@@ -2030,7 +2457,8 @@ static void Task_PokePvPInviteTargetPicker(u8 taskId)
             PlaySE(SE_FAILURE);
             FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
             MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 2, sTextColor1, -1, sText_NoFriendsToInvite);
+            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 2, sTextColor1, -1,
+                list == 1 ? sText_NoRivalsToInvite : sText_NoFriendsToInvite);
             PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
             CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
             return;
@@ -2038,8 +2466,11 @@ static void Task_PokePvPInviteTargetPicker(u8 taskId)
         PlaySE(SE_SELECT);
         // Exactly Task_PokePvPSocialRowMenu's own CHALLENGE branch: pick a
         // team, then the selector's A sends the team records + a real,
-        // addressed SOCIAL_ACTION challenge at this friend.
-        gTasks[taskId].tSocialList = 0; // FRIENDS
+        // addressed SOCIAL_ACTION challenge at this target. tSocialList is
+        // already FRIENDS(0)/RIVALS(1), set by
+        // Task_PokePvPInviteTargetTypePicker before this screen was ever
+        // reached -- left untouched here, not reset to 0, so a rival pick
+        // stays a rival pick.
         gTasks[taskId].tInboxSlot = gTasks[taskId].tSubCursorPos; // row index
         gTasks[taskId].tSubMode = POKEPVP_MATCH_MODE_CHALLENGE_TARGET;
         gTasks[taskId].tSubCursorPos = 0;
@@ -2049,24 +2480,25 @@ static void Task_PokePvPInviteTargetPicker(u8 taskId)
     else if (JOY_NEW(B_BUTTON))
     {
         PlaySE(SE_SELECT);
-        // Erase the "no friends" message (if shown) before leaving --
-        // this window is never otherwise touched by the START MATCH
-        // submenu, same "erase, don't occlude" discipline as
-        // Task_PokePvPTeamSelector's own B-handler.
+        // Erase the "no friends"/"no rivals" message (if shown) before
+        // leaving -- this window is never otherwise touched by the START
+        // MATCH submenu, same "erase, don't occlude" discipline as
+        // Task_PokePvPTeamSelector's own B-handler. Back to the type
+        // picker, not straight to the submenu -- one B undoes one step.
         MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-        DrawStartMatchSubmenuItems(0);
-        gTasks[taskId].tSubCursorPos = 0;
-        gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+        gTasks[taskId].tSubCursorPos = list;
+        DrawInviteTargetTypeItems(list);
+        gTasks[taskId].func = Task_PokePvPInviteTargetTypePicker;
     }
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
     {
         gTasks[taskId].tSubCursorPos--;
-        DrawSocialListItems(0, gTasks[taskId].tSubCursorPos);
+        DrawSocialListItems(list, gTasks[taskId].tSubCursorPos, FALSE);
     }
     else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < POKEPVP_SOCIAL_MAX_ENTRIES - 1)
     {
         gTasks[taskId].tSubCursorPos++;
-        DrawSocialListItems(0, gTasks[taskId].tSubCursorPos);
+        DrawSocialListItems(list, gTasks[taskId].tSubCursorPos, FALSE);
     }
 }
 
@@ -2184,6 +2616,27 @@ static void DrawTeamSelectorItems(u8 selectedIdx)
 // two distinct messages to print. Consumed (cleared) the instant it's read.
 static bool8 sPokePvPShowDeclinedMessage;
 
+// Team management options: RENAME's own round trip through
+// DoNamingScreen (which destroys every task, so these have to be plain
+// statics that outlive the round trip, not task data) and COPY TO...'s
+// remembered source slot while its destination picker is up.
+static u8 sPokePvPRenameSlot;
+static u8 sPokePvPTeamNameBuffer[POKEPVP_TEAM_NAME_LENGTH + 1];
+static u8 sPokePvPCopySourceSlot;
+
+// POKEPVP (ADR-217, redesigned ADR-226): SOCIAL FRIENDS' "ADD FRIEND"
+// round trip through DoNamingScreen -- same "plain static, not task
+// data" reason as sPokePvPTeamNameBuffer above. Reuses NAMING_SCREEN_BOX
+// (BOX_NAME_LENGTH == 8) rather than a dedicated template: adding one
+// would mean editing naming_screen.c itself, vendored upstream code
+// (prohibition #16). ADR-226 dropped the numeric-only requirement this
+// buffer used to serve -- the naming screen's own ordinary default
+// (letters-first) keyboard is exactly what's wanted now, no vendored
+// edit needed at all -- so this is now a plain up-to-8-character
+// username buffer; CB2_PokePvPAddFriendNameEntered converts and bounds
+// it instead of validating exactly 4 digits.
+static u8 sPokePvPAddFriendTagBuffer[BOX_NAME_LENGTH + 1];
+
 static void Task_PokePvPWaitForRealOpponent(u8 taskId)
 {
     switch (gTasks[taskId].tMGErrorMsgState)
@@ -2255,29 +2708,24 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
             break;
         }
 
-        // POKEPVP (owner playtest round 4, ADR-192): "add a cancel option
-        // when waiting for opponent." The ready-check sub-state above
-        // already has a B-driven cancel (TickReadyCheckPrompt /
+        // POKEPVP (owner playtest round 4, ADR-192; real wire message
+        // added HANDOFF items 22/38): "add a cancel option when waiting
+        // for opponent." The ready-check sub-state above already has a
+        // B-driven cancel (TickReadyCheckPrompt /
         // PokePvP_IsReadyCheckCancelled), but this earlier, plain
         // "Waiting for opponent..." state -- reached before any real
         // ready-check has arrived, which is most of this wait for a
         // typical pairing -- had none: a player who queued and changed
         // their mind had no way out except the full 1800-frame (30s)
-        // timeout. Same shape as the ready-check cancel above: clear the
-        // pending real match locally and return to the START MATCH
-        // submenu. Deliberately does not send anything over the wire
-        // (matching the ready-check cancel's own shape -- see
-        // PokePvP_ClearRealMatchPending's own comment) -- there is no
-        // mailbox message for "leave the queue" today (only READY_CHOICE,
-        // which only exists once a ready-check has started), so a queued-
-        // but-not-yet-paired cancel is a real, ROM-local UI act; the
-        // player may still be briefly matched server-side before the
-        // gateway's own pairing/ready-check machinery independently times
-        // that candidate out. Tracked as the same class of gap the ready-
-        // check cancel already has, not solved differently here.
+        // timeout. Same local shape as the ready-check cancel above (clear
+        // the pending real match, return to the START MATCH submenu), now
+        // also emitting POKEPVP_MSG_LEAVE_QUEUE so the launcher forwards a
+        // real queueLeave/inviteJoin-cancel to the gateway instead of
+        // leaving a phantom queued session for its own timeout to notice.
         if (!ready && JOY_NEW(B_BUTTON))
         {
             PlaySE(SE_SELECT);
+            SendLeaveQueue();
             PokePvP_ClearRealMatchPending();
             ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
             MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
@@ -2422,6 +2870,17 @@ static void SendPostMatchAction(u8 action)
  * returns to its own previous screen. */
 static bool8 sReadyCheckCancelled;
 static bool8 sReadyPromptShown;
+// HANDOFF item 37: frames left showing "READY FOR BATTLE!" after A is
+// pressed, before the window reverts to the ordinary waiting message.
+// Nonzero means TickReadyCheckPrompt is mid-flash and should keep
+// consuming the frame regardless of PokePvPReadyCheck_IsPending() (the
+// ready check itself is already cleared and acked by this point). 60
+// frames (~1s at the GBA's ~59.7fps) -- long enough to read, short
+// enough not to meaningfully delay the real match start once the
+// opponent's own mon arrives (which still preempts the flash immediately:
+// both call sites gate this whole function behind `!ready`).
+#define POKEPVP_READY_CONFIRM_FLASH_FRAMES 60
+static u16 sReadyConfirmFramesRemaining;
 
 static bool8 PokePvP_IsReadyCheckCancelled(void)
 {
@@ -2442,6 +2901,215 @@ static void SendReadyChoice(u8 accept)
     DebugPrintf("POKEPVP: ready choice accept=%d sent", accept);
 }
 
+// HANDOFF items 22/38 (real leave-queue wire message): sent from either
+// plain-wait "Waiting for opponent..." cancel, mirroring SendReadyChoice's
+// own zero-retry shape (a dropped send here just means the gateway's own
+// timeout eventually notices instead of an immediate leave -- no worse
+// than the B-cancel's pre-existing "sends nothing at all" behavior, and
+// consistent with this ready-check-adjacent send site's own established,
+// un-audited pattern rather than introducing a new discipline here).
+static void SendLeaveQueue(void)
+{
+    PokePvPMailboxRing_TryWrite(&gPokePvPMailbox.romToHost,
+                                POKEPVP_MAILBOX_ROM_TO_HOST_MAGIC,
+                                POKEPVP_MSG_LEAVE_QUEUE,
+                                0,
+                                0,
+                                NULL,
+                                0);
+    DebugPrintf("POKEPVP: leave queue sent");
+}
+
+// ADR-209: sent when the trainer-sprite picker confirms a pick. Same
+// fire-and-forget shape as SendLeaveQueue/SendReadyChoice above -- see
+// that ADR's own Non-goals for why a dropped send here is low-stakes
+// (the ROM's own local effect, PokePvPProfile_SetSpriteId and the
+// Red/Leaf gender write, already happened before this is even called).
+static void SendSetSprite(u8 spriteId)
+{
+    PokePvPMailboxRing_TryWrite(&gPokePvPMailbox.romToHost,
+                                POKEPVP_MAILBOX_ROM_TO_HOST_MAGIC,
+                                POKEPVP_MSG_SET_SPRITE,
+                                0,
+                                spriteId,
+                                &spriteId,
+                                sizeof(spriteId));
+    DebugPrintf("POKEPVP: set sprite=%d sent", spriteId);
+}
+
+/* POKEPVP (team-list corruption fix): FireRed's own naming screen stores
+ * `name` in its internal charmap ('0'-'9' at 0xA1, 'A'-'Z' at 0xBB, 'a'-'z'
+ * at 0xD5, space at 0x00 -- the same layout battle_controller_pokepvp.c's
+ * own PokePvPAsciiToCharmap documents), not ASCII. Every other outbound
+ * mailbox message that carries player-entered or server-bound text
+ * (SendSocialAction's targets are indices, not names, so it doesn't need
+ * this -- the actual precedent is the *inbound* direction's own
+ * PokePvPAsciiToCharmap/ProfileAsciiToCharmap/SocialAsciiToCharmap/
+ * InboxAsciiToCharmap/PackTextAsciiToCharmap/PokePvPPostMatchAsciiToCharmap
+ * family, ASCII in, charmap out) converts at the ROM/host boundary; this
+ * was the one place that sent raw charmap bytes to the host labeled as if
+ * they were already plain text. The host's own TEAM_RENAME handler
+ * (`main.rs`) UTF-8-decodes the payload and persists it verbatim via
+ * `PATCH /v1/teams/:teamId` -- raw charmap bytes (>= 0x80 for every real
+ * letter) are not valid UTF-8, so `String::from_utf8_lossy` replaced them
+ * with U+FFFD, and that garbage got saved as the team's real name
+ * (live-reproduced: `logs/launcher-781852.log` frame 2105, `TEAM_RENAME
+ * slot=0 name="\xEF\xBF\xBD\xEF\xBF\xBD" -> OK`). Converting to ASCII
+ * here, symmetric with the inbound family, is the missing half of the
+ * round trip; see POKEPVP_MSG_TEAM_NAME's own receive-side fix
+ * (battle_controller_pokepvp.c) for the other half (raw ASCII was also
+ * being written straight into the charmap-native `sTeamNames[]` on boot
+ * restore, with no conversion at all, corrupting every restored name's
+ * on-screen glyphs regardless of whether this send-side bug had already
+ * run). Unconvertible bytes are dropped, matching the inbound family's own
+ * "fail closed on unexpected input" contract; an all-garbage `name` sends
+ * nameLen=0, which the host and the next restore both already render
+ * safely as "no custom name" rather than corrupting anything. */
+static u8 TeamNameCharmapToAscii(u8 c)
+{
+    if (c >= 0xBB && c <= 0xD4)
+        return (u8)('A' + (c - 0xBB));
+    if (c >= 0xD5 && c <= 0xEE)
+        return (u8)('a' + (c - 0xD5));
+    if (c >= 0xA1 && c <= 0xAA)
+        return (u8)('0' + (c - 0xA1));
+    if (c == 0x00)
+        return ' ';
+    return 0; /* sentinel: not a legal name character, drop it */
+}
+
+// Team management options: sent when RENAME's naming-screen round trip
+// confirms a name (CB2_PokePvPTeamRenamed below) and when SET AS ACTIVE
+// picks a slot (Task_PokePvPSlotMenu). Same fire-and-forget shape as
+// SendSetSprite above -- the ROM's own local copy
+// (PokePvPTeamBuilder_SetName/SetNameString /SetActiveSlotLocal) has
+// already been updated before either of these is called, so a dropped
+// send here costs a stale server-side name/active-flag until the next
+// successful one, never a wrong local display.
+static void SendTeamRename(u8 slot, const u8 *name)
+{
+    u8 payload[2 + POKEPVP_TEAM_NAME_LENGTH];
+    u8 nameLen = 0;
+    u8 i;
+
+    for (i = 0; i < POKEPVP_TEAM_NAME_LENGTH && name[i] != EOS; i++)
+    {
+        u8 ascii = TeamNameCharmapToAscii(name[i]);
+
+        if (ascii != 0)
+            payload[2 + nameLen++] = ascii;
+    }
+    payload[0] = slot;
+    payload[1] = nameLen;
+    PokePvPMailboxRing_TryWrite(&gPokePvPMailbox.romToHost,
+                                POKEPVP_MAILBOX_ROM_TO_HOST_MAGIC,
+                                POKEPVP_MSG_TEAM_RENAME,
+                                0,
+                                slot,
+                                payload,
+                                2 + nameLen);
+    DebugPrintf("POKEPVP: team rename slot=%d nameLen=%d sent", slot, nameLen);
+}
+
+static void SendActiveTeamSlot(u8 slot)
+{
+    PokePvPMailboxRing_TryWrite(&gPokePvPMailbox.romToHost,
+                                POKEPVP_MAILBOX_ROM_TO_HOST_MAGIC,
+                                POKEPVP_MSG_SET_ACTIVE_TEAM,
+                                0,
+                                slot,
+                                &slot,
+                                sizeof(slot));
+    DebugPrintf("POKEPVP: set active team slot=%d sent", slot);
+}
+
+// Team management options: DoNamingScreen's own return callback for
+// RENAME (Task_PokePvPSlotMenu's case 2). By the time this runs,
+// sPokePvPTeamNameBuffer holds the player's entered name (EOS-terminated,
+// naming_screen.c's own contract) and every task from before the naming
+// screen has already been destroyed -- same "round trip through a non-task
+// screen" shape as PLAYER SETTINGS' own NAME action (DoNamingScreen ->
+// CB2_InitMainMenu directly, no deep link back into a specific submenu).
+static void CB2_PokePvPTeamRenamed(void)
+{
+    PokePvPTeamBuilder_SetNameString(sPokePvPRenameSlot, sPokePvPTeamNameBuffer);
+    SendTeamRename(sPokePvPRenameSlot, sPokePvPTeamNameBuffer);
+    CB2_InitMainMenu();
+}
+
+// POKEPVP (ADR-217, redesigned ADR-226): fire-and-forget, same shape as
+// SendTeamRename above (a single attempt, no retry-until-MB_OK --
+// accepted risk, matching this screen's own existing precedent for a
+// one-off player-initiated social action rather than a boot-critical
+// burst). Payload is now [nameLen][ascii bytes], mirroring
+// SendTeamRename's own [slot][nameLen][bytes] shape (minus the slot byte
+// this message never needed). `asciiName`/`nameLen` must already be
+// validated ASCII, 1..POKEPVP_ADD_FRIEND_NAME_MAX bytes --
+// CB2_PokePvPAddFriendNameEntered below is the only caller.
+static void SendAddFriendTag(const u8 *asciiName, u8 nameLen)
+{
+    u8 payload[1 + POKEPVP_ADD_FRIEND_NAME_MAX];
+    u8 i;
+
+    payload[0] = nameLen;
+    for (i = 0; i < nameLen; i++)
+        payload[1 + i] = asciiName[i];
+    PokePvPMailboxRing_TryWrite(&gPokePvPMailbox.romToHost,
+                                POKEPVP_MAILBOX_ROM_TO_HOST_MAGIC,
+                                POKEPVP_MSG_ADD_FRIEND_TAG,
+                                0,
+                                0,
+                                payload,
+                                1 + nameLen);
+    DebugPrintf("POKEPVP: add friend username sent (len=%d)", nameLen);
+}
+
+// POKEPVP (ADR-226): DoNamingScreen's own return callback for SOCIAL
+// FRIENDS' "ADD FRIEND" row (Task_PokePvPSocialList's ADD FRIEND branch
+// below). Same "round trip through a non-task screen, callback into
+// CB2_InitMainMenu directly" shape as CB2_PokePvPTeamRenamed above.
+// Reuses NAMING_SCREEN_BOX (BOX_NAME_LENGTH == 8, its own ordinary
+// default letters-first keyboard -- no vendored-code edit needed, unlike
+// ADR-216's own rejected numeral-default idea, since a username is
+// exactly what that default keyboard is for) -- converts every typed
+// charmap byte up to the first EOS via TeamNameCharmapToAscii (the same
+// conversion TEAM_RENAME's own send path already uses), same
+// "drop unconvertible bytes rather than corrupt/reject the whole buffer"
+// discipline ADR-215/218 settled on for this class of field. An
+// all-unconvertible or empty result is the one real invalid-input case
+// (nothing legible was typed) -- PokePvPSocial_NoteInvalidAddFriendInput
+// sets the same pending-result flag a real wire ADD_FRIEND_RESULT would,
+// so Task_PokePvPAddFriendResultDismiss's display path is uniform for
+// both.
+static void CB2_PokePvPAddFriendNameEntered(void)
+{
+    u8 ascii[BOX_NAME_LENGTH];
+    u8 asciiLen = 0;
+    u8 i;
+
+    for (i = 0; i < BOX_NAME_LENGTH && sPokePvPAddFriendTagBuffer[i] != EOS; i++)
+    {
+        u8 c = TeamNameCharmapToAscii(sPokePvPAddFriendTagBuffer[i]);
+        if (c != 0)
+            ascii[asciiLen++] = c;
+    }
+
+    if (asciiLen > 0)
+        SendAddFriendTag(ascii, asciiLen);
+    else
+        PokePvPSocial_NoteInvalidAddFriendInput();
+
+    // POKEPVP (ADR-233, owner-reported live: the result only ever showed
+    // after re-entering FRIENDS manually, not right after submitting):
+    // CB2_InitMainMenu always lands on the top menu, never directly back
+    // on this screen -- sPokePvPReturnToSocialFriends (same shape as
+    // sPokePvPReturnToTeamList) tells Task_UpdateVisualSelection, the one
+    // place every re-init passes through, to skip straight to FRIENDS
+    // with the result already showing instead.
+    sPokePvPReturnToSocialFriends = TRUE;
+    CB2_InitMainMenu();
+}
+
 /* POKEPVP (UI plan slice 3): the ready-check prompt (Build Plan §8 item
  * 2's "must both confirm" gate). Called every frame from the waiting
  * tasks (Task_PokePvPWaitForRealOpponent and
@@ -2457,6 +3125,18 @@ static void SendReadyChoice(u8 accept)
  * the player what B means, so a silent return is unambiguous. */
 static bool8 TickReadyCheckPrompt(u8 taskId)
 {
+    // HANDOFF item 37: mid-flash takes priority over the pending check --
+    // the ready check is already cleared/acked by the time this starts
+    // (see the A_BUTTON branch below), so PokePvPReadyCheck_IsPending()
+    // would otherwise read FALSE and skip straight past the flash.
+    if (sReadyConfirmFramesRemaining != 0)
+    {
+        RunTextPrinters();
+        if (--sReadyConfirmFramesRemaining == 0)
+            PrintMessageOnWindow4(gText_PokePvPWaitingForOpponent);
+        return TRUE;
+    }
+
     if (!PokePvPReadyCheck_IsPending())
     {
         sReadyPromptShown = FALSE;
@@ -2501,7 +3181,18 @@ static bool8 TickReadyCheckPrompt(u8 taskId)
         sReadyCheckCancelled = FALSE;
         PokePvPReadyCheck_Clear();
         SendReadyChoice(1);
-        return FALSE; /* let the caller's own wait continue */
+        // HANDOFF item 37: a brief "READY FOR BATTLE!" confirmation
+        // before falling back to the ordinary waiting message, instead
+        // of silently re-showing "Waiting for opponent..." the instant A
+        // is pressed. Still consumes the frame (TRUE) so the caller's
+        // own case just breaks, same as every other branch here; the
+        // flash itself is preempted the moment the real opponent's mon
+        // arrives (`!ready` gates this whole function at both call
+        // sites), so it never delays an actual match start.
+        sReadyPromptShown = FALSE;
+        PrintMessageOnWindow4(sText_ReadyForBattle);
+        sReadyConfirmFramesRemaining = POKEPVP_READY_CONFIRM_FLASH_FRAMES;
+        return TRUE;
     }
     if (JOY_NEW(B_BUTTON))
     {
@@ -2569,10 +3260,13 @@ static void DrawPostMatchResultLine(u8 windowId)
     }
     if (pm.oppName[0] != EOS)
     {
+        /* ADR-226: the opponent's tag is no longer shown to anyone but
+         * its own owner (PROFILE/PLAYER SETTINGS) -- pm.oppTag stays on
+         * the wire (post_match.c's own parser is a proven, fragile
+         * floating-offset format, ADR-196/198; not touched here) but is
+         * deliberately never read for display anymore. */
         dst = StringCopy(dst, sText_PostMatchVs);
         dst = StringCopy(dst, pm.oppName);
-        *dst++ = CHAR_SPACE;
-        dst = StringCopy(dst, pm.oppTag);
         *dst = EOS;
     }
     /* The window is 24 tiles wide; a wrapped second line would be cut off
@@ -2834,7 +3528,8 @@ static void Task_PokePvPPostMatchWait(u8 taskId)
                 break;
             }
 
-            // POKEPVP (owner playtest, 2026-09-12): same gap
+            // POKEPVP (owner playtest, 2026-09-12; real wire message added
+            // HANDOFF items 22/38): same gap
             // Task_PokePvPWaitForRealOpponent's own plain-wait cancel
             // closed for AUTO-MATCH (ADR-192) but this screen's earlier,
             // plain "Waiting for opponent..." state -- reached before any
@@ -2843,13 +3538,14 @@ static void Task_PokePvPPostMatchWait(u8 taskId)
             // never given the same fix (HANDOFF item 22 named this
             // explicitly as an out-of-scope follow-up). A player who
             // requeued and changed their mind had no way out except the
-            // full 1800-frame (30s) timeout. Same shape, same limitation:
-            // clears the pending real match locally and returns to the
-            // post-match screen; sends nothing over the wire (no "leave
-            // queue" mailbox message exists today).
+            // full 1800-frame (30s) timeout. Same shape as
+            // Task_PokePvPWaitForRealOpponent's own sibling fix: clears
+            // the pending real match locally, returns to the post-match
+            // screen, and now also emits POKEPVP_MSG_LEAVE_QUEUE.
             if (!ready && JOY_NEW(B_BUTTON))
             {
                 PlaySE(SE_SELECT);
+                SendLeaveQueue();
                 PokePvP_ClearRealMatchPending();
                 ReturnToPostMatchScreen(taskId);
                 break;
@@ -2953,189 +3649,185 @@ static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId)
 }
 
 // ---------------------------------------------------------------------------
-// POKEPVP (UI plan slice 5, Phase E): PROFILE screen (minimalist).
-//
-// Stripped display: just profile data, no frames or backgrounds.
+// POKEPVP (ADR-238, owner-directed restructure, 2026-09-19): PROFILE is a
+// plain 2-row action selector now -- SOCIAL and PLAYER -- not a stats
+// display. The owner's own read: a permanent tag/stats/top-species/
+// recent-opponent readout doesn't belong mixed into a plain navigation
+// menu, and belongs with the rest of a player's match record instead --
+// see Task_PokePvPMatchHistory's own doc comment for where it moved.
+// PLAYER is new here: SOCIAL's old 4th "PLAYER" row (ADR-186/209) is gone
+// (see Task_PokePvPSocial's own doc comment) -- sprite and name are now
+// two fully independent actions under this row's own PLAYER submenu
+// (Task_PokePvPPlayerMenu), not one row whose confirm silently chained
+// into the naming screen right after picking a sprite. Same 2-row
+// selector shape as Task_PokePvPPlayerMenu itself and every other small
+// picker in this file (DrawInviteTargetTypeItems, etc).
 // ---------------------------------------------------------------------------
 
-// POKEPVP (ADR-188): completes ADR-185's original PROFILE design, which
-// had only ever shipped as a stats-only "(minimalist)" placeholder. Six
-// single-line rows are available now (windows 0, 2, 3, 4 plus the ERROR
-// band -- window 1 stays SOCIAL's permanent action row); window 5 is
-// deliberately NOT used here even though it now exists (ADR-188's own
-// 6th top-menu slot) -- its tile rows (16-17) sit inside the ERROR
-// band's own rows (15-18), and this screen already uses the ERROR band
-// for the overflow recent-opponent rows, so drawing into both at once
-// would visually collide.
-static void Task_PokePvPProfile(u8 taskId)
+static void DrawProfileItems(u8 selectedIdx)
 {
-    PokePvPProfile profile;
-    bool8 haveProfile;
-    u8 recentCount;
-    // Sized for the worst case (the ERROR band's two "name vs tag" lines
-    // below, each up to 16+4+16 chars, joined by a newline).
-    u8 buf[96];
-    u8 *dst;
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    const u8 *const sLabels[] = { sText_ProfileSocialRow, sText_ProfilePlayerRow };
     u8 i;
 
+    for (i = 0; i < 5; i++)
+    {
+        bool8 selected = (i == selectedIdx);
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        if (i < 2)
+            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
+        PutWindowTilemap(sWindowIds[i]);
+    }
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 4; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    // This screen no longer uses window 5 or the ERROR band (ADR-238
+    // moved all of PROFILE's old stat content to MATCH HISTORY) -- blank
+    // both explicitly rather than trusting an earlier PROFILE visit or
+    // the top menu's own leftover content to already be gone (same
+    // "erase, don't occlude" discipline every sibling screen uses).
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
+    ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+}
+
+static void Task_PokePvPProfile(u8 taskId)
+{
     if (gPaletteFade.active)
         return;
 
-    if (gTasks[taskId].tScreenDrawn == 0)
-    {
-        gTasks[taskId].tScreenDrawn = 1;
-        haveProfile = PokePvPProfile_Get(&profile);
-        recentCount = PokePvPProfile_RecentCount();
-
-        // POKEPVP (ADR-188): this screen never uses window 5 (see the
-        // function's own doc comment above), but blank it anyway --
-        // otherwise leftover LEADERBOARD text from the top menu bleeds
-        // through the shared panel's now-taller border.
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
-        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
-        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
-
-        // Window 0: the permanent NAME#1234 tag (ADR-185 decision 1's
-        // "header" row, minus the redundant literal "PROFILE" label --
-        // the top menu already named this screen).
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
-        dst = buf;
-        if (haveProfile && profile.tag[0] != EOS)
-            dst = StringCopy(dst, profile.tag);
-        else
-            dst = StringCopy(dst, sText_ProfileNoTag);
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
-        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
-        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_FULL);
-
-        // POKEPVP (ADR-187): the SOCIAL row this screen's own doc comment
-        // always promised but never drew or handled A on -- friends/
-        // rivals/blocks/name were fully built (Task_PokePvPSocial and its
-        // subtree, below) but unreachable until now. Row 1's position is
-        // fixed and permanently highlighted since it is the only
-        // selectable action on this screen; B still returns to the top
-        // menu from any point.
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(13));
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColorSelected, -1, sText_Social);
-        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
-        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_FULL);
-
-        // Window 2: M/W/L/T on one line (qualifying matches only, per
-        // ADR-175's counts_for_stats).
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
-        dst = buf;
-        if (haveProfile)
-        {
-            dst = StringCopy(dst, sText_ProfileM);
-            dst = ConvertIntToDecimalStringN(dst, profile.matches, STR_CONV_MODE_LEFT_ALIGN, 4);
-            dst = StringCopy(dst, sText_ProfileStatSep);
-            dst = StringCopy(dst, sText_ProfileW);
-            dst = ConvertIntToDecimalStringN(dst, profile.wins, STR_CONV_MODE_LEFT_ALIGN, 4);
-            dst = StringCopy(dst, sText_ProfileStatSep);
-            dst = StringCopy(dst, sText_ProfileL);
-            dst = ConvertIntToDecimalStringN(dst, profile.losses, STR_CONV_MODE_LEFT_ALIGN, 4);
-            dst = StringCopy(dst, sText_ProfileStatSep);
-            dst = StringCopy(dst, sText_ProfileT);
-            dst = ConvertIntToDecimalStringN(dst, profile.ties, STR_CONV_MODE_LEFT_ALIGN, 4);
-        }
-        else
-        {
-            dst = StringCopy(dst, sText_ProfileEmpty);
-        }
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_2, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
-        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
-        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_FULL);
-
-        // Window 3: up to 3 most-used species (ADR-175's mostUsedSpecies).
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
-        dst = buf;
-        dst = StringCopy(dst, sText_ProfileTop);
-        if (haveProfile && profile.topCount > 0)
-        {
-            for (i = 0; i < profile.topCount && i < POKEPVP_PROFILE_MAX_TOP_SPECIES; i++)
-            {
-                if (i > 0)
-                    dst = StringCopy(dst, sText_ProfileSpeciesSep);
-                dst = StringCopy(dst, gSpeciesNames[profile.topSpecies[i]]);
-            }
-        }
-        else
-        {
-            dst = StringCopy(dst, sText_ProfileNoSpecies);
-        }
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_3, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
-        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
-        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_FULL);
-
-        // Window 4: the most recent opponent.
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
-        dst = buf;
-        dst = StringCopy(dst, sText_ProfileRecent);
-        if (recentCount > 0)
-        {
-            PokePvPRecentOpponent opp;
-            if (PokePvPProfile_GetRecent(0, &opp))
-            {
-                dst = StringCopy(dst, opp.name);
-                dst = StringCopy(dst, sText_PostMatchVs);
-                dst = StringCopy(dst, opp.tag);
-            }
-        }
-        else
-        {
-            dst = StringCopy(dst, sText_ProfileNoOpponent);
-        }
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
-        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
-        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
-
-        // ERROR band: recent opponents 2-3 (its 4-tile height fits two
-        // 16px lines), matching ADR-185 decision 1's original intent.
-        // Left blank (no frame drawn) when there's nothing more to show,
-        // rather than drawing an empty box.
-        if (recentCount > 1)
-        {
-            FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
-            MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-            dst = buf;
-            for (i = 1; i < recentCount && i < 3; i++)
-            {
-                PokePvPRecentOpponent opp;
-                if (PokePvPProfile_GetRecent(i, &opp))
-                {
-                    dst = StringCopy(dst, opp.name);
-                    dst = StringCopy(dst, sText_PostMatchVs);
-                    dst = StringCopy(dst, opp.tag);
-                    if (i + 1 < recentCount && i + 1 < 3)
-                        dst = StringCopy(dst, sString_Newline);
-                }
-            }
-            *dst = EOS;
-            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 2, sTextColor1, -1, buf);
-            PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
-            CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
-        }
-    }
-
-    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, 1);
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
 
     if (JOY_NEW(A_BUTTON))
     {
         PlaySE(SE_SELECT);
-        gTasks[taskId].tSubCursorPos = 0;
-        gTasks[taskId].func = Task_PokePvPSocial;
-        DrawSocialItems(0);
+        if (gTasks[taskId].tSubCursorPos == 0)
+        {
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPSocial;
+            DrawSocialItems(0);
+        }
+        else
+        {
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPPlayerMenu;
+            DrawPlayerMenuItems(0);
+        }
     }
     else if (JOY_NEW(B_BUTTON))
     {
         PlaySE(SE_SELECT);
-        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
         BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
         gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromHistory;
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+        DrawProfileItems(gTasks[taskId].tSubCursorPos);
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+        DrawProfileItems(gTasks[taskId].tSubCursorPos);
+    }
+}
+
+// POKEPVP (ADR-238): the PLAYER submenu -- SPRITE and NAME as two fully
+// independent actions, reached from PROFILE's own PLAYER row. Same 2-row
+// selector shape as DrawProfileItems just above.
+static void DrawPlayerMenuItems(u8 selectedIdx)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    const u8 *const sLabels[] = { sText_PlayerMenuSprite, sText_PlayerMenuName };
+    u8 i;
+
+    for (i = 0; i < 5; i++)
+    {
+        bool8 selected = (i == selectedIdx);
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        if (i < 2)
+            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
+        PutWindowTilemap(sWindowIds[i]);
+    }
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 4; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
+}
+
+static void Task_PokePvPPlayerMenu(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        if (gTasks[taskId].tSubCursorPos == 0)
+        {
+            // SPRITE: same trainer-sprite picker as before (ADR-209),
+            // but its own confirm no longer chains into the naming
+            // screen -- see Task_PokePvPSpritePicker's own A-button
+            // branch. Explicit tMGErrorMsgState reset before the handoff
+            // (ADR-214's own lesson: this task struct is reused all
+            // session, so a stale nonzero value left by an earlier
+            // screen would skip the picker's own case 0 setup entirely).
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_PokePvPSpritePicker;
+        }
+        else
+        {
+            // NAME: DoNamingScreen tears down every task itself
+            // (EnterPokeStorage-style) -- this screen's own window
+            // buffers/task must be freed first, same as every other
+            // DoNamingScreen call site in this file (ADR-233's own
+            // ADD FRIEND fix named this exact class of gap when it was
+            // missing at that call site; built correctly here from the
+            // start). sPokePvPReturnToPlayerMenu (ADR-233's own
+            // sPokePvPReturnToSocialFriends shape) lands the player back
+            // on this submenu directly afterward instead of the top menu.
+            sPokePvPReturnToPlayerMenu = TRUE;
+            gExitStairsMovementDisabled = FALSE;
+            FreeAllWindowBuffers();
+            DestroyTask(taskId);
+            DoNamingScreen(NAMING_SCREEN_PLAYER, gSaveBlock2Ptr->playerName, gSaveBlock2Ptr->playerGender, 0, 0, CB2_InitMainMenu);
+        }
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tSubCursorPos = 1;
+        gTasks[taskId].func = Task_PokePvPProfile;
+        DrawProfileItems(1);
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+        DrawPlayerMenuItems(gTasks[taskId].tSubCursorPos);
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+        DrawPlayerMenuItems(gTasks[taskId].tSubCursorPos);
     }
 }
 
@@ -3143,7 +3835,8 @@ static void Task_PokePvPProfile(u8 taskId)
 // POKEPVP (UI plan slice 6, Phase G): SOCIAL screens.
 //
 // Reached from the PROFILE screen's SOCIAL row. The social screen lists
-// FRIENDS / RIVALS / BLOCKS / NAME; each list screen shows up to 4 rows
+// FRIENDS / RIVALS / BLOCKS -- PLAYER (name/sprite) moved out to its own
+// submenu under PROFILE, ADR-238. Each list screen shows up to 4 rows
 // (name + tag, plus a presence letter for friends) and a per-row action
 // menu (CHALLENGE / REMOVE, or UNBLOCK for the blocks list). CHALLENGE
 // hands to the team selector (subMode POKEPVP_MATCH_MODE_CHALLENGE_TARGET,
@@ -3181,17 +3874,19 @@ static void DrawSocialItems(u8 selectedIdx)
         MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
         MAIN_MENU_WINDOW_POKEPVP_4,
     };
-    const u8 *const sLabels[] = {
-        sText_Friends, sText_Rivals, sText_Blocks, gText_Player, sString_Dummy,
-    };
+    // POKEPVP (ADR-238): PLAYER (the old 4th row, ADR-186/209) moved out
+    // to its own submenu under PROFILE (Task_PokePvPPlayerMenu) -- this
+    // screen is FRIENDS/RIVALS/BLOCKS only now, rows 3-4 always blank.
+    const u8 *const sLabels[] = { sText_Friends, sText_Rivals, sText_Blocks };
     u8 i;
 
     for (i = 0; i < 5; i++)
     {
         bool8 selected = (i == selectedIdx);
         FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
-        AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
-            selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
+        if (i < 3)
+            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
     }
     MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
     for (i = 0; i < 5; i++)
@@ -3210,6 +3905,240 @@ static void DrawSocialItems(u8 selectedIdx)
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
+// POKEPVP (ADR-209, reached from the PLAYER submenu's own SPRITE row as
+// of ADR-238 -- no longer chains into the naming screen on confirm, see
+// this task's own A-button branch below): the trainer-sprite picker.
+// Only 4 classes are offered -- see that ADR's own table for why (only
+// Red/Leaf/RS Brendan/RS May have both a real front-pic, for the
+// opponent's own view and this preview, and a real back-pic, for this
+// player's own in-battle view; every other FRLG trainer-class front-pic
+// is opponent-only art).
+static const u16 sPokePvPSpriteFrontPicIds[4] = {
+    TRAINER_PIC_RED, TRAINER_PIC_LEAF, TRAINER_PIC_RS_BRENDAN_1, TRAINER_PIC_RS_MAY_1,
+};
+static const u8 sText_SpriteRed[] = _("RED");
+static const u8 sText_SpriteLeaf[] = _("LEAF");
+static const u8 sText_SpriteBrendan[] = _("BRENDAN");
+static const u8 sText_SpriteMay[] = _("MAY");
+static const u8 *const sPokePvPSpriteLabels[4] = {
+    sText_SpriteRed, sText_SpriteLeaf, sText_SpriteBrendan, sText_SpriteMay,
+};
+static const u8 sText_SpritePickerPrompt[] = _("<>=CHANGE A=OK B=CANCEL");
+
+#define POKEPVP_SPRITE_PICKER_PAL_SLOT 6
+#define POKEPVP_SPRITE_PICKER_X 120
+#define POKEPVP_SPRITE_PICKER_Y 60
+
+// POKEPVP (item 41, second real bug found this session): every other
+// PrintMessageOnWindow4 caller in this file passes a static/const string
+// (a literal or a switch-selected `sText_*` constant); this is the only
+// one that builds a dynamic message. AddTextPrinterParameterized3's
+// speed=2 scrolling printer (see RunTextPrinters's own doc comment on
+// this screen's case 1) keeps reading from the pointer it was given
+// across later frames, not just the frame it was called on -- a local
+// stack buffer is invalid by the time those later frames run, so once
+// RunTextPrinters() actually started pumping this screen's printer (the
+// first bug this session, fixed above), the glyphs it read back were
+// whatever now occupied that stack slot, not this string. Static instead
+// of local: only one such message is ever showing on this screen at a
+// time, so there is no aliasing risk in making it live for the screen's
+// whole lifetime instead of one call's stack frame.
+static u8 sPokePvPSpritePickerPreviewBuf[48];
+
+// POKEPVP (item 56, real root cause found): every other PokePvP screen
+// entry leaves MAIN_MENU_WINDOW_POKEPVP_0..3 showing whatever the
+// *previous* screen last drew into them (DrawPlayerMenuItems' own
+// SPRITE/NAME rows when reached from the current PROFILE->PLAYER flow) --
+// every other Task_PokePvP* screen overwrites those same windows itself on
+// entry, but this screen never did, since its own content is the OBJ
+// trainer pic, not a text list. Blanked here, once, so the stale list text
+// doesn't stay on screen behind (and, before the WININ/WINOUT fix just
+// below, in place of) the trainer preview.
+static void ClearSpritePickerContentArea(void)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+    };
+    u8 i;
+
+    for (i = 0; i < 4; i++)
+    {
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(10));
+        PutWindowTilemap(sWindowIds[i]);
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    }
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+}
+
+// POKEPVP (item 56, real root cause found): this file's shared WIN0
+// curtain-reveal setup (MoveWindowByMenuTypeAndCursorPos's own callers,
+// e.g. WININ=0x0001/WINOUT=0x0021 at this file's screen-entry points)
+// never includes the OBJ bit (0x10) in either register -- fine for every
+// other PokePvP screen, since none of them ever show a real OBJ sprite,
+// but this is the one screen that does (CreateTrainerPicSprite). With
+// OBJ excluded from *both* "inside window 0" and "outside window 0"
+// visibility, the trainer preview sprite is suppressed everywhere on
+// screen, unconditionally -- not a heap/decompression bug (ADR-237's own
+// leading hypothesis): the sprite is created successfully (a real,
+// valid sprite id, confirmed via ADR-237's own diagnostic) and simply
+// never has a path to be drawn while WIN0 is active. Confirmed live via
+// a headless repro dumping DISPCNT (0x3140 -- WIN0+OBJ both nominally
+// on) and pixel-scanning the captured frame: zero trainer-pic-colored
+// pixels anywhere, not a partial WIN0-band clip, consistent with OBJ
+// being masked out of both WININ and WINOUT rather than just one band.
+// Scoped to this screen only (not a blanket file-wide change) since
+// altering the shared constant risks the vanilla CONTINUE/NEW GAME/
+// MYSTERY GIFT curtain transition, unverified and out of scope here.
+static void EnableSpritePickerObjWindow(void)
+{
+    SetGpuReg(REG_OFFSET_WININ, 0x0011);  // BG0 + OBJ inside win0
+    SetGpuReg(REG_OFFSET_WINOUT, 0x0031); // BG0 + OBJ + color-effect outside win0
+}
+
+static void RestorePokePvPStandardWindow(void)
+{
+    SetGpuReg(REG_OFFSET_WININ, 0x0001);
+    SetGpuReg(REG_OFFSET_WINOUT, 0x0021);
+}
+
+static void DrawSpritePickerPreview(u8 taskId, u8 index)
+{
+    /* ADR-198's own lesson applied up front: sized to the real worst case
+     * (longest label "BRENDAN" = 7 + 2 spaces + the prompt string's own
+     * 24 chars + EOS = 34), not guessed short. */
+    u8 *buf = sPokePvPSpritePickerPreviewBuf;
+    u8 *ptr;
+
+    if (gTasks[taskId].data[4] != -1)
+        FreeAndDestroyTrainerPicSprite(gTasks[taskId].data[4]);
+    gTasks[taskId].data[4] = CreateTrainerPicSprite(sPokePvPSpriteFrontPicIds[index], TRUE,
+        POKEPVP_SPRITE_PICKER_X, POKEPVP_SPRITE_PICKER_Y, POKEPVP_SPRITE_PICKER_PAL_SLOT, TAG_NONE);
+    /* POKEPVP (item 40/41 diagnostic): CreateTrainerPicSprite/CreatePicSprite
+     * already fail safe on a heap allocation miss (returns 0xFFFF, checked
+     * internally -- see trainer_pokemon_sprites.c), so this can't itself be
+     * the reported "PLAYER row does nothing" freeze, but this screen's own
+     * ~8KB decompress-buffer alloc on every keypress, on this project's own
+     * chronically tight heap (ADR-158/ADR-214 item 40 already proved a real
+     * boot burst can exhaust it), was never once logged either way. */
+    if (gTasks[taskId].data[4] == -1)
+        DebugPrintf("POKEPVP: sprite picker preview alloc FAILED for class=%d (heap pressure)", index);
+
+    ptr = StringCopy(buf, sPokePvPSpriteLabels[index]);
+    *ptr++ = CHAR_SPACE;
+    *ptr++ = CHAR_SPACE;
+    StringCopy(ptr, sText_SpritePickerPrompt);
+    PrintMessageOnWindow4(buf);
+}
+
+static void Task_PokePvPSpritePicker(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+    {
+        PokePvPProfile profile;
+        u8 startIndex = 0;
+
+        /* POKEPVP (item 40/41, ADR-214/215): this screen's own entry was
+         * never logged, which is exactly why the real crash log that
+         * session couldn't say whether Team Builder or this picker was
+         * open when it hit -- same gap item 32's own permanent diagnostic
+         * printf was added to close for a different elusive bug. Left in
+         * place, not a one-shot TEMP hack, until a real playtest's log
+         * confirms this screen is (or isn't) actually being reached on a
+         * PLAYER-row press. `taskId` added (this session) to correlate
+         * against the new dispatch-site log in Task_PokePvPSocial's own
+         * NAME-row branch -- see that log's own doc comment. */
+        DebugPrintf("POKEPVP: sprite picker opened taskId=%d vblank=%d", taskId, gMain.vblankCounter2);
+        ResetAllPicSprites();
+        if (PokePvPProfile_Get(&profile) && profile.spriteId < 4)
+            startIndex = profile.spriteId;
+        gTasks[taskId].tSubCursorPos = startIndex;
+        gTasks[taskId].data[4] = -1; /* no preview sprite yet -- DrawSpritePickerPreview's own free-guard */
+        ClearSpritePickerContentArea();
+        EnableSpritePickerObjWindow();
+        DrawSpritePickerPreview(taskId, startIndex);
+        gTasks[taskId].tMGErrorMsgState = 1;
+        break;
+    }
+    case 1:
+        // POKEPVP (item 41, real root cause found this session): this
+        // screen's own case 0 (and every DPAD_LEFT/RIGHT re-draw below)
+        // calls PrintMessageOnWindow4, which starts a real scrolling
+        // text-printer job (speed=2, not an instant blit) -- exactly the
+        // already-diagnosed ADR-191 bug class ("PrintMessageOnWindow4
+        // starts a real text-printer job... every OTHER caller in this
+        // file follows it with its own case that polls RunTextPrinters()
+        // every frame until IsTextPrinterActive() clears"). This screen
+        // was the one caller that never did, confirmed live this session
+        // via a deterministic headless repro (ADR-236): the window was
+        // never visibly touched at all, because the queued text glyphs
+        // never actually got drawn into its pixel buffer. Same fix shape
+        // as TickReadyCheckPrompt's own identical bug (line ~3009):
+        // called unconditionally every frame this case runs, not split
+        // into a separate waiting sub-state, since this screen (unlike a
+        // one-shot dismiss prompt) needs to keep accepting D-pad input
+        // the whole time regardless of whether the printer has caught up.
+        RunTextPrinters();
+        if (JOY_NEW(DPAD_LEFT))
+        {
+            PlaySE(SE_SELECT);
+            gTasks[taskId].tSubCursorPos = (gTasks[taskId].tSubCursorPos + 3) % 4;
+            DrawSpritePickerPreview(taskId, gTasks[taskId].tSubCursorPos);
+        }
+        else if (JOY_NEW(DPAD_RIGHT))
+        {
+            PlaySE(SE_SELECT);
+            gTasks[taskId].tSubCursorPos = (gTasks[taskId].tSubCursorPos + 1) % 4;
+            DrawSpritePickerPreview(taskId, gTasks[taskId].tSubCursorPos);
+        }
+        else if (JOY_NEW(A_BUTTON))
+        {
+            u8 index = gTasks[taskId].tSubCursorPos;
+
+            PlaySE(SE_SELECT);
+            FreeAndDestroyTrainerPicSprite(gTasks[taskId].data[4]);
+            /* ADR-209: local effect first (own PROFILE render, and for
+             * Red/Leaf -- the only 2 of the 4 with a real vanilla
+             * gender-driven back-pic lookup, see that ADR's own honest
+             * gap note for Brendan/May -- the actual in-battle sprite),
+             * then the real wire send, same "ROM-local first, best-
+             * effort network write second" shape SendLeaveQueue/
+             * SendReadyChoice already use. */
+            PokePvPProfile_SetSpriteId(index);
+            if (index == 0)
+                gSaveBlock2Ptr->playerGender = MALE;
+            else if (index == 1)
+                gSaveBlock2Ptr->playerGender = FEMALE;
+            SendSetSprite(index);
+            // POKEPVP (ADR-238, owner-directed restructure): confirming a
+            // sprite used to chain straight into the naming screen --
+            // the owner's own ask was to make SPRITE and NAME fully
+            // independent actions, so this now just returns to the
+            // PLAYER submenu (same CB2, no DoNamingScreen/teardown
+            // needed) instead.
+            RestorePokePvPStandardWindow();
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPPlayerMenu;
+            DrawPlayerMenuItems(0);
+        }
+        else if (JOY_NEW(B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            FreeAndDestroyTrainerPicSprite(gTasks[taskId].data[4]);
+            RestorePokePvPStandardWindow();
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPPlayerMenu;
+            DrawPlayerMenuItems(0);
+        }
+        break;
+    }
+}
+
 static void Task_PokePvPSocial(u8 taskId)
 {
     if (gPaletteFade.active)
@@ -3220,59 +4149,67 @@ static void Task_PokePvPSocial(u8 taskId)
     if (JOY_NEW(A_BUTTON))
     {
         PlaySE(SE_SELECT);
-        if (gTasks[taskId].tSubCursorPos == 3)
-        {
-            /* NAME: the naming screen (moved here from the old
-             * PLAYER SETTINGS row). */
-            gExitStairsMovementDisabled = FALSE;
-            FreeAllWindowBuffers();
-            DestroyTask(taskId);
-            DoNamingScreen(NAMING_SCREEN_PLAYER, gSaveBlock2Ptr->playerName, gSaveBlock2Ptr->playerGender, 0, 0, CB2_InitMainMenu);
-        }
+        // POKEPVP (ADR-238): the old index-3 NAME branch (item 41's own
+        // long history: ADR-186/209/214/215/218/228/232/234/235/236/237)
+        // is gone -- PLAYER moved out to its own submenu under PROFILE
+        // (Task_PokePvPPlayerMenu), reached independently of this list.
+        // This screen is FRIENDS(0)/RIVALS(1)/BLOCKS(2) only now.
+        gTasks[taskId].tSocialList = gTasks[taskId].tSubCursorPos;
+        gTasks[taskId].tSubCursorPos = 0;
+        DrawSocialListItems(gTasks[taskId].tSocialList, 0, TRUE);
+
+        // POKEPVP (ADR-217, most of this moved into the shared
+        // ShowAddFriendResultIfPending by ADR-233): only checked for
+        // list == 0 (FRIENDS) -- RIVALS/BLOCKS can never have a
+        // pending result of their own. ADR-233 also added a direct
+        // return path (sPokePvPReturnToSocialFriends) that shows this
+        // same result immediately after the naming screen closes,
+        // instead of only the next time this branch runs -- see that
+        // flag's own doc comment.
+        if (gTasks[taskId].tSocialList == 0)
+            ShowAddFriendResultIfPending(taskId);
         else
-        {
-            gTasks[taskId].tSocialList = gTasks[taskId].tSubCursorPos;
-            gTasks[taskId].tSubCursorPos = 0;
             gTasks[taskId].func = Task_PokePvPSocialList;
-            DrawSocialListItems(gTasks[taskId].tSocialList, 0);
-        }
     }
     else if (JOY_NEW(B_BUTTON))
     {
+        // POKEPVP (ADR-238): now that PROFILE is a real, navigable 2-row
+        // menu (not a single fixed pass-through row), B walks back to it
+        // instead of jumping straight to the top menu -- restores the
+        // "list -> social -> profile -> top menu" chain this file's own
+        // SOCIAL doc comment always described but never actually built.
         PlaySE(SE_SELECT);
-        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
-        gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromHistory;
+        gTasks[taskId].tSubCursorPos = 0;
+        gTasks[taskId].func = Task_PokePvPProfile;
+        DrawProfileItems(0);
     }
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
     {
         gTasks[taskId].tSubCursorPos--;
         DrawSocialItems(gTasks[taskId].tSubCursorPos);
     }
-    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 3)
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 2)
     {
         gTasks[taskId].tSubCursorPos++;
         DrawSocialItems(gTasks[taskId].tSubCursorPos);
     }
 }
 
-/* One row of a social list: name + tag (+ presence letter for friends
- * and rivals -- ADR-200; blocks never get one). The presence letter is
- * appended after the tag, clipped to the window. */
+/* One row of a social list: name (+ presence letter for friends and
+ * rivals -- ADR-200; blocks never get one). ADR-226: no longer shows
+ * entry.tag -- tags are internal-only now, visible solely on their own
+ * owner's PROFILE/PLAYER SETTINGS screen; the field still rides
+ * PokePvPSocialEntry (used internally by REMOVE's own tag-keyed lookup)
+ * but is deliberately never read for display anymore. */
 static void DrawSocialListRow(u8 windowId, u8 list, u8 index, bool8 selected)
 {
     PokePvPSocialEntry entry;
     /* POKEPVP (ADR-198): same class of stack-buffer overflow as
      * DrawPostMatchResultLine's own fix (see that function's own doc
      * comment for the live-reproduced crash this pattern causes) --
-     * `entry.name`+space+`entry.tag`+space+a presence letter+EOS can
-     * legitimately be a full POKEPVP_SOCIAL_MAX_NAME_LEN (16) +
-     * POKEPVP_SOCIAL_MAX_TAG_LEN (16) + 3 = 35 bytes; the previous
-     * `u8 buf[25]` overflowed before the 23-tile display clip below ever
-     * looked at how much had been written. Not yet reported (no owner
-     * playtest has hit a friend/rival/recent-opponent with both fields
-     * near-maximum length), found by auditing every sibling of the
-     * post-match crash's own `StringCopy(name)+StringCopy(tag)` shape in
-     * this file rather than waiting for it to happen live. */
+     * `entry.name` + space + a presence letter + EOS can legitimately be
+     * a full POKEPVP_SOCIAL_MAX_NAME_LEN (16) + 2 bytes; buf kept at its
+     * existing size (ADR-226 only shrank what's written, not the bound). */
     u8 buf[40];
     u8 *dst;
 
@@ -3285,8 +4222,6 @@ static void DrawSocialListRow(u8 windowId, u8 list, u8 index, bool8 selected)
         return;
     }
     dst = StringCopy(buf, entry.name);
-    *dst++ = CHAR_SPACE;
-    dst = StringCopy(dst, entry.tag);
     if (list == 0 || list == 1) /* ADR-200: friends and rivals both get presence */
     {
         *dst++ = CHAR_SPACE;
@@ -3305,7 +4240,28 @@ static void DrawSocialListRow(u8 windowId, u8 list, u8 index, bool8 selected)
             dst = StringCopy(dst, sText_PresenceBusy);
             break;
         default:
-            *dst++ = (u8)'-';
+            // POKEPVP (item: RIVALS row shows blank/garbled text, found
+            // this session): every other branch of this switch
+            // null-terminates buf via StringCopy's own return value;
+            // this is the one branch that doesn't -- and it's the
+            // *common* case, since a friend/rival starts and usually
+            // stays POKEPVP_PRESENCE_OFFLINE (0) until a real PRESENCE
+            // push arrives (ADR-200), which lands here every time. With
+            // no EOS written after '-', AddTextPrinterParameterized3
+            // read past the end of this stack buffer into whatever
+            // garbage happened to follow it -- explaining both reported
+            // symptoms: blank on the first draw (leftover near-zero
+            // stack content from a shallow call depth) and garbled
+            // glyphs on a later redraw (different, non-zero stack
+            // content from the calls made in between).
+            //
+            // Also a second, smaller bug fixed alongside (found live in
+            // this same screenshot): a raw ASCII '-' (0x2D) isn't this
+            // ROM's own hyphen glyph in its custom charmap -- CHAR_HYPHEN
+            // (0xAE, characters.h) is. Confirmed live: the OFFLINE dash
+            // rendered as '&' before this fix.
+            *dst++ = CHAR_HYPHEN;
+            *dst = EOS;
             break;
         }
     }
@@ -3316,25 +4272,62 @@ static void DrawSocialListRow(u8 windowId, u8 list, u8 index, bool8 selected)
     PutWindowTilemap(windowId);
 }
 
-static void DrawSocialListItems(u8 list, u8 selectedIdx)
+// POKEPVP (ADR-224 follow-up): `addFriendFirst` lets FRIENDS' fixed
+// "ADD FRIEND" row move to the top (row 0, real friends pushed down to
+// rows 1..4) for SOCIAL's own list screen, without disturbing
+// Task_PokePvPInviteTargetPicker's independent use of this same rendering
+// function -- that screen never offers ADD FRIEND at all (it targets an
+// existing friend/rival to challenge) and indexes rows 0..3 directly as
+// real friend/rival data indices, so it always passes FALSE. Every caller
+// that reorders (FALSE->TRUE) must also translate its own row<->data-index
+// math to match -- see Task_PokePvPSocialList's A-button handler and the
+// tInboxSlot round-trips in Task_PokePvPSocialRowMenu/RowMenuDismiss.
+static void DrawSocialListItems(u8 list, u8 selectedIdx, bool8 addFriendFirst)
 {
     static const u8 sWindowIds[] = {
         MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
         MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
         MAIN_MENU_WINDOW_POKEPVP_4,
     };
+    bool8 reordered = (list == 0 && addFriendFirst);
     u8 i;
 
     for (i = 0; i < 5; i++)
     {
-        if (i < PokePvPSocial_Count(list))
-            DrawSocialListRow(sWindowIds[i], list, i, i == selectedIdx);
-        else
+        // POKEPVP (ADR-217, reordered to row 0 by ADR-224 follow-up):
+        // FRIENDS' "ADD FRIEND" row is not a real entry --
+        // PokePvPSocial_Count(0) never exceeds POKEPVP_SOCIAL_MAX_ENTRIES
+        // (4), so there is always exactly one row of the five left over
+        // for it, at index 4 (unreordered) or index 0 (reordered). RIVALS/
+        // BLOCKS, and this same screen when addFriendFirst is FALSE, keep
+        // the plain "Empty" placeholder here, same as before.
+        if (reordered && i == 0)
         {
             FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(i == selectedIdx ? 13 : 10));
             AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
-                i == selectedIdx ? sTextColorSelected : sTextColor1, -1, sText_Empty);
+                i == selectedIdx ? sTextColorSelected : sTextColor1, -1, sText_AddFriendRow);
             PutWindowTilemap(sWindowIds[i]);
+        }
+        else if (!reordered && list == 0 && i == POKEPVP_SOCIAL_MAX_ENTRIES)
+        {
+            FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(i == selectedIdx ? 13 : 10));
+            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                i == selectedIdx ? sTextColorSelected : sTextColor1, -1, sText_AddFriendRow);
+            PutWindowTilemap(sWindowIds[i]);
+        }
+        else
+        {
+            u8 dataIndex = reordered ? (u8)(i - 1) : i;
+
+            if (dataIndex < PokePvPSocial_Count(list))
+                DrawSocialListRow(sWindowIds[i], list, dataIndex, i == selectedIdx);
+            else
+            {
+                FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(i == selectedIdx ? 13 : 10));
+                AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                    i == selectedIdx ? sTextColorSelected : sTextColor1, -1, sText_Empty);
+                PutWindowTilemap(sWindowIds[i]);
+            }
         }
     }
     MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
@@ -3361,10 +4354,39 @@ static void Task_PokePvPSocialList(u8 taskId)
 
     if (JOY_NEW(A_BUTTON))
     {
-        if (gTasks[taskId].tSubCursorPos >= PokePvPSocial_Count(gTasks[taskId].tSocialList))
-            return; /* empty row */
-        PlaySE(SE_SELECT);
-        gTasks[taskId].tInboxSlot = gTasks[taskId].tSubCursorPos; /* row index */
+        // POKEPVP (ADR-217, reordered to row 0 by ADR-224 follow-up): the
+        // ADD FRIEND row, only reachable at all when tSocialList == 0
+        // (FRIENDS). Checked before the "empty row" bail so it never
+        // falls into that branch.
+        if (gTasks[taskId].tSocialList == 0 && gTasks[taskId].tSubCursorPos == 0)
+        {
+            PlaySE(SE_SELECT);
+            // POKEPVP (ADR-224 follow-up): show the lead-in explanation
+            // before handing off to the naming screen, instead of opening
+            // it immediately -- see Task_PokePvPAddFriendPrompt.
+            PrintMessageOnWindow4(sText_AddFriendLeadIn);
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_PokePvPAddFriendPrompt;
+            return;
+        }
+        // POKEPVP (ADR-224 follow-up): with ADD FRIEND moved to row 0 for
+        // FRIENDS, every row past it is offset by one from its real data
+        // index (row 1 = friend 0, ..., row 4 = friend 3) -- RIVALS/BLOCKS
+        // are untouched, row == data index as before. This is the one
+        // place that translation happens on the way in; tInboxSlot always
+        // holds the real data index from here on (SendSocialAction's own
+        // two call sites, and Task_PokePvPInviteTargetPicker's identical
+        // tInboxSlot usage, both expect that and are otherwise unchanged).
+        {
+            u8 dataIndex = (gTasks[taskId].tSocialList == 0)
+                ? (u8)(gTasks[taskId].tSubCursorPos - 1)
+                : gTasks[taskId].tSubCursorPos;
+
+            if (dataIndex >= PokePvPSocial_Count(gTasks[taskId].tSocialList))
+                return; /* empty row */
+            PlaySE(SE_SELECT);
+            gTasks[taskId].tInboxSlot = dataIndex;
+        }
         gTasks[taskId].tSubCursorPos = 0;
         gTasks[taskId].func = Task_PokePvPSocialRowMenu;
         DrawSocialRowMenuItems(gTasks[taskId].tSocialList, 0);
@@ -3379,12 +4401,20 @@ static void Task_PokePvPSocialList(u8 taskId)
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
     {
         gTasks[taskId].tSubCursorPos--;
-        DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos);
+        DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos, TRUE);
     }
-    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < POKEPVP_SOCIAL_MAX_ENTRIES - 1)
+    // POKEPVP (ADR-217, reordered by ADR-224 follow-up): FRIENDS (list 0)
+    // can reach one row further than RIVALS/BLOCKS -- the fixed ADD FRIEND
+    // row, never a real entry for any list, now at row 0 instead of
+    // POKEPVP_SOCIAL_MAX_ENTRIES. The bound itself is unchanged (still the
+    // same total row count); only which row is the pseudo-entry moved.
+    else if (JOY_NEW(DPAD_DOWN) &&
+             gTasks[taskId].tSubCursorPos < (gTasks[taskId].tSocialList == 0
+                                              ? POKEPVP_SOCIAL_MAX_ENTRIES
+                                              : POKEPVP_SOCIAL_MAX_ENTRIES - 1))
     {
         gTasks[taskId].tSubCursorPos++;
-        DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos);
+        DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos, TRUE);
     }
 }
 
@@ -3459,9 +4489,17 @@ static void Task_PokePvPSocialRowMenu(u8 taskId)
     else if (JOY_NEW(B_BUTTON))
     {
         PlaySE(SE_SELECT);
-        gTasks[taskId].tSubCursorPos = gTasks[taskId].tInboxSlot;
+        // POKEPVP (ADR-224 follow-up): tInboxSlot holds the real data
+        // index (set by Task_PokePvPSocialList's own translation above);
+        // FRIENDS' reordered display needs it converted back to a row
+        // (+1, since row 0 is ADD FRIEND) to restore the cursor onto the
+        // same entry the player opened this menu from. RIVALS/BLOCKS have
+        // no offset, same as before.
+        gTasks[taskId].tSubCursorPos = (gTasks[taskId].tSocialList == 0)
+            ? (u8)(gTasks[taskId].tInboxSlot + 1)
+            : gTasks[taskId].tInboxSlot;
         gTasks[taskId].func = Task_PokePvPSocialList;
-        DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos);
+        DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos, TRUE);
     }
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
     {
@@ -3472,6 +4510,134 @@ static void Task_PokePvPSocialRowMenu(u8 taskId)
     {
         gTasks[taskId].tSubCursorPos++;
         DrawSocialRowMenuItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos);
+    }
+}
+
+// POKEPVP (ADR-224 follow-up): the lead-in explanation shown before ADD
+// FRIEND's naming screen opens -- same "print, wait for the printer, then
+// wait for a button" shape as Task_PokePvPSocialRowMenuDismiss just above.
+// A opens the naming screen (the same call this row used to make
+// immediately); B cancels back to the FRIENDS list without ever opening
+// it, landing back on the ADD FRIEND row itself.
+static void Task_PokePvPAddFriendPrompt(u8 taskId)
+{
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        if (JOY_NEW(A_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            sPokePvPAddFriendTagBuffer[0] = EOS;
+            // POKEPVP: a real, pre-existing gap found while building this
+            // lead-in -- DoNamingScreen tears down every task itself
+            // (EnterPokeStorage-style, same as RENAME/PLAYER SETTINGS just
+            // above/below), so this screen's own window buffers/task must
+            // be freed first. The original ADD FRIEND handoff (ADR-217)
+            // called DoNamingScreen directly from Task_PokePvPSocialList
+            // with neither -- the one DoNamingScreen call site in this
+            // file that skipped it. ADR-226's own HANDOFF entry already
+            // flagged this exact round trip as "not live-verified through
+            // the real emulator", so it was never actually exercised
+            // against a live ROM. Fixed here rather than left for whoever
+            // next reaches this line.
+            FreeAllWindowBuffers();
+            DestroyTask(taskId);
+            DoNamingScreen(NAMING_SCREEN_BOX, sPokePvPAddFriendTagBuffer, 0, 0, 0, CB2_PokePvPAddFriendNameEntered);
+        }
+        else if (JOY_NEW(B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+            // POKEPVP (ADR-224 follow-up): row 0, not
+            // POKEPVP_SOCIAL_MAX_ENTRIES -- ADD FRIEND now lives at the
+            // top of the list.
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPSocialList;
+            DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos, TRUE);
+        }
+        break;
+    }
+}
+
+// POKEPVP (ADR-217, extracted into a shared helper by ADR-233): shows the
+// pending ADD FRIEND result (if any) and dispatches into the dismiss
+// screen for it, or falls through to the ordinary FRIENDS list if nothing
+// is pending. Assumes the caller has already set gTasks[taskId].tSocialList
+// = 0 and drawn the FRIENDS list (DrawSocialListItems(0, ..., TRUE)) --
+// shared by two call sites: Task_PokePvPSocial's own ordinary FRIENDS
+// entry, and sPokePvPReturnToSocialFriends's direct post-naming-screen
+// return (Task_UpdateVisualSelection), so a fresh ADD FRIEND result shows
+// immediately either way, not just on the next ordinary FRIENDS visit.
+static void ShowAddFriendResultIfPending(u8 taskId)
+{
+    if (!PokePvPSocial_IsAddFriendResultPending())
+    {
+        gTasks[taskId].func = Task_PokePvPSocialList;
+        return;
+    }
+    {
+        u8 result = PokePvPSocial_ConsumeAddFriendResult();
+        const u8 *msg;
+
+        switch (result)
+        {
+        case POKEPVP_ADD_FRIEND_RESULT_SUCCESS:
+            msg = sText_AddFriendSuccess;
+            break;
+        case POKEPVP_ADD_FRIEND_RESULT_UNKNOWN_TAG:
+            msg = sText_AddFriendUnknown;
+            break;
+        case POKEPVP_ADD_FRIEND_RESULT_SELF:
+            msg = sText_AddFriendSelf;
+            break;
+        case POKEPVP_ADD_FRIEND_RESULT_BLOCKED:
+            msg = sText_AddFriendBlocked;
+            break;
+        case POKEPVP_ADD_FRIEND_RESULT_INVALID_INPUT:
+            msg = sText_AddFriendInvalid;
+            break;
+        default:
+            msg = sText_AddFriendFailed;
+            break;
+        }
+        PrintMessageOnWindow4(msg);
+        gTasks[taskId].tMGErrorMsgState = 0;
+        gTasks[taskId].func = Task_PokePvPAddFriendResultDismiss;
+    }
+}
+
+// POKEPVP (ADR-217): dismiss the ADD FRIEND result message back to the
+// FRIENDS list, same shape as Task_PokePvPSocialRowMenuDismiss just
+// below -- always returns to row 0 (tSubCursorPos is already 0 here,
+// set when Task_PokePvPSocial handed off), not tInboxSlot, since this
+// isn't a per-row action. Row 0 is ADD FRIEND itself post-ADR-224-follow-
+// up's reorder, which reads naturally here too -- the cursor lands right
+// back on the row the player just used.
+static void Task_PokePvPAddFriendResultDismiss(u8 taskId)
+{
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        if (JOY_NEW(A_BUTTON | B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+            gTasks[taskId].func = Task_PokePvPSocialList;
+            DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos, TRUE);
+        }
+        break;
     }
 }
 
@@ -3491,9 +4657,14 @@ static void Task_PokePvPSocialRowMenuDismiss(u8 taskId)
             PlaySE(SE_SELECT);
             ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
             MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-            gTasks[taskId].tSubCursorPos = gTasks[taskId].tInboxSlot;
+            // POKEPVP (ADR-224 follow-up): same tInboxSlot (data index) ->
+            // row translation as Task_PokePvPSocialRowMenu's own B-button,
+            // above.
+            gTasks[taskId].tSubCursorPos = (gTasks[taskId].tSocialList == 0)
+                ? (u8)(gTasks[taskId].tInboxSlot + 1)
+                : gTasks[taskId].tInboxSlot;
             gTasks[taskId].func = Task_PokePvPSocialList;
-            DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos);
+            DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos, TRUE);
         }
         break;
     }
@@ -3566,13 +4737,13 @@ static void DrawInboxItems(u8 inboxSlot, u8 cursor)
     if (!PokePvPInbox_Get(inboxSlot, &entry))
         return; /* stale -- the task falls back to the menu */
 
-    /* Window 0: the challenger line. */
+    /* Window 0: the challenger line. ADR-226: no longer shows entry.tag
+     * -- tags are internal-only now, visible solely on their own owner's
+     * PROFILE/PLAYER SETTINGS screen. */
     FillWindowPixelBuffer(sWindowIds[0], PIXEL_FILL(10));
     dst = StringCopy(buf, sText_ChallengeFrom);
     *dst++ = CHAR_SPACE;
     dst = StringCopy(dst, entry.name);
-    *dst++ = CHAR_SPACE;
-    dst = StringCopy(dst, entry.tag);
     if ((u32)(dst - buf) > 23u)
         buf[23] = EOS; /* one tile per char, 24-tile window */
     AddTextPrinterParameterized3(sWindowIds[0], FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
@@ -3902,18 +5073,37 @@ static void Task_PokePvPTeamSelector(u8 taskId)
 }
 
 // POKEPVP (ADR-093): one team-slot row. Shows the slot number and how many
-// members it holds -- enough to tell the slots apart at a glance without a
-// naming screen, which is real work (naming_screen.c) and its own decision.
+// members it holds. Team management options (owner ask): now also shows a
+// real custom name in parens when RENAME has set one, and a "*" marker on
+// whichever slot SET AS ACTIVE last marked -- both real, server-persisted
+// state (PokePvPTeamBuilder_GetName/GetActiveSlot), never fabricated. buf
+// grown from 24 to 40: "TEAM 5 (RAINTEAM) -- 6/6" is 24 chars alone, and
+// ADR-198's own lesson (a 25-byte buffer overflowing on a real 46-byte
+// worst case, three sites in this same file) is exactly why this is sized
+// generously rather than exactly, with StringCopy bounded by
+// POKEPVP_TEAM_NAME_LENGTH on the name's own way in, not trusted to fit by
+// construction alone.
 static void DrawOneTeamRow(u8 windowId, u8 slot, bool8 selected)
 {
-    u8 buf[24];
+    u8 buf[40];
     u8 *dest;
     u8 count;
+    const u8 *name;
 
     count = PokePvPTeamBuilder_MemberCount(slot);
     FillWindowPixelBuffer(windowId, PIXEL_FILL(selected ? 13 : 10));
-    dest = StringCopy(buf, sText_Team);
+    dest = buf;
+    *dest++ = (PokePvPTeamBuilder_GetActiveSlot() == slot) ? CHAR_BULLET : CHAR_SPACE;
+    dest = StringCopy(dest, sText_Team);
     dest = ConvertIntToDecimalStringN(dest, slot + 1, STR_CONV_MODE_LEFT_ALIGN, 1);
+    name = PokePvPTeamBuilder_GetName(slot);
+    if (name[0] != EOS)
+    {
+        *dest++ = CHAR_SPACE;
+        *dest++ = CHAR_LEFT_PAREN;
+        dest = StringCopy(dest, name);
+        *dest++ = CHAR_RIGHT_PAREN;
+    }
     *dest++ = CHAR_SPACE;
     *dest++ = CHAR_SPACE;
     *dest++ = CHAR_SPACE;
@@ -4000,6 +5190,57 @@ static void Task_PokePvPTeamList(u8 taskId)
     }
 }
 
+// Team management options: COPY TO...'s destination picker. Reuses
+// DrawTeamListItems/Task_PokePvPTeamList's own row rendering verbatim --
+// this is the same 5-slot list, just picking a copy destination instead of
+// opening a slot's submenu. Picking sPokePvPCopySourceSlot itself is a
+// silent no-op (same "unselectable row" convention as an empty slot in
+// Task_PokePvPTeamSelector, ADR-190) rather than a second dialog just to
+// say "pick a different slot".
+static void Task_PokePvPTeamCopyPicker(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        u8 destSlot = gTasks[taskId].tSubCursorPos;
+
+        if (destSlot != sPokePvPCopySourceSlot)
+        {
+            PlaySE(SE_SELECT);
+            PokePvPTeamBuilder_CopySlot(sPokePvPCopySourceSlot, destSlot);
+            PokePvPTeamBuilder_SendTeam(destSlot);
+            DrawTeamListItems(destSlot);
+            BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
+            gTasks[taskId].tSubCursorPos = destSlot;
+            gTasks[taskId].func = Task_PokePvPTeamList;
+        }
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        // tTeamSlot is untouched since Task_PokePvPSlotMenu set it (still
+        // sPokePvPCopySourceSlot's own source) -- nothing in this task
+        // changes it.
+        DrawSlotMenuItems(3);
+        gTasks[taskId].tSubCursorPos = 3;
+        gTasks[taskId].func = Task_PokePvPSlotMenu;
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+        DrawTeamListItems(gTasks[taskId].tSubCursorPos);
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < POKEPVP_TEAM_SLOTS - 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+        DrawTeamListItems(gTasks[taskId].tSubCursorPos);
+    }
+}
+
 // POKEPVP (ADR-093): drives the one-time roster build with a message on
 // screen.
 //
@@ -4046,23 +5287,28 @@ static void Task_PokePvPPrepareRoster(u8 taskId)
     }
 }
 
-// POKEPVP (ADR-093): the per-slot submenu. Three items in the same five
-// windows every other menu here uses.
+// POKEPVP (ADR-093; team management options grew this to 5 rows): the
+// per-slot submenu. Now uses every one of the five shared windows (EDIT
+// TEAM / EDIT MOVES / RENAME / COPY TO... / SET AS ACTIVE) -- the explicit
+// BACK row this used to end with is gone, since B already backs out of
+// this screen (unchanged) and two of this file's other sibling list
+// screens (Task_PokePvPTeamList, Task_PokePvPStartMatchSubmenu) already
+// rely on B alone with no redundant row of their own.
 /* ADR-158: same rework as the selector/team-list rows -- selection is a
- * fill swap now (drawn fresh on every cursor move), the stale windows 3/4
- * (which used to draw leftover team-list rows and borders behind this
- * 3-item submenu) are cleared instead of bordered, and ONE panel frame
+ * fill swap now (drawn fresh on every cursor move), and ONE panel frame
  * bounds the whole block. */
 static void DrawSlotMenuItems(u8 selectedIdx)
 {
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(selectedIdx == 0 ? 13 : 10));
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(selectedIdx == 1 ? 13 : 10));
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(selectedIdx == 2 ? 13 : 10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(selectedIdx == 3 ? 13 : 10));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(selectedIdx == 4 ? 13 : 10));
     AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, selectedIdx == 0 ? sTextColorSelected : sTextColor1, -1, sText_EditTeam);
     AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, selectedIdx == 1 ? sTextColorSelected : sTextColor1, -1, sText_EditMoves);
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_2, FONT_NORMAL, 2, 2, selectedIdx == 2 ? sTextColorSelected : sTextColor1, -1, sText_Back);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_2, FONT_NORMAL, 2, 2, selectedIdx == 2 ? sTextColorSelected : sTextColor1, -1, sText_RenameTeam);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_3, FONT_NORMAL, 2, 2, selectedIdx == 3 ? sTextColorSelected : sTextColor1, -1, sText_CopyTeamTo);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, 2, 2, selectedIdx == 4 ? sTextColorSelected : sTextColor1, -1, sText_SetActiveTeam);
     MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
@@ -4082,7 +5328,10 @@ static void DrawSlotMenuItems(u8 selectedIdx)
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
-// POKEPVP (ADR-093): EDIT TEAM / EDIT MOVES / BACK for one team slot.
+// POKEPVP (ADR-093; team management options grew this to 5 rows): EDIT
+// TEAM / EDIT MOVES / RENAME / COPY TO... / SET AS ACTIVE for one team
+// slot. B backs out to the team list directly (see DrawSlotMenuItems' own
+// doc comment for why there's no separate BACK row any more).
 static void Task_PokePvPSlotMenu(u8 taskId)
 {
     if (gPaletteFade.active)
@@ -4131,9 +5380,51 @@ static void Task_PokePvPSlotMenu(u8 taskId)
             // Out of heap: stay on the submenu rather than opening a list
             // with nothing behind it.
             break;
-        default:
-            BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
-            gTasks[taskId].func = Task_PokePvPReturnToTeamListFromSlotMenu;
+        case 2:
+            // RENAME: FireRed's own generic box-naming screen
+            // (NAMING_SCREEN_BOX, naming_screen.c), pre-filled with the
+            // slot's current name (empty if none set yet). DoNamingScreen
+            // tears down every task itself (EnterPokeStorage-style, same
+            // as PLAYER SETTINGS' own NAME action, Task_PokePvPSpritePicker
+            // above) -- this screen's own window buffers/task must be
+            // freed first, exactly like case 0's PokePvPTeamBuilder_Open
+            // call just above.
+            sPokePvPRenameSlot = gTasks[taskId].tTeamSlot;
+            StringCopy(sPokePvPTeamNameBuffer, PokePvPTeamBuilder_GetName(sPokePvPRenameSlot));
+            FreeAllWindowBuffers();
+            DestroyTask(taskId);
+            DoNamingScreen(NAMING_SCREEN_BOX, sPokePvPTeamNameBuffer, 0, 0, 0, CB2_PokePvPTeamRenamed);
+            break;
+        case 3:
+            // COPY TO...: a same-account copy between two of the five
+            // local slots (see the header's own doc comment for why this
+            // isn't the server's POST /clone). No fade -- an in-place list
+            // swap, same convention as the pack picker's own class-picker
+            // hop.
+            sPokePvPCopySourceSlot = gTasks[taskId].tTeamSlot;
+            gTasks[taskId].tSubCursorPos = 0;
+            DrawTeamListItems(0);
+            gTasks[taskId].func = Task_PokePvPTeamCopyPicker;
+            break;
+        case 4:
+            if (PokePvPTeamBuilder_MemberCount(gTasks[taskId].tTeamSlot) == 0)
+            {
+                // Nothing saved server-side for this slot yet (no roster
+                // has ever been sent) -- nothing real to mark active.
+                gTasks[taskId].tMGErrorMsgState = 0;
+                gTasks[taskId].func = Task_PokePvPEmptyTeamMessage;
+                BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+            }
+            else
+            {
+                // ROM-local first, best-effort network write second --
+                // same shape as ADR-209's SendSetSprite (ADR-209's own
+                // comment on that call site explains why).
+                PokePvPTeamBuilder_SetActiveSlotLocal(gTasks[taskId].tTeamSlot);
+                SendActiveTeamSlot(gTasks[taskId].tTeamSlot);
+                BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+                gTasks[taskId].func = Task_PokePvPReturnToTeamListFromSlotMenu;
+            }
             break;
         }
     }
@@ -4148,7 +5439,7 @@ static void Task_PokePvPSlotMenu(u8 taskId)
         gTasks[taskId].tSubCursorPos--;
         DrawSlotMenuItems(gTasks[taskId].tSubCursorPos); /* ADR-158: selection follows the cursor */
     }
-    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 2)
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 4)
     {
         gTasks[taskId].tSubCursorPos++;
         DrawSlotMenuItems(gTasks[taskId].tSubCursorPos); /* ADR-158 */
@@ -4201,7 +5492,11 @@ static void Task_PokePvPEmptyTeamMessage(u8 taskId)
             PlaySE(SE_SELECT);
             ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
             MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-            DrawSlotMenuItems(1);
+            // Team management options: SET AS ACTIVE (row 4) can now reach
+            // this same empty-team message too, not just EDIT MOVES (row
+            // 1) -- redraw whichever row actually triggered it instead of
+            // a hardcoded 1.
+            DrawSlotMenuItems(gTasks[taskId].tSubCursorPos);
             BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
             gTasks[taskId].tMGErrorMsgState = 0;
             gTasks[taskId].func = Task_PokePvPSlotMenu;
@@ -4286,6 +5581,7 @@ static void OpenPokePvPList(u8 taskId, u16 count, bool8 withMoveInfo)
     CopyWindowToVram(gTasks[taskId].tListWindowId, COPYWIN_FULL);
 
     gTasks[taskId].tLastInfoMoveId = -1;
+    gTasks[taskId].tMoveInfoPage = 0;
     if (withMoveInfo)
     {
         gTasks[taskId].tMoveInfoWindowId = AddWindow(&sPokePvPMoveInfoWindowTemplate);
@@ -4326,19 +5622,138 @@ static void ClosePokePvPList(u8 taskId)
     }
 }
 
-// POKEPVP (ADR-096): Type/Power/Accuracy/PP for one move, or three-hyphen
+// POKEPVP (ADR-217): the move info panel's second page. Max line count
+// and per-line buffer sized generously against the longest real
+// gMoveDescription_* string in move_descriptions.c (~86 bytes including
+// its own hand-baked \n's) -- these are stack-temporary (WrapMoveDescription
+// is called from DrawPokePvPMoveInfo only, never stored), not EWRAM/IWRAM
+// cost.
+#define POKEPVP_MOVE_DESC_MAX_LINES 4
+#define POKEPVP_MOVE_DESC_LINE_BUF  40
+// 80px window, 2px margin each side (matches every other value on this
+// panel's own x=2 left margin) -- 76px of usable width for the measured
+// candidate line.
+#define POKEPVP_MOVE_DESC_LINE_WIDTH_PX 76
+
+// POKEPVP (ADR-217): real runtime word-wrap for gMoveDescriptionPointers'
+// verbatim text (reused, not re-authored -- see the ADR for why this is
+// the owner-approved reading of that line). Vanilla's own hand-baked
+// '\n's are sized for pokemon_summary_screen.c's 120px-wide window
+// (confirmed in ADR-216), not this panel's 80px one, so they are treated
+// as ordinary word breaks here (CHAR_NEWLINE folds into CHAR_SPACE) and
+// the layout is rebuilt from scratch for this panel's real width --
+// greedy word-wrap, extending the candidate line one whole word at a
+// time and measuring it with GetStringWidth, the same measurement
+// approach DrawPokePvPMoveInfo's own typeValueX/statValueX calc already
+// uses just below. Never splits a word mid-way. A description whose
+// wrapped length exceeds POKEPVP_MOVE_DESC_MAX_LINES (the panel's real,
+// fixed vertical budget below the header -- 64px / 16px-per-line, the
+// same 16px line pitch ADR-097 already established as this window's real
+// constraint) is truncated at the last whole word that still fits rather
+// than overflowing past the window; a real, deliberate limit of this
+// panel's fixed footprint, not a bug -- see ADR-217.
+static u8 WrapMoveDescription(const u8 *src, u8 outLines[][POKEPVP_MOVE_DESC_LINE_BUF])
+{
+    u8 word[POKEPVP_MOVE_DESC_LINE_BUF];
+    u8 line[POKEPVP_MOVE_DESC_LINE_BUF];
+    u8 candidate[POKEPVP_MOVE_DESC_LINE_BUF];
+    u8 lineCount = 0;
+    u16 lineLen = 0, wordLen;
+    const u8 *s = src;
+
+    line[0] = EOS;
+
+    while (*s != EOS && lineCount < POKEPVP_MOVE_DESC_MAX_LINES)
+    {
+        while (*s == CHAR_SPACE || *s == CHAR_NEWLINE)
+            s++;
+        if (*s == EOS)
+            break;
+
+        wordLen = 0;
+        while (*s != EOS && *s != CHAR_SPACE && *s != CHAR_NEWLINE
+               && wordLen < POKEPVP_MOVE_DESC_LINE_BUF - 1)
+        {
+            word[wordLen++] = *s++;
+        }
+        word[wordLen] = EOS;
+
+        if (lineLen == 0)
+        {
+            StringCopy(candidate, word);
+        }
+        else
+        {
+            StringCopy(candidate, line);
+            candidate[lineLen] = CHAR_SPACE;
+            candidate[lineLen + 1] = EOS;
+            StringAppend(candidate, word);
+        }
+
+        if (lineLen != 0 && GetStringWidth(FONT_NORMAL, candidate, 0) > POKEPVP_MOVE_DESC_LINE_WIDTH_PX)
+        {
+            // Candidate overflows -- commit the line as it stood before
+            // this word, start a fresh line with the word that didn't fit.
+            StringCopy(outLines[lineCount], line);
+            lineCount++;
+            if (lineCount >= POKEPVP_MOVE_DESC_MAX_LINES)
+                break;
+            StringCopy(line, word);
+            lineLen = StringLength(line);
+        }
+        else
+        {
+            StringCopy(line, candidate);
+            lineLen = StringLength(line);
+        }
+    }
+
+    if (lineLen != 0 && lineCount < POKEPVP_MOVE_DESC_MAX_LINES)
+    {
+        StringCopy(outLines[lineCount], line);
+        lineCount++;
+    }
+
+    return lineCount;
+}
+
+// POKEPVP (ADR-217): page 2's body. MOVE_NONE (an empty move slot, or the
+// movepool list's own "clear this slot" row) gets the same three-hyphen
+// placeholder page 1 already uses for it, matching
+// DrawPokePvPMoveInfo's own existing move == MOVE_NONE discipline rather
+// than indexing gMoveDescriptionPointers[-1].
+static void DrawPokePvPMoveDescription(u8 windowId, u16 move)
+{
+    u8 lines[POKEPVP_MOVE_DESC_MAX_LINES][POKEPVP_MOVE_DESC_LINE_BUF];
+    u8 lineCount, i;
+
+    if (move == MOVE_NONE)
+    {
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 18, sTextColor1, -1, gText_ThreeHyphens);
+        return;
+    }
+
+    lineCount = WrapMoveDescription(gMoveDescriptionPointers[move - 1], lines);
+    for (i = 0; i < lineCount; i++)
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 18 + (i * 16), sTextColor1, -1, lines[i]);
+}
+
+// POKEPVP (ADR-096, extended ADR-217): Type/Power/Accuracy/PP for one move
+// (page 0), or its re-flowed description (page 1) -- or three-hyphen
 // placeholders for MOVE_NONE (an empty move slot, or the movepool list's
-// own "clear this slot" row) -- the same "read gBattleMoves[0] as if it
-// were a real move" mistake would otherwise be silent and wrong rather
-// than a crash, so MOVE_NONE is handled explicitly instead of falling
-// through.
-static void DrawPokePvPMoveInfo(u8 windowId, u16 move)
+// own "clear this slot" row) on either page. The same "read
+// gBattleMoves[0] as if it were a real move" mistake would otherwise be
+// silent and wrong rather than a crash, so MOVE_NONE is handled
+// explicitly instead of falling through.
+static void DrawPokePvPMoveInfo(u8 windowId, u16 move, u8 page)
 {
     u8 buf[8];
     u8 *dest;
     u8 typeValueX;
     u8 statValueX;
     const u8 *typeColor;
+    const u8 *pageText;
+    u8 pageX;
 
     FillWindowPixelBuffer(windowId, PIXEL_FILL(10));
 
@@ -4347,6 +5762,20 @@ static void DrawPokePvPMoveInfo(u8 windowId, u16 move)
     // colored stripe.
     FillWindowPixelRect(windowId, PIXEL_FILL(13), 0, 0, 80, 16);
     AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColorSelected, -1, sText_MoveInfoHeader);
+
+    // POKEPVP (ADR-217): minimal page indicator, right-aligned in the
+    // header stripe next to "MOVE INFO" -- no dedicated icon fits this
+    // panel's tile budget, so plain text is the whole feature here.
+    pageText = (page == 0) ? sText_MoveInfoPage1 : sText_MoveInfoPage2;
+    pageX = 78 - GetStringWidth(FONT_NORMAL, pageText, 0);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, pageX, 2, sTextColorSelected, -1, pageText);
+
+    if (page == 1)
+    {
+        DrawPokePvPMoveDescription(windowId, move);
+        CopyWindowToVram(windowId, COPYWIN_GFX);
+        return;
+    }
 
     // POKEPVP (ADR-097, fixes a real bug in ADR-096): FONT_NORMAL's real
     // line height is 16px (two tiles), the same "two tiles per row" the
@@ -4448,7 +5877,11 @@ static void UpdatePokePvPMoveInfo(u8 taskId, bool8 isMoveSlotList)
         return;
 
     gTasks[taskId].tLastInfoMoveId = move;
-    DrawPokePvPMoveInfo(gTasks[taskId].tMoveInfoWindowId, move);
+    // POKEPVP (ADR-217): every real hover change resets to page 1 -- a
+    // flipped-to-page-2 view of the *previous* move would otherwise still
+    // be showing when the cursor lands on a new one.
+    gTasks[taskId].tMoveInfoPage = 0;
+    DrawPokePvPMoveInfo(gTasks[taskId].tMoveInfoWindowId, move, 0);
 }
 
 static void ReturnToSlotMenu(u8 taskId)
@@ -4573,6 +6006,29 @@ static void Task_PokePvPPickMember(u8 taskId)
     gTasks[taskId].func = Task_PokePvPPickMoveSlot;
 }
 
+// POKEPVP (ADR-217): SELECT flips the move info panel between its stats
+// page and its description page. Confirmed in ADR-216 that SELECT_BUTTON/
+// L_BUTTON/R_BUTTON are used nowhere else in this whole file, so this is
+// free. Handled once here, shared by both list tasks that own a panel,
+// rather than duplicating the same four lines twice. Returns TRUE if a
+// flip was handled this frame (caller returns immediately after, same
+// "don't also run ListMenu_ProcessInput's own redraw path this frame"
+// discipline UpdatePokePvPMoveInfo's own LIST_NOTHING_CHOSEN branch uses).
+static bool8 TryFlipPokePvPMoveInfoPage(u8 taskId, bool8 isMoveSlotList)
+{
+    if (gTasks[taskId].tMoveInfoWindowId == WINDOW_NONE)
+        return FALSE;
+    if (!JOY_NEW(SELECT_BUTTON))
+        return FALSE;
+
+    PlaySE(SE_SELECT);
+    gTasks[taskId].tMoveInfoPage ^= 1;
+    DrawPokePvPMoveInfo(gTasks[taskId].tMoveInfoWindowId,
+                         GetHoveredMoveId(taskId, isMoveSlotList),
+                         gTasks[taskId].tMoveInfoPage);
+    return TRUE;
+}
+
 // POKEPVP (ADR-096): the info panel update runs after ListMenu_ProcessInput
 // so a same-frame D-pad move is already reflected, and only in the
 // LIST_NOTHING_CHOSEN branch -- on A/B this list is about to close anyway,
@@ -4584,6 +6040,9 @@ static void Task_PokePvPPickMoveSlot(u8 taskId)
     u16 rows;
 
     if (gPaletteFade.active)
+        return;
+
+    if (TryFlipPokePvPMoveInfoPage(taskId, TRUE))
         return;
 
     chosen = ListMenu_ProcessInput(gTasks[taskId].tListTaskId);
@@ -4616,6 +6075,9 @@ static void Task_PokePvPPickMove(u8 taskId)
     s32 chosen;
 
     if (gPaletteFade.active)
+        return;
+
+    if (TryFlipPokePvPMoveInfoPage(taskId, FALSE))
         return;
 
     chosen = ListMenu_ProcessInput(gTasks[taskId].tListTaskId);

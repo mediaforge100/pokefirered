@@ -1295,7 +1295,19 @@ const u8 gText_BattleMenu[] = _("{PALETTE 5}{COLOR_HIGHLIGHT_SHADOW 13 14 15}FIG
 const u8 gText_SafariZoneMenu[] = _("{PALETTE 5}{COLOR_HIGHLIGHT_SHADOW 13 14 15}BALL{CLEAR_TO 56}BAIT\nROCK{CLEAR_TO 56}RUN");
 const u8 gText_MoveInterfacePP[] = _("PP ");
 const u8 gText_MoveInterfaceType[] = _("TYPE/");
-const u8 gText_MoveInterfaceDynamicColors[] = _("{PALETTE 5}{COLOR_HIGHLIGHT_SHADOW 13 14 15}");
+// POKEPVP (ADR-221, item 5 fix #3): moved off palette 5 to its own bank (6).
+// Vanilla FRLG's own gText_BattleMenu (FIGHT/BAG/POKEMON/RUN) and every
+// move-name/PP window template on this screen are hardcoded to
+// `{PALETTE 5}{COLOR_HIGHLIGHT_SHADOW 13 14 15}` -- there was never a
+// free index left in bank 5 for a live per-type overwrite, so
+// SetPokePvPMoveTypeColor's write to BG_PLTT_ID(5)+13 always bled into
+// the action-selection menu text too, regardless of ADR-214's own
+// (correct, but insufficient) fix to MoveSelectionDisplayMoveNames.
+// Bank 6 is confirmed unused anywhere in this screen's real (non-link)
+// battle flow -- its only user, DrawBattleEntryBackground's VS-frame
+// palette, is gated behind BATTLE_TYPE_LINK, which this project's real
+// matches never set (ADR-124: real matches are BATTLE_TYPE_TRAINER).
+const u8 gText_MoveInterfaceDynamicColors[] = _("{PALETTE 6}{COLOR_HIGHLIGHT_SHADOW 13 14 15}");
 const u8 gText_WhichMoveToForget_Unused[] = _("{PALETTE 5}{COLOR_HIGHLIGHT_SHADOW 13 14 15}どの わざを\nわすれさせたい?");
 const u8 gText_BattleYesNoChoice[] = _("{PALETTE 5}{COLOR_HIGHLIGHT_SHADOW 13 14 15}Yes\nNo");
 const u8 gText_BattleSwitchWhich[] = _("{PALETTE 5}{COLOR_HIGHLIGHT_SHADOW 13 14 15}Switch\nwhich?");

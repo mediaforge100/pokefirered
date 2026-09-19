@@ -598,10 +598,41 @@ static void (*const sEndTurnFuncsTable[])(void) =
  * dispatches through when gBattleOutcome becomes non-zero) without ever
  * calling RunTurnActionsFunctions. `outcome` is a B_OUTCOME_* value
  * (constants/battle.h) carried over the mailbox's new
- * POKEPVP_MSG_BATTLE_OUTCOME record. */
+ * POKEPVP_MSG_BATTLE_OUTCOME record.
+ *
+ * POKEPVP (ADR-214): also force gBattleControllerExecFlags to 0 here.
+ * A natural battle end only ever reaches this function after a full
+ * BATTLE_END/TURN_END batch has already drained -- every controller
+ * command dispatched to either battler has already been acked, so the
+ * flag is already 0 and this is a no-op for that path (matching every
+ * "clean battle end" this project has already live-confirmed). RUN/
+ * forfeit is different: it authoritatively ends the match at whatever
+ * point the gateway received the choice, which can be mid-flight for
+ * the *other* battler's own in-progress controller command (e.g. still
+ * "executing" a move/switch presentation this exact turn). That
+ * battler's own gBattleControllerExecFlags bit was set by
+ * MarkBattlerForControllerExec expecting its controller to eventually
+ * emit a matching ack -- but this PvP controller (battle_controller_
+ * pokepvp.c) only ever emits that ack in response to a mailbox record
+ * for a turn that, per the gateway, no longer exists. Nothing will ever
+ * clear it. Downstream end-turn code -- HandleEndTurn_FinishBattle's own
+ * `else if (gBattleControllerExecFlags == 0)` branch that actually runs
+ * BattleScript_PokePvPBattleEnd, and battle script commands' own
+ * waitstate-style gating on the same flag -- then blocks forever on a
+ * battler that will never report back, which is exactly the permanent
+ * "RUN freezes both instances, animations still playing" stall: both
+ * sides independently stuck inside their own end-turn/battle-script
+ * dispatch, waiting on a controller-exec bit for a battler whose
+ * process already tore down its own side of the match. Confirmed via
+ * `logs/launcher-705088.log`/`launcher-708057.log`'s own STALL DUMP:
+ * gBattleControllerExecFlags=2 (battler1's bit) on both independent
+ * instances, one parked in HandleEndTurn_FinishBattle, the other deeper
+ * inside RunBattleScriptCommands_PopCallbacksStack -- both blocked on
+ * the identical flag. See ADR-214. */
 void PokePvP_SetBattleOutcomeAndEndTurn(u8 outcome)
 {
     gBattleOutcome = outcome;
+    gBattleControllerExecFlags = 0;
     gBattleMainFunc = sEndTurnFuncsTable[gBattleOutcome & 0x7F];
 }
 

@@ -1402,8 +1402,26 @@ static void MoveSelectionDisplayMoveNames(void)
     for (i = 0; i < MAX_MON_MOVES; ++i)
     {
         MoveSelectionDestroyCursorAt(i);
-        StringCopy(gDisplayedStringBattle, gText_MoveInterfaceDynamicColors);
-        StringAppend(gDisplayedStringBattle, gMoveNames[moveInfo->moves[i]]);
+        /* POKEPVP (ADR-214, item 5 follow-up): dropped the vanilla
+         * `gText_MoveInterfaceDynamicColors` prefix. ADR-203's own doc
+         * comment on SetPokePvPMoveTypeColor (below in this same file)
+         * named this exact line as the reason the TYPE-line recolor
+         * "bleeds" into all four move names: both it and the TYPE line
+         * opted into the identical dynamic-color palette slot (BG
+         * palette 5, indices 13-15), and stock vanilla FRLG never
+         * rewrites that slot at runtime, so this call was always a
+         * no-visible-effect no-op before ADR-203 gave the slot a live
+         * per-type RGB write. Removing it here doesn't cost a tile or a
+         * palette slot -- BattlePutTextOnWindow's own un-colored default
+         * is the same baseline every other plain print on this screen
+         * already uses successfully (MoveSelectionDisplayPpString's own
+         * PP digits print exactly this way, with no dynamic-color
+         * prefix of their own, right below). With this gone, index
+         * 13-15 belongs to the TYPE line alone -- SetPokePvPMoveTypeColor
+         * is now the only thing on this screen that ever reads or
+         * writes it, so its live RGB write recolors only the TYPE word,
+         * not the moveset. */
+        StringCopy(gDisplayedStringBattle, gMoveNames[moveInfo->moves[i]]);
         BattlePutTextOnWindow(gDisplayedStringBattle, i + 3);
         if (moveInfo->moves[i] != MOVE_NONE)
             ++gNumberOfMovesToChoose;
@@ -1445,18 +1463,20 @@ static void MoveSelectionDisplayPpNumber(void)
 // launcher's main menu) for the same technique on a different screen. No
 // new LoadPalette call, no new bank, no tile/OAM budget spent -- just a
 // live RGB overwrite of an index this screen's text already reads from.
-// Real, deliberate side effect: because B_WIN_MOVE_TYPE and all four
-// B_WIN_MOVE_NAME_* windows share this same palette and this same index
-// triple (both opt in via the identical `gText_MoveInterfaceDynamicColors`
-// control code), recoloring index 13 for the hovered move's type also
-// recolors the four already-drawn move names to match, live, the instant
-// the cursor moves -- there is no free, unshared index left in this bank
-// to isolate the TYPE line alone (checked: 0-10 are the window-frame/text
-// chrome, 11-12 are SetPpNumbersPaletteInMoveSelection's own PP-color
-// gradient). Treated as intentional here, not a bug: it reads as the
-// whole move list highlighting to match the hovered move's type, a
-// coherent effect this text engine's own "dynamic colors" naming already
-// implies it was built to support.
+// POKEPVP (ADR-214): this used to also recolor the four move-name windows
+// live, the instant the cursor moved -- B_WIN_MOVE_TYPE and all four
+// B_WIN_MOVE_NAME_* windows shared this same palette bank and this same
+// index triple, both opting in via the identical
+// `gText_MoveInterfaceDynamicColors` control code. Originally documented
+// here (ADR-203) as a deliberate side effect given the real palette-budget
+// constraint (checked: 0-10 are window-frame/text chrome, 11-12 are
+// SetPpNumbersPaletteInMoveSelection's own PP-color gradient, so 13-15 was
+// the only room left) -- the owner later reported it live as an unwanted
+// bug, not the intended read. Fixed for real, still inside that same
+// budget: MoveSelectionDisplayMoveNames (above in this file) no longer
+// opts into the dynamic-color slot at all, so nothing else on this screen
+// reads index 13-15 any more and this write is now exclusive to the TYPE
+// line.
 static void SetPokePvPMoveTypeColor(u8 type)
 {
     u16 rgb;
@@ -1479,8 +1499,10 @@ static void SetPokePvPMoveTypeColor(u8 type)
     default: /* TYPE_NORMAL, TYPE_MYSTERY */
                                           rgb = RGB( 9,  9,  9); break;
     }
-    gPlttBufferUnfaded[BG_PLTT_ID(5) + 13] = rgb;
-    CpuCopy16(&gPlttBufferUnfaded[BG_PLTT_ID(5) + 13], &gPlttBufferFaded[BG_PLTT_ID(5) + 13], PLTT_SIZEOF(1));
+    // POKEPVP (ADR-221): bank 6, not bank 5 -- see gText_MoveInterfaceDynamicColors's
+    // own updated doc comment (battle_message.c) for why bank 5 was never safe.
+    gPlttBufferUnfaded[BG_PLTT_ID(6) + 13] = rgb;
+    CpuCopy16(&gPlttBufferUnfaded[BG_PLTT_ID(6) + 13], &gPlttBufferFaded[BG_PLTT_ID(6) + 13], PLTT_SIZEOF(1));
 }
 
 static void MoveSelectionDisplayMoveType(void)

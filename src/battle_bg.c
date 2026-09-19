@@ -699,6 +699,15 @@ void LoadBattleMenuWindowGfx(void)
     gPlttBufferUnfaded[BG_PLTT_ID(5) + 15] = RGB( 26,  26,  25);
     CpuCopy16(&gPlttBufferUnfaded[BG_PLTT_ID(5) + 12], &gPlttBufferFaded[BG_PLTT_ID(5) + 12], PLTT_SIZEOF(4));
 
+    // POKEPVP (ADR-221, item 5 fix #3): bank 6's own highlight/shadow baseline
+    // for the TYPE line's now-dedicated palette (see
+    // gText_MoveInterfaceDynamicColors's doc comment, battle_message.c).
+    // Index 13 (fg) always gets a fresh live write from SetPokePvPMoveTypeColor
+    // before the TYPE line ever prints, so only 14/15 need a static default here.
+    gPlttBufferUnfaded[BG_PLTT_ID(6) + 14] = RGB(31, 31, 31);
+    gPlttBufferUnfaded[BG_PLTT_ID(6) + 15] = RGB( 26,  26,  25);
+    CpuCopy16(&gPlttBufferUnfaded[BG_PLTT_ID(6) + 14], &gPlttBufferFaded[BG_PLTT_ID(6) + 14], PLTT_SIZEOF(2));
+
     if (gBattleTypeFlags & (BATTLE_TYPE_FIRST_BATTLE | BATTLE_TYPE_POKEDUDE))
     {
         Menu_LoadStdPalAt(BG_PLTT_ID(7));

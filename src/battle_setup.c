@@ -548,9 +548,32 @@ void StartPokePvPRealMatch(void)
     // PokePvP_SetOpponentRevealedCount(1) is what keeps that honest -- the
     // switch resolver reveals into slot 1, 2, 3... in order rather than
     // hunting for a SPECIES_NONE that no longer exists.
+    // POKEPVP (ADR-214): loop bound was `PARTY_SIZE` (hardcoded 6)
+    // unconditionally, the same premise ADR-199 already found and fixed
+    // one line below for `gEnemyPartyCount` itself ("this project's own
+    // format is a fixed 6-member team" -- no longer true project-wide
+    // once QUICK EARLY's real 3v3 packs shipped) -- but ADR-199 only
+    // touched the count used by the trainer-intro ball-throw animation,
+    // not this earlier loop, which is what actually populates
+    // `gEnemyParty[]` with non-SPECIES_NONE placeholder data.
+    // BattleIntroDrawPartySummaryScreens (battle_main.c) -- the *in-
+    // battle* party-status-summary ball widget, not the trainer-intro
+    // screen ADR-199 fixed -- decides each ball's empty/filled state by
+    // scanning `gEnemyParty[0..PARTY_SIZE)` for SPECIES_NONE, entirely
+    // independent of `gEnemyPartyCount`. Filling slots 3-5 with real
+    // placeholder mons for a 3v3 match made that scan see six real
+    // species and draw six filled balls regardless of the actual
+    // format size -- a real, live-reported bug in the battle scene
+    // itself (owner report), separate from and not fixed by ADR-199's
+    // intro-screen fix. `gPlayerPartyCount` is already this match's
+    // real size by this point (see ADR-199's own comment on the
+    // `gEnemyPartyCount` line just below -- same fact, same reasoning),
+    // so bounding this loop by it instead makes every slot beyond the
+    // real format size stay SPECIES_NONE, exactly like a real trainer
+    // battle's own unrevealed-but-smaller party.
     {
         s32 i;
-        for (i = 1; i < PARTY_SIZE; i++)
+        for (i = 1; i < gPlayerPartyCount; i++)
             CreateMon(&gEnemyParty[i], species, level, 0, TRUE, 0, OT_ID_PRESET, POKEPVP_OPPONENT_OT_ID);
     }
     PokePvP_SetOpponentRevealedCount(1);
@@ -896,6 +919,53 @@ static void CB2_EndPokePvPBattle(void)
 {
     CpuFill16(0, (void *)BG_PLTT, BG_PLTT_SIZE);
     ResetOamRange(0, 128);
+    // POKEPVP (ADR-222): StartPokePvPRealMatch sets this TRUE for every
+    // real match but, until now, nothing ever set it back to FALSE --
+    // StartPokePvPDebugBattle's own explicit FALSE only runs on the
+    // *offline* debug-battle path, never taken by a real online match.
+    // Left stuck TRUE, this permanently arms
+    // PokePvPOpponentBufferRunCommand's real-match gate (battle_setup.h's
+    // own doc comment above) and, worse, the "MAILBOX READ BLOCKED"
+    // stall-detector gate in battle_controller_pokepvp.c (guarded on
+    // `BATTLE_TYPE_POKEPVP && sPokePvPRealMatchActive`) for the rest of
+    // the process -- live-confirmed (logs/launcher-443151.log,
+    // logs/launcher-445283.log, 2026-09-13) firing from the main-menu
+    // AUTO-MATCH/post-match flow, long after the battle that set it TRUE
+    // had ended, permanently blocking the hostToRom ring's head-of-line
+    // record (nextType=62, RIVAL_PRESENCE) and cascading into MB_FULL for
+    // every subsequent write (presence, CHALLENGE_ARRIVED) for the rest
+    // of the run. Reset here, the one CB2 every real match's outcome
+    // (win, loss, forfeit) already funnels through.
+    PokePvP_SetRealMatchActive(FALSE);
+    // POKEPVP (ADR-223): sibling of the fix just above, same bug class,
+    // same "the CB2 that ends a real match never resets it" root cause.
+    // sPokePvPRealMatchPending is set TRUE by the last real
+    // POKEPVP_MSG_REAL_MATCH_PENDING record of a match (battle_setup.h's
+    // own doc comment) but was never cleared when that match ended --
+    // only a handful of main_menu.c sites clear it, all pre-match
+    // (cancel/decline/timeout paths), none of them battle-outcome paths.
+    // Left stuck TRUE, `PokePvP_IsRealMatchPending()` reads true for
+    // every *later*, unrelated real-match attempt this same process
+    // makes (a SOCIAL CHALLENGE to a rival, a REMATCH) -- main_menu.c's
+    // own `if (PokePvP_IsOnlineMode() || PokePvP_IsRealMatchPending())`
+    // gate (~line 4558) then skips the wait-for-a-real-opponent screen
+    // entirely and calls StartPokePvPRealMatch immediately, which reuses
+    // whatever REAL_OPPONENT_MON data is still cached from the *previous*
+    // real match -- live-confirmed (logs/launcher-510743.log, frame
+    // 47732, 2026-09-13): a rival CHALLENGE rejected by the gateway
+    // (`opponent_offline`) still produced "real opponent mon created
+    // (species=25 level=20)" -- literally the prior match's own opponent
+    // species/level, not a fresh pairing or a message of any kind. This
+    // is the actual mechanism behind two owner reports that looked like
+    // separate bugs ("REMATCH ported me into an AI battle against a
+    // replica of the last player"; "challenging a rival ported me into
+    // an AI battle against him") -- both are this same stale flag firing
+    // at a different call site. Reset here, alongside its sibling.
+    PokePvP_ClearRealMatchPending();
+    // POKEPVP (ADR-227): sibling of the two fixes just above, one level
+    // deeper -- see PokePvP_ResetMailboxPumpState's own doc comment
+    // (battle_controller_pokepvp.c) for the live evidence this closes.
+    PokePvP_ResetMailboxPumpState();
     // POKEPVP (ADR-196): flag that a real battle just ended so
     // Task_WaitFadeAndPrintMainMenuText knows this CB2_InitMainMenu entry
     // (unlike a cold boot or a PC/team-builder/naming/options return) may

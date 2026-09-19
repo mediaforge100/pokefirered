@@ -134,4 +134,76 @@ void PokePvPTeamBuilder_LoadPackTeamForBattle(void);
 // pack roster left over from an earlier match in the same process.
 void PokePvPTeamBuilder_ClearPackTeam(void);
 
+// --- Team management options (server features plan §6, UI plan's own
+// "team options (rename/clone/active)" gap) --------------------------------
+//
+// The server already models an arbitrary-many, named, one-active team
+// collection (PATCH rename, POST clone, PUT active-team, apps/api/src/
+// teams.ts); this ROM only ever has POKEPVP_TEAM_SLOTS fixed local slots,
+// each pinned 1:1 to one server team id for the life of a launcher
+// credentials file (client/launcher/src/team_persistence.rs's
+// slot_team_ids). These options are scoped to that reality rather than
+// growing the ROM a second team-count concept: RENAME labels a slot,
+// SET AS ACTIVE marks a real, server-persisted preferred slot (this ROM's
+// own team selector/CUSTOM ELITE picker default their cursor to it, since
+// nothing else here ever reads it mid-match -- every match already asks
+// explicitly which slot to use), and "clone" is a same-account copy
+// between two of the five local slots (PokePvPTeamBuilder_CopySlot), not
+// the server's own POST /clone (which would grow a 6th team the ROM has no
+// slot to hold).
+
+// Matches BOX_NAME_LENGTH (pokemon_storage_system.h) -- not included here to
+// keep this header's own include surface minimal (see the top-of-file note);
+// NAMING_SCREEN_BOX in the ROM enforces the same bound independently.
+#define POKEPVP_TEAM_NAME_LENGTH 8
+
+// Sentinel for "no team is marked active" -- PokePvPTeamBuilder_GetActiveSlot
+// returns this until a real POKEPVP_MSG_ACTIVE_TEAM_SLOT arrives or the
+// player picks SET AS ACTIVE locally.
+#define POKEPVP_NO_ACTIVE_TEAM_SLOT 0xFF
+
+// The slot's stored display name, EOS-terminated, or an empty string if
+// none has ever been set (the caller falls back to "TEAM n" in that case --
+// this never fabricates a name). Safe for any slot value; out-of-range
+// reads as empty.
+const u8 *PokePvPTeamBuilder_GetName(u8 slot);
+
+// Sets a slot's name from `nameLen` raw (non-EOS-terminated) bytes -- the
+// host-push shape (POKEPVP_MSG_TEAM_NAME's boot-burst payload). Bounds-
+// checked against POKEPVP_TEAM_NAME_LENGTH and POKEPVP_TEAM_SLOTS; an
+// out-of-range slot or an oversized nameLen is a no-op (mailbox input
+// stays hostile, Guide rule 14).
+void PokePvPTeamBuilder_SetName(u8 slot, const u8 *name, u8 nameLen);
+
+// Sets a slot's name from an EOS-terminated string -- the ROM-local shape,
+// used right after DoNamingScreen(NAMING_SCREEN_BOX, ...) returns a
+// player-entered name. Truncates to POKEPVP_TEAM_NAME_LENGTH if the naming
+// screen's own bound and this one ever disagree (defense in depth, not
+// expected to trigger).
+void PokePvPTeamBuilder_SetNameString(u8 slot, const u8 *nameStr);
+
+// The account's currently active slot, or POKEPVP_NO_ACTIVE_TEAM_SLOT if
+// none is set yet (a fresh account, or one that has never used SET AS
+// ACTIVE).
+u8 PokePvPTeamBuilder_GetActiveSlot(void);
+
+// Updates the local "which slot is active" marker only -- called both by
+// the host's boot push (POKEPVP_MSG_ACTIVE_TEAM_SLOT) and, for immediate
+// visual feedback, right before the ROM-local SET AS ACTIVE action's own
+// SendActiveTeamSlot (main_menu.c) best-effort-pushes the real change.
+// `slot >= POKEPVP_TEAM_SLOTS` is accepted as an explicit "clear" (stored
+// as POKEPVP_NO_ACTIVE_TEAM_SLOT), matching the wire message's own 0xFF
+// convention -- never partially validated into a wrong slot.
+void PokePvPTeamBuilder_SetActiveSlotLocal(u8 slot);
+
+// Copies `srcSlot`'s roster (and its stored name) into `destSlot` --
+// COPY TO...'s own local mechanism, same in-memory shape
+// PokePvPTeamBuilder_SendTeam(destSlot) already knows how to push
+// afterwards (this function does not itself send anything; the caller
+// calls PokePvPTeamBuilder_SendTeam(destSlot) once, same as every other
+// roster mutation in this file). A no-op if either slot is out of range
+// or `srcSlot == destSlot` (copying a slot onto itself is never useful and
+// would otherwise burn a real PUT for nothing).
+void PokePvPTeamBuilder_CopySlot(u8 srcSlot, u8 destSlot);
+
 #endif // GUARD_POKEPVP_TEAM_BUILDER_H
