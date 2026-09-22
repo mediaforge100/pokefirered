@@ -58,6 +58,11 @@
  * since Task_PokePvPPostMatchWait already consumes result codes on this
  * channel every frame it's waiting. */
 #define POKEPVP_POST_MATCH_RESULT_DECLINED 4
+/* ADR-242: the gateway's own opponent_busy rejection (the target is
+ * already in another match/queue right now) -- distinct from DECLINED
+ * (a real "no") and OPPONENT_UNAVAILABLE (couldn't be reached at all),
+ * same channel-reuse precedent as DECLINED just above. */
+#define POKEPVP_POST_MATCH_RESULT_BUSY 5
 
 typedef struct
 {

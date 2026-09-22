@@ -491,6 +491,10 @@ static const u8 sText_NoOpponentFound[] = _("No opponent found.");
 // decline message -- distinct text from sText_NoOpponentFound just above
 // so a real, immediate decline never reads as an indistinguishable timeout.
 static const u8 sText_ChallengeDeclined[] = _("Challenge declined.");
+// ADR-242: distinct text for the gateway's own opponent_busy rejection --
+// the target is already in another match/queue right now, not a real
+// decline and not unreachable.
+static const u8 sText_OpponentBusy[] = _("Opponent is busy.");
 // POKEPVP (ADR-193, Gap 2): INVITE MATCH's target picker, empty-list case
 // -- same "say so instead of doing nothing" shape as sText_TeamIsEmpty.
 static const u8 sText_NoFriendsToInvite[] = _("Add a FRIEND from SOCIAL first.");
@@ -2615,6 +2619,9 @@ static void DrawTeamSelectorItems(u8 selectedIdx)
 // genuine timeout), so that shared screen's own case 0 knows which of the
 // two distinct messages to print. Consumed (cleared) the instant it's read.
 static bool8 sPokePvPShowDeclinedMessage;
+// ADR-242: same shape and lifecycle as sPokePvPShowDeclinedMessage just
+// above, for the honest "Opponent is busy." case.
+static bool8 sPokePvPShowBusyMessage;
 
 // Team management options: RENAME's own round trip through
 // DoNamingScreen (which destroys every task, so these have to be plain
@@ -2662,6 +2669,10 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
         // sPokePvPRealOpponentReady just below, which is deliberately NOT
         // cleared at this same point.
         PokePvP_ClearChallengeDeclined();
+        // ADR-242: same reasoning as PokePvP_ClearChallengeDeclined just
+        // above -- a stale busy flag from an earlier, already-abandoned
+        // wait must not bleed into this new one.
+        PokePvP_ClearOpponentBusy();
         break;
     case 1:
         RunTextPrinters();
@@ -2685,6 +2696,21 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
             PokePvP_ClearRealMatchPending();
             DebugPrintf("POKEPVP: AUTO-MATCH/INVITE challenge declined by target after %d frames", gTasks[taskId].tWaitFrames);
             sPokePvPShowDeclinedMessage = TRUE;
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_PokePvPNoOpponentFound;
+            break;
+        }
+
+        // ADR-242: same shape as the decline check just above, for the
+        // gateway's own opponent_busy rejection (a real, addressed
+        // SOCIAL CHALLENGE/INVITE MATCH target already in another match/
+        // queue right now).
+        if (!ready && PokePvP_IsOpponentBusy())
+        {
+            PokePvP_ClearOpponentBusy();
+            PokePvP_ClearRealMatchPending();
+            DebugPrintf("POKEPVP: AUTO-MATCH/INVITE target is busy after %d frames", gTasks[taskId].tWaitFrames);
+            sPokePvPShowBusyMessage = TRUE;
             gTasks[taskId].tMGErrorMsgState = 0;
             gTasks[taskId].func = Task_PokePvPNoOpponentFound;
             break;
@@ -2790,7 +2816,9 @@ static void Task_PokePvPNoOpponentFound(u8 taskId)
         // transition) -- distinct text, same dismiss/return shape either
         // way. Consumed immediately so a later, unrelated timeout never
         // shows the wrong message.
-        PrintMessageOnWindow4(sPokePvPShowDeclinedMessage ? sText_ChallengeDeclined : sText_NoOpponentFound);
+        PrintMessageOnWindow4(sPokePvPShowBusyMessage ? sText_OpponentBusy
+            : sPokePvPShowDeclinedMessage ? sText_ChallengeDeclined : sText_NoOpponentFound);
+        sPokePvPShowBusyMessage = FALSE;
         sPokePvPShowDeclinedMessage = FALSE;
         gTasks[taskId].tMGErrorMsgState++;
         break;
@@ -3397,6 +3425,12 @@ static void ShowPostMatchResultMessage(u8 result)
          * one real-world event ("the target said no"), one honest message,
          * regardless of which wait screen it's shown from. */
         msg = sText_ChallengeDeclined;
+        break;
+    case POKEPVP_POST_MATCH_RESULT_BUSY:
+        /* ADR-242: same channel-reuse precedent as DECLINED just above,
+         * for the gateway's own opponent_busy rejection on a REMATCH/
+         * PLAY AGAIN target. */
+        msg = sText_OpponentBusy;
         break;
     default:
         msg = sText_RequestFailed;

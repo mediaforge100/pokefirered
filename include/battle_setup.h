@@ -61,6 +61,9 @@ void PokePvP_ClearRealMatchPending(void);
 // invariant.
 bool8 PokePvP_IsChallengeDeclined(void);
 void PokePvP_ClearChallengeDeclined(void);
+// ADR-242: same shape as the pair above, for POKEPVP_MSG_OPPONENT_BUSY.
+bool8 PokePvP_IsOpponentBusy(void);
+void PokePvP_ClearOpponentBusy(void);
 // POKEPVP (ADR-122): set TRUE by StartPokePvPRealMatch, FALSE by
 // StartPokePvPDebugBattle -- both are the only two real entry points for a
 // new BATTLE_TYPE_POKEPVP battle, so exactly one of them is authoritative
