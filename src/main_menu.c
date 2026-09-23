@@ -419,6 +419,10 @@ static const u8 sString_Newline[] = _("\n");
 // gText_NewGame (strings.c), since that constant may be referenced
 // elsewhere in ways this change has no business touching.
 static const u8 sText_StartMatch[] = _("START MATCH");
+// alpha-build-plan P6 (docs/adr/263): a restrained identity tag for the
+// top menu's own unused 6th row (window 5) -- see DrawPokePvPMenuItems's
+// own comment for why this window, not a new one.
+static const u8 sText_Wordmark[] = _("POKEPVP");
 // POKEPVP (ADR-085, D7): the real five-item menu. Team Builder/Player
 // Settings/Leaderboard/Options are stubs (Task_PokePvPMenuStub) -- real
 // implementations are Phase 5-8 work, out of scope here (ADR-079's own
@@ -1248,10 +1252,27 @@ static void DrawPokePvPMenuItems(u8 selectedIdx)
         AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
             selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
     }
-    // Blank window 5 too -- same "erase, don't just occlude" discipline
-    // every other screen sharing the wide panel already uses, so no
-    // leftover content ever bleeds through the now-unused 6th row.
+    // alpha-build-plan P6 (docs/adr/263): the top menu's own identity tag,
+    // in window 5 rather than a new window -- ADR-262 (this same session)
+    // tried a new top-of-screen window instead and found it corrupted the
+    // MATCH HISTORY screen: window 5's baseBlock is already safely shared
+    // (aliased with the move-editor list, which is never live at the same
+    // time), and every OTHER screen that reuses this shared 5-row layout
+    // already defensively re-blanks window 5 itself (the exact "erase,
+    // don't just occlude" comment this replaced) -- so reusing it needs
+    // zero new tile storage and zero new call sites elsewhere to avoid
+    // bleed-through; those dozen existing blank-window-5 calls already do
+    // that job. sTextColor2 (the vanilla CONTINUE screen's own label
+    // color, untouched by ADR-186) instead of sTextColor1 so this reads
+    // as a dim footer tag, not a 6th selectable row -- selectedIdx never
+    // reaches 5 (the loop above only ever runs i<5), so it can never be
+    // highlighted, but a same-looking unselectable row would still be
+    // confusing to look at.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
     MainMenu_DrawWindow(&sPokePvPMenuPanelTemplateWide);
     for (i = 0; i < 5; i++)
         PutWindowTilemap(sWindowIds[i]);
@@ -1901,7 +1922,13 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
     // ADR-186) -- blank it too, same "erase, don't just occlude"
     // discipline as the unused rows above, so LEADERBOARD text left over
     // from the top menu never bleeds through.
+    // alpha-build-plan P6 (docs/adr/264): same window-5 identity tag as
+    // the top menu (ADR-263) -- see DrawPokePvPMenuItems's own comment.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
     MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
     for (i = 0; i < 5; i++)
         PutWindowTilemap(sWindowIds[i]);
@@ -2088,6 +2115,14 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
     // ERROR window's own rows (15-18), and drawing them in the other
     // order let window 5's blank tiles clobber the bottom half of the
     // overview text (a real regression a golden-slice test caught).
+    // alpha-build-plan P6 (docs/adr/264): deliberately NOT given the
+    // window-5 identity tag every other screen got -- this screen's own
+    // real content (the ERROR band's pack overview/playstyle line) draws
+    // *after* window 5 specifically so ERROR wins the shared rows, per
+    // the comment above. Reversing that order to let a wordmark tag win
+    // instead would silently reintroduce the exact regression this
+    // ordering was already fixed for. Left blank; not every screen needs
+    // it.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
@@ -2352,7 +2387,13 @@ static void DrawInviteTargetTypeItems(u8 selectedIdx)
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
+    // alpha-build-plan P6 (docs/adr/264): same window-5 identity tag as
+    // the top menu (ADR-263) -- see DrawPokePvPMenuItems's own comment.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
     MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
     for (i = 0; i < 2; i++)
         PutWindowTilemap(sWindowIds[i]);
@@ -2565,7 +2606,13 @@ static void DrawTeamSelectorItems(u8 selectedIdx)
     // POKEPVP (ADR-188): see DrawStartMatchSubmenuItems's identical
     // comment -- blank window 5 too so leftover LEADERBOARD text never
     // bleeds through the now-taller shared panel.
+    // alpha-build-plan P6 (docs/adr/264): same window-5 identity tag as
+    // the top menu (ADR-263) -- see DrawPokePvPMenuItems's own comment.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
@@ -3389,7 +3436,13 @@ static void DrawPostMatchItems(u8 selectedIdx)
     // top menu never bleeds through (same "erase, don't just occlude"
     // discipline DrawStartMatchSubmenuItems already used for its own
     // unused rows).
+    // alpha-build-plan P6 (docs/adr/264): same window-5 identity tag as
+    // the top menu (ADR-263) -- see DrawPokePvPMenuItems's own comment.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
@@ -3721,16 +3774,29 @@ static void DrawProfileItems(u8 selectedIdx)
     for (i = 0; i < 4; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
     CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
-    // This screen no longer uses window 5 or the ERROR band (ADR-238
-    // moved all of PROFILE's old stat content to MATCH HISTORY) -- blank
-    // both explicitly rather than trusting an earlier PROFILE visit or
-    // the top menu's own leftover content to already be gone (same
-    // "erase, don't occlude" discipline every sibling screen uses).
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
-    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
+    // This screen no longer uses the ERROR band (ADR-238 moved all of
+    // PROFILE's old stat content to MATCH HISTORY) -- blank it explicitly
+    // rather than trusting an earlier screen's leftover content to
+    // already be gone (same "erase, don't occlude" discipline every
+    // sibling screen uses). Done *before* the window-5 identity tag below
+    // -- alpha-build-plan P6 (docs/adr/264, real bug found and fixed same
+    // session): MAIN_MENU_WINDOW_ERROR spans rows 15-18 (tilemapTop=15,
+    // height=4), which fully overlaps window 5's own rows 16-17 --
+    // MainMenu_EraseWindow blank-fills its *entire* rect, tilemap and
+    // all, not just its border. Drawing the tag first and erasing ERROR
+    // after (the order this function had before this ADR) silently wiped
+    // the tag back out every time, confirmed via live headless capture
+    // showing nothing at all where the tag should be -- not a palette or
+    // timing issue, a genuine same-frame overwrite.
     ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
     MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
 
 static void Task_PokePvPProfile(u8 taskId)
@@ -3800,7 +3866,13 @@ static void DrawPlayerMenuItems(u8 selectedIdx)
     for (i = 0; i < 4; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
     CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    // alpha-build-plan P6 (docs/adr/264): same window-5 identity tag as
+    // the top menu (ADR-263) -- see DrawPokePvPMenuItems's own comment.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
@@ -3934,7 +4006,13 @@ static void DrawSocialItems(u8 selectedIdx)
     // top menu never bleeds through (same "erase, don't just occlude"
     // discipline DrawStartMatchSubmenuItems already used for its own
     // unused rows).
+    // alpha-build-plan P6 (docs/adr/264): same window-5 identity tag as
+    // the top menu (ADR-263) -- see DrawPokePvPMenuItems's own comment.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
@@ -4374,7 +4452,13 @@ static void DrawSocialListItems(u8 list, u8 selectedIdx, bool8 addFriendFirst)
     // top menu never bleeds through (same "erase, don't just occlude"
     // discipline DrawStartMatchSubmenuItems already used for its own
     // unused rows).
+    // alpha-build-plan P6 (docs/adr/264): same window-5 identity tag as
+    // the top menu (ADR-263) -- see DrawPokePvPMenuItems's own comment.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
@@ -4487,7 +4571,13 @@ static void DrawSocialRowMenuItems(u8 list, u8 selectedIdx)
     // top menu never bleeds through (same "erase, don't just occlude"
     // discipline DrawStartMatchSubmenuItems already used for its own
     // unused rows).
+    // alpha-build-plan P6 (docs/adr/264): same window-5 identity tag as
+    // the top menu (ADR-263) -- see DrawPokePvPMenuItems's own comment.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
@@ -4789,6 +4879,11 @@ static void DrawInboxItems(u8 inboxSlot, u8 cursor)
     // tiles clobber the bottom half of that line (a real regression a
     // golden-slice test caught in DrawPackPickerItems's identical
     // overview line; same fix here, done up front instead).
+    // alpha-build-plan P6 (docs/adr/264): deliberately NOT given the
+    // window-5 identity tag every other screen got -- the ERROR band's
+    // own type line (REMATCH/QUICK EARLY/QUICK ELITE, always shown)
+    // draws right after and would win the shared rows regardless, per
+    // the comment above. Left blank; not every screen needs it.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
@@ -5176,7 +5271,13 @@ static void DrawTeamListItems(u8 selectedIdx)
     // POKEPVP (ADR-188): see DrawStartMatchSubmenuItems's identical
     // comment -- blank window 5 too so leftover LEADERBOARD text never
     // bleeds through the now-taller shared panel.
+    // alpha-build-plan P6 (docs/adr/264): same window-5 identity tag as
+    // the top menu (ADR-263) -- see DrawPokePvPMenuItems's own comment.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
@@ -5357,7 +5458,13 @@ static void DrawSlotMenuItems(u8 selectedIdx)
     // POKEPVP (ADR-188): see DrawStartMatchSubmenuItems's identical
     // comment -- blank window 5 too so leftover LEADERBOARD text never
     // bleeds through the now-taller shared panel.
+    // alpha-build-plan P6 (docs/adr/264): same window-5 identity tag as
+    // the top menu (ADR-263) -- see DrawPokePvPMenuItems's own comment.
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_5, PIXEL_FILL(10));
+    AddTextPrinterParameterized3(
+        MAIN_MENU_WINDOW_POKEPVP_5, FONT_NORMAL,
+        (24 * 8 - GetStringWidth(FONT_NORMAL, sText_Wordmark, 0)) / 2, 2,
+        sTextColor2, -1, sText_Wordmark);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_5);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_5, COPYWIN_FULL);
 }
