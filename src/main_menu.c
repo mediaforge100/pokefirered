@@ -1672,13 +1672,23 @@ static void Task_PokePvPMatchHistory(u8 taskId)
     bool8 haveProfile;
     u8 recentCount;
     u8 historyCount = PokePvPMatchHistory_Count();
-    // Sized for the worst case of the ERROR band's own combined buffer:
-    // "RECORD:" (7) + newline (1) + POKEPVP_HISTORY_MAX_ENTRIES (8) list
-    // lines ("NAME" (16) + "   W: " (6) + 2 digits + "  L: " (5) + 2
-    // digits + newline = 32 each) = 8 + 256 = 264, plus EOS -- reused
-    // per-window below, so sized for its own single largest user, not
-    // the sum of all of them (ADR-198's own lesson).
-    u8 buf[265];
+    // Sized for the worst case of the ERROR band's own combined buffer.
+    // Found live during P6's max-length-name gate pass: this previously
+    // read "NAME" (16) here, but history.c's real wire cap is
+    // POKEPVP_HISTORY_MAX_NAME_LEN (24) -- history.c's own receive path
+    // never clamps to 16 the way post_match.c/profile.c/social.c/inbox.c
+    // do, and 24 matches the real max username length (apps/api's
+    // `displayName.length > 24` check, auth.ts) -- so a genuine
+    // real-world 17-24 char opponent name was never actually impossible,
+    // just never tried against this buffer. Real worst case: "RECORD:"
+    // (7) + newline (1) + POKEPVP_HISTORY_MAX_ENTRIES (8) list lines
+    // (24 + "   W: " (6) + 2 digits (wins clamped <=99 launcher-side) +
+    // "  L: " (5) + 2 digits (losses, same clamp) + newline = 40 each)
+    // = 8 + 320 = 328, + EOS = 329 -- reused per-window below, so sized
+    // for its own single largest user, not the sum of all of them
+    // (ADR-198's own lesson, which this buffer had silently drifted
+    // out of sync with). See ADR-198 for the original overflow class.
+    u8 buf[336];
     u8 *dst;
     u8 i;
 
