@@ -6436,23 +6436,46 @@ static void PrintBadgeCount(void)
     AddTextPrinterParameterized3(MAIN_MENU_WINDOW_CONTINUE, FONT_NORMAL, 62, 66, sTextColor2, -1, strbuf);
 }
 
-// POKEPVP (ADR-186, de-skin): both loaders now use FireRed's own stock
-// window frame (the player's chosen Options -> Frame Type), the same
-// GetUserWindowGraphics() call option_menu.c/mon_markings.c already use
-// for their own frames, instead of a hand-drawn navy/gold graphic. This
-// is what "minimalistic" means here: no bespoke skin, just FireRed's own
-// UI.
+// POKEPVP (ADR-186, de-skin): both loaders use FireRed's own stock window
+// frame graphics, the same GetUserWindowGraphics() call option_menu.c/
+// mon_markings.c already use for their own frames, instead of a
+// hand-drawn navy/gold graphic. This is what "minimalistic" means here:
+// no bespoke skin, just FireRed's own UI.
+//
+// POKEPVP (ADR-290, P6 border pinning; corrected ADR-291): the frame
+// index is now a fixed PokePvP constant, not
+// gSaveBlock2Ptr->optionsWindowFrameType. That field is the player's own
+// real vanilla OPTIONS -> Frame Type choice (one of 20 decorative
+// borders, still read/written by option_menu.c exactly as before --
+// untouched here); reading it for PokePvP's own screens meant two
+// players could see differently-colored/styled PokePvP UI, and it could
+// change mid-session, which contradicts a "coherent... restrained
+// palette in verified owned resources" P6 asks for.
+// gUserFrames[POKEPVP_FIXED_WINDOW_FRAME_TYPE] (vanilla "Type1": a
+// plain dark charcoal/navy double-outline, no texture, no saturated
+// hue -- picked from an actual in-ROM headless capture of each
+// candidate, not a static palette-file decode, after ADR-290's original
+// pick (Type7) turned out to be a busy marbled/cloud texture that read
+// as "unpolished dashes"/text-crowds-the-border in real play, and a
+// second candidate (Type2) turned out to render magenta in practice
+// despite looking like a plain black outline when the source tile data
+// was decoded and re-rendered standalone -- that standalone decode had
+// a bug, so ADR-291 settled on trusting only real in-ROM capture output
+// from here on) is a static, always-owned asset, so this is a pure
+// constant swap: zero new VRAM, zero new tiles/palette data.
+#define POKEPVP_FIXED_WINDOW_FRAME_TYPE 0
+
 static void LoadUserFrameToBg(u8 bgId)
 {
-    LoadBgTiles(bgId, GetUserWindowGraphics(gSaveBlock2Ptr->optionsWindowFrameType)->tiles, 0x120, POKEPVP_PANEL_FRAME_BASE_TILE);
-    LoadPalette(GetUserWindowGraphics(gSaveBlock2Ptr->optionsWindowFrameType)->palette, BG_PLTT_ID(2), PLTT_SIZE_4BPP);
+    LoadBgTiles(bgId, GetUserWindowGraphics(POKEPVP_FIXED_WINDOW_FRAME_TYPE)->tiles, 0x120, POKEPVP_PANEL_FRAME_BASE_TILE);
+    LoadPalette(GetUserWindowGraphics(POKEPVP_FIXED_WINDOW_FRAME_TYPE)->palette, BG_PLTT_ID(2), PLTT_SIZE_4BPP);
     MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
 }
 
 static void SetStdFrame0OnBg(u8 bgId)
 {
-    LoadBgTiles(bgId, GetUserWindowGraphics(gSaveBlock2Ptr->optionsWindowFrameType)->tiles, 0x120, POKEPVP_PANEL_FRAME_BASE_TILE);
-    LoadPalette(GetUserWindowGraphics(gSaveBlock2Ptr->optionsWindowFrameType)->palette, BG_PLTT_ID(2), PLTT_SIZE_4BPP);
+    LoadBgTiles(bgId, GetUserWindowGraphics(POKEPVP_FIXED_WINDOW_FRAME_TYPE)->tiles, 0x120, POKEPVP_PANEL_FRAME_BASE_TILE);
+    LoadPalette(GetUserWindowGraphics(POKEPVP_FIXED_WINDOW_FRAME_TYPE)->palette, BG_PLTT_ID(2), PLTT_SIZE_4BPP);
     MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
 }
 

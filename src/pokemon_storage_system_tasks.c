@@ -412,7 +412,20 @@ void EnterPokeStorage(u8 boxOption)
 {
     ResetTasks();
     sCurrentBoxOption = boxOption;
-    gStorage = Alloc(sizeof(struct PokemonStorageSystemData));
+    // POKEPVP (ADR-292/293): was Alloc (uninitialized heap garbage) --
+    // InitMonIconFields (called from Task_InitPokeStorage state 4) only
+    // clears a subset of this struct's own pointer-shaped fields
+    // (iconSpeciesList/numIconsPerSpecies/partySprites/boxMonsSprites/
+    // movingMonSprite); shiftMonSpritePtr, releaseMonSpritePtr,
+    // curBoxTitleSprites, nextBoxTitleSprites, arrowSprites, and others
+    // further down struct PokemonStorageSystemData are never
+    // unconditionally initialized before some code path can read them.
+    // AllocZeroed is the same pattern this codebase's own other
+    // screen-owner structs already use (gBattleSpritesDataPtr,
+    // sTransitionData, gMonSpritesGfxPtr, ...); this struct was the
+    // outlier. See ADR-293 for what this was verified against and what
+    // it does not confirm.
+    gStorage = AllocZeroed(sizeof(struct PokemonStorageSystemData));
     if (gStorage == NULL)
         SetMainCallback2(CB2_ExitPokeStorage);
     else
@@ -431,7 +444,11 @@ void EnterPokeStorage(u8 boxOption)
 void CB2_ReturnToPokeStorage(void)
 {
     ResetTasks();
-    gStorage = Alloc(sizeof(struct PokemonStorageSystemData));
+    // POKEPVP (ADR-292/293): same reasoning as EnterPokeStorage's own
+    // AllocZeroed above -- this is the other real allocation site for the
+    // same struct (the summary/naming/bag-menu round-trip path), and it
+    // has exactly the same uninitialized-field risk.
+    gStorage = AllocZeroed(sizeof(struct PokemonStorageSystemData));
     if (gStorage == NULL)
         SetMainCallback2(CB2_ExitPokeStorage);
     else
