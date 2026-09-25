@@ -2214,6 +2214,18 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
         // erase any stale ERROR-band border explicitly now that window 5
         // (ADR-296) no longer masks it incidentally.
         MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+        // POKEPVP (2026-09-25 theme pass): this screen already leaves
+        // POKEPVP_4 (row 4) blank -- see this function's own comment up
+        // top -- so, same as MATCH HISTORY and the SPRITE picker, bordering
+        // MAIN_MENU_WINDOW_ERROR directly is safe (no real content in the
+        // rows it would frame). ADR-302 named this box as unbordered by
+        // design at the time ("the identical erase-after-paint defect...
+        // named, not fixed"), which read as a harmless gap against the old
+        // flat blue backdrop -- against the new BG2 scenic backdrop, the
+        // unbordered erase left a real seam of backdrop art visibly
+        // bleeding through between the panel and this box, reported as
+        // "broken and borderless."
+        MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
         FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
         dst = StringCopy(buf2, (battleClass == 0) ? sText_QuickRulesLineEarly : sText_QuickRulesLineElite);
         *dst = EOS;
