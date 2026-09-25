@@ -367,6 +367,8 @@ static void LoadUserFrameToBg(u8 bgId);
 static void SetStdFrame0OnBg(u8 bgId);
 static void MainMenu_DrawWindow(const struct WindowTemplate * template);
 static void MainMenu_EraseWindow(const struct WindowTemplate * template);
+static void MainMenu_DrawWindowNoCommit(const struct WindowTemplate * template);
+static void MainMenu_EraseWindowNoCommit(const struct WindowTemplate * template);
 
 // POKEPVP (ADR-093): set before the Team Builder hands off to the PC box
 // screen, consumed on the way back in. The box screen returns through
@@ -2011,8 +2013,21 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
      * (y=2 -> rows 15-16, underneath the panel) so the two no longer
      * compete for the same rows. An empty band is left erased rather than
      * put, so a hidden row can't leave the borderless cream box below the
-     * panel that ADR-297/300 were both reported for. */
-    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+     * panel that ADR-297/300 were both reported for.
+     *
+     * POKEPVP (2026-09-25, scroll-flash fix): this erase, the panel draw
+     * below, and the description-box border draw at the end of this
+     * function each used to call CopyBgTilemapBufferToVram immediately
+     * (3 separate real hardware writes per single D-pad press) -- now
+     * they use the *NoCommit variants and one explicit
+     * CopyBgTilemapBufferToVram(0) at the very end of this function does
+     * it once. Window 4's own final CopyWindowToVram is COPYWIN_GFX now,
+     * not COPYWIN_FULL -- its tilemap position is unchanged between
+     * redraws (only its graphic content is), so PutWindowTilemap alone
+     * (already called below) is enough prep; the explicit trailing
+     * commit is what actually flushes it, same as everything else this
+     * function touches. */
+    MainMenu_EraseWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
     if (selectedIdx < n)
     {
         const u8 *desc;
@@ -2041,26 +2056,18 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
         CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
     }
 
-    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    MainMenu_DrawWindowNoCommit(&sPokePvPMenuPanelTemplate);
     for (i = 0; i < 5; i++)
         PutWindowTilemap(sWindowIds[i]);
-    // ADR-299: last copy is COPYWIN_FULL, matching every sibling screen --
-    // see DrawPokePvPMenuItems's identical comment. ADR-302: it is also the
-    // only tilemap commit in this function now, so it must stay last.
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < 5; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
-    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
 
-    // Drawn last, after every window's own commit above: MainMenu_DrawWindow
-    // does its own immediate CopyBgTilemapBufferToVram (see its own body),
-    // so running it any earlier would flush a bg tilemap buffer that
-    // POKEPVP_4's own COPYWIN_FULL commit hadn't populated yet -- the exact
-    // "wrong commit order" bug class ADR-302 root-caused for this same
-    // function. sPokePvPSubmenuDescBorderTemplate's rows (16-18) never touch
-    // POKEPVP_4's rows (14-15), so this is safe regardless of what the
-    // description text above did.
     if (selectedIdx < n)
-        MainMenu_DrawWindow(&sPokePvPSubmenuDescBorderTemplate);
+        MainMenu_DrawWindowNoCommit(&sPokePvPSubmenuDescBorderTemplate);
+
+    // The one real hardware write for this whole redraw -- see this
+    // function's own "scroll-flash fix" comment above.
+    CopyBgTilemapBufferToVram(0);
 }
 
 /* POKEPVP (UI plan slice 3): the START MATCH mode tree (Build Plan §2.2
@@ -2193,7 +2200,14 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
      * blank on this screen -- see this function's own comment above. */
     FillWindowPixelBuffer(sWindowIds[4], PIXEL_FILL(10));
     PutWindowTilemap(sWindowIds[4]);
-    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    // POKEPVP (2026-09-25, scroll-flash fix): *NoCommit + one explicit
+    // CopyBgTilemapBufferToVram(0) at the end of this function, instead of
+    // three separate immediate commits (this draw, the ERROR-band erase,
+    // and its border draw below) -- see DrawStartMatchSubmenuItems's own
+    // identical comment for why: each commit is a real, non-vblank-synced
+    // hardware write, and landing more than one per D-pad press is what
+    // the owner saw as a scroll flash.
+    MainMenu_DrawWindowNoCommit(&sPokePvPMenuPanelTemplate);
     /* Overview line(s) in the ERROR band. Pack overview (owner ask,
      * 2026-09-13 revision): the ERROR window reserves 4 rows
      * (naming_screen-style message box height) and only the top one was
@@ -2213,7 +2227,7 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
         // ADR-297: see DrawStartMatchSubmenuItems's identical comment --
         // erase any stale ERROR-band border explicitly now that window 5
         // (ADR-296) no longer masks it incidentally.
-        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+        MainMenu_EraseWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
         // POKEPVP (2026-09-25 theme pass): this screen already leaves
         // POKEPVP_4 (row 4) blank -- see this function's own comment up
         // top -- so, same as MATCH HISTORY and the SPRITE picker, bordering
@@ -2225,7 +2239,7 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
         // unbordered erase left a real seam of backdrop art visibly
         // bleeding through between the panel and this box, reported as
         // "broken and borderless."
-        MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+        MainMenu_DrawWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
         FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
         dst = StringCopy(buf2, (battleClass == 0) ? sText_QuickRulesLineEarly : sText_QuickRulesLineElite);
         *dst = EOS;
@@ -2246,9 +2260,11 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
         PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
         CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
     }
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < 5; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
-    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    // The one real hardware write for this whole redraw -- see this
+    // function's own "scroll-flash fix" comment above.
+    CopyBgTilemapBufferToVram(0);
 }
 
 /* POKEPVP (UI plan slice 3, simplified ADR-192): pack picker task -- A on
@@ -6488,11 +6504,23 @@ static void SetStdFrame0OnBg(u8 bgId)
     MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
 }
 
-static void MainMenu_DrawWindow(const struct WindowTemplate * windowTemplate)
+// POKEPVP (2026-09-25, scroll-flash fix): the buffer-filling body of
+// MainMenu_DrawWindow, split out so a caller that needs to draw MULTIPLE
+// window frames in one redraw (e.g. DrawStartMatchSubmenuItems's panel +
+// its own description-box border, or DrawPackPickerItems's panel + its
+// description-box border) can commit ONCE at the end instead of once per
+// frame drawn. Each CopyBgTilemapBufferToVram is a real, immediate,
+// non-vblank-synced VRAM write -- landing more than one per redraw (which
+// the border fixes in the last two passes did, on every single D-pad
+// press) raised the odds of one landing mid-scanline, visible as the
+// owner-reported "flash" on scroll. MainMenu_DrawWindow itself is
+// unchanged for its other ~15 existing call sites -- this only adds a
+// lower-level option, it doesn't remove the convenient one.
+static void MainMenu_DrawWindowNoCommit(const struct WindowTemplate * windowTemplate)
 {
     FillBgTilemapBufferRect(
-        windowTemplate->bg, 
-        POKEPVP_PANEL_FRAME_BASE_TILE + 0, 
+        windowTemplate->bg,
+        POKEPVP_PANEL_FRAME_BASE_TILE + 0,
         windowTemplate->tilemapLeft - 1, 
         windowTemplate->tilemapTop - 1,
         1,
@@ -6571,10 +6599,18 @@ static void MainMenu_DrawWindow(const struct WindowTemplate * windowTemplate)
         1,
         2
     );
+}
+
+static void MainMenu_DrawWindow(const struct WindowTemplate * windowTemplate)
+{
+    MainMenu_DrawWindowNoCommit(windowTemplate);
     CopyBgTilemapBufferToVram(windowTemplate->bg);
 }
 
-static void MainMenu_EraseWindow(const struct WindowTemplate * windowTemplate)
+// POKEPVP (2026-09-25, scroll-flash fix): see MainMenu_DrawWindowNoCommit's
+// own comment -- same reasoning, split out so a caller batching multiple
+// erase/draw calls in one redraw can commit once at the end.
+static void MainMenu_EraseWindowNoCommit(const struct WindowTemplate * windowTemplate)
 {
     // ADR-298 fix: FillBgTilemapBufferRect's 5th/6th params are spans
     // (width/height), not far-edge coordinates -- this used to pass
@@ -6595,5 +6631,10 @@ static void MainMenu_EraseWindow(const struct WindowTemplate * windowTemplate)
         windowTemplate->height + 2,
         2
     );
+}
+
+static void MainMenu_EraseWindow(const struct WindowTemplate * windowTemplate)
+{
+    MainMenu_EraseWindowNoCommit(windowTemplate);
     CopyBgTilemapBufferToVram(windowTemplate->bg);
 }
