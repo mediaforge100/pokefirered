@@ -1,6 +1,11 @@
 *.1bpp
 *.4bpp
 *.8bpp
+# POKEPVP: hand-deduplicated (not derivable by the generic %.8bpp:%.png
+# rule, which doesn't tile-deduplicate) -- its own tilemap
+# (pokepvp_backdrop_map.bin) encodes indices matching THIS exact tile
+# ordering, so it must be committed as-is, not regenerated at build time.
+!graphics/main_menu/pokepvp_backdrop.8bpp
 *.DS_Store
 *.bak
 *.bat

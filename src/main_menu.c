@@ -502,7 +502,13 @@ static const u8 sText_EditMoves[] = _("EDIT MOVES");
 static const u8 sText_RenameTeam[] = _("RENAME");
 static const u8 sText_CopyTeamTo[] = _("COPY TO...");
 static const u8 sText_SetActiveTeam[] = _("SET AS ACTIVE");
-static const u8 sText_TeamIsEmpty[] = _("This team has no POKéMON yet.");
+// POKEPVP (2026-09-25 theme pass): shortened from "This team has no
+// POKéMON yet." (30 chars) -- the narrower 160px box already proved (real
+// capture) that a similarly-long single-line string clips rather than
+// wraps in this printer, and this string wasn't independently re-captured
+// this pass (no quick scripted path to an empty team slot), so trimmed
+// defensively rather than left at the same risk.
+static const u8 sText_TeamIsEmpty[] = _("Team has no POKéMON yet.");
 // The empty move slot, and the "clear this slot" row. One dash, used as
 // both -- a slot showing "-" and a choice reading "-" are the same idea.
 static const u8 sText_NoMove[] = _("-");
@@ -696,31 +702,36 @@ static const struct WindowTemplate sWindowTemplate[] = {
     // them. Rows 0-5/16-19 previously held the BG2 backdrop art (removed,
     // ADR-186) and are now simply blank -- free for a 6th row if a future
     // slice needs one.
+    // POKEPVP (2026-09-25 theme pass): narrowed from left=3/width=24
+    // (192px, 80% of screen) to left=5/width=20 (160px, 67%), so the new
+    // BG2 backdrop's side margins (40px each) actually show. tilemapTop/
+    // height (vertical position) are unchanged -- see the theme pass's
+    // own note on sPokePvPMenuPanelTemplate below for why.
     [MAIN_MENU_WINDOW_POKEPVP_0] = {
-        .bg = 0, .tilemapLeft = 3, .tilemapTop = 6, .width = 24, .height = 2,
+        .bg = 0, .tilemapLeft = 5, .tilemapTop = 6, .width = 20, .height = 2,
         .paletteNum = 15, .baseBlock = 0x151
     },
     [MAIN_MENU_WINDOW_POKEPVP_1] = {
-        .bg = 0, .tilemapLeft = 3, .tilemapTop = 8, .width = 24, .height = 2,
+        .bg = 0, .tilemapLeft = 5, .tilemapTop = 8, .width = 20, .height = 2,
         .paletteNum = 15, .baseBlock = 0x181
     },
     [MAIN_MENU_WINDOW_POKEPVP_2] = {
-        .bg = 0, .tilemapLeft = 3, .tilemapTop = 10, .width = 24, .height = 2,
+        .bg = 0, .tilemapLeft = 5, .tilemapTop = 10, .width = 20, .height = 2,
         .paletteNum = 15, .baseBlock = 0x1b1
     },
     [MAIN_MENU_WINDOW_POKEPVP_3] = {
-        .bg = 0, .tilemapLeft = 3, .tilemapTop = 12, .width = 24, .height = 2,
+        .bg = 0, .tilemapLeft = 5, .tilemapTop = 12, .width = 20, .height = 2,
         .paletteNum = 15, .baseBlock = 0x1e1
     },
     [MAIN_MENU_WINDOW_POKEPVP_4] = {
-        .bg = 0, .tilemapLeft = 3, .tilemapTop = 14, .width = 24, .height = 2,
+        .bg = 0, .tilemapLeft = 5, .tilemapTop = 14, .width = 20, .height = 2,
         .paletteNum = 15, .baseBlock = 0x211
     },
     [MAIN_MENU_WINDOW_ERROR] = {
         .bg = 0,
-        .tilemapLeft = 3,
+        .tilemapLeft = 5,
         .tilemapTop = 15,
-        .width = 24,
+        .width = 20,
         .height = 4,
         .paletteNum = 15,
         .baseBlock = 0x001 // unchanged from original -- proven safe to alias CONTINUE's block, mutually exclusive draw
@@ -731,10 +742,14 @@ static const struct WindowTemplate sWindowTemplate[] = {
 // POKEPVP (menu redesign): geometry-only -- never AddWindow'd, just handed
 // to MainMenu_DrawWindow to draw ONE frame around the whole 5-row block
 // (rows 6-15) instead of a separate border per row. tilemapLeft/Top/width/
-// height must bound the POKEPVP_0..4 windows exactly (left=3, top=6,
+// height must bound the POKEPVP_0..4 windows exactly (left=5, top=6,
 // spanning to top+height=16, matching POKEPVP_4's tilemapTop 14 + height 2).
+// POKEPVP (2026-09-25 theme pass): narrowed to left=5/width=20 (160px) --
+// see MAIN_MENU_WINDOW_POKEPVP_0's own comment above for why. Vertical
+// geometry (top=6, height=10, i.e. 80px) is unchanged: 5 rows at a
+// legible text size have an 80px floor regardless of width.
 static const struct WindowTemplate sPokePvPMenuPanelTemplate = {
-    .bg = 0, .tilemapLeft = 3, .tilemapTop = 6, .width = 24, .height = 10
+    .bg = 0, .tilemapLeft = 5, .tilemapTop = 6, .width = 20, .height = 10
 };
 
 // POKEPVP (item — START MATCH submenu description box border): geometry-
@@ -751,7 +766,7 @@ static const struct WindowTemplate sPokePvPMenuPanelTemplate = {
 // -- see DrawStartMatchSubmenuItems's own ADR-297/302 history for why that
 // row was left borderless before.
 static const struct WindowTemplate sPokePvPSubmenuDescBorderTemplate = {
-    .bg = 0, .tilemapLeft = 3, .tilemapTop = 17, .width = 24, .height = 2
+    .bg = 0, .tilemapLeft = 5, .tilemapTop = 17, .width = 20, .height = 2
 };
 
 // POKEPVP (ADR-093): the move editor's list window. Added and removed on
@@ -813,6 +828,27 @@ static EWRAM_DATA struct PokePvPListData *sPokePvPList = NULL;
 static const u16 sBg_Pal[] = INCBIN_U16("graphics/main_menu/bg.gbapal");
 static const u16 sTextbox_Pal[] = INCBIN_U16("graphics/main_menu/textbox.gbapal");
 
+// POKEPVP (2026-09-25 theme pass): the BG2 scenic backdrop -- one flat,
+// full-screen (240x160) 8bpp image, palette-quantized to 32 real colors
+// and hand-verified per-tile compliant before this asset was ever built
+// (no dithering, no anti-aliasing, no gradient wider than a handful of
+// flat bands). The menu box's own footprint (px 40-200 x 48-128, the
+// region sPokePvPMenuPanelTemplate below covers on almost every screen)
+// is pre-flattened to one solid fill color in the source art itself --
+// wasted VRAM otherwise, since that whole area is opaquely covered by
+// BG0 except for a few transition frames. That flattening, plus real
+// (if modest -- this art wasn't drawn on an 8px grid, so exact tile
+// repeats are rare outside the flattened box) tile deduplication, gets
+// this down to 389 of 600 possible unique 8x8 tiles: 24,896 bytes of
+// tile data + 2,048 bytes of tilemap = ~26.3KB, comfortably inside the
+// ~30KB of BG char/map space BG0 leaves free (BG0's own real usage tops
+// out around 31.6KB of the 64KB BG VRAM budget -- see
+// POKEPVP_PANEL_FRAME_BASE_TILE's own comment for where that ceiling
+// comes from).
+static const u16 sPokePvPBackdrop_Pal[] = INCBIN_U16("graphics/main_menu/pokepvp_backdrop.gbapal");
+static const u32 sPokePvPBackdrop_Gfx[] = INCBIN_U32("graphics/main_menu/pokepvp_backdrop.8bpp.lz");
+static const u32 sPokePvPBackdrop_Map[] = INCBIN_U32("graphics/main_menu/pokepvp_backdrop_map.bin.lz");
+
 // POKEPVP (ADR-186, de-skin): the base VRAM tile this menu's window
 // frame loads at. Comfortably past every baseBlock this file uses
 // (highest is the move info window's 0x385 + up to 100 tiles) -- kept as
@@ -850,13 +886,40 @@ static const struct BgTemplate sBgTemplate[] = {
         .charBaseIndex = 0,
         .mapBaseIndex = 30,
         .priority = 0
+    },
+    // POKEPVP (2026-09-25 theme pass, reintroducing ADR-186's removed
+    // BG2 backdrop for real, per owner request): a full-screen scenic
+    // background behind BG0's window list. charBaseIndex 2 (VRAM byte
+    // 0x8000) is clear of BG0's own tile range (BG0's own highest tile is
+    // POKEPVP_PANEL_FRAME_BASE_TILE + 9 = 0x3F2, i.e. byte offset
+    // 0x3F2*32 = 0x7E40, still under 0x8000).
+    //
+    // mapBaseIndex 29 (VRAM byte 0xE800) -- NOT the 26 an earlier attempt
+    // used, which was the predecessor implementation's own value and
+    // looked safe on paper but wasn't: this backdrop's 389 real tiles
+    // (24,896 bytes of char data, ending at 0x8000+24896 = 0xE140) is a
+    // full 4,416 bytes bigger than the predecessor's own much smaller
+    // header+footer+blank asset ever was, and mapBaseIndex 26 (0xD000)
+    // sits 4,416 bytes BEFORE that tile data actually ends -- the tail of
+    // the tileset was silently overwriting the front of the tilemap it
+    // was about to be read through. Symptom: real, byte-for-byte-correct
+    // tile/map/palette data (confirmed via an offline reconstruction of
+    // the exact same files) still rendered as colorful noise wherever a
+    // tile index above ~320 was referenced -- a real capture with the
+    // tile-discovery scan order reversed proved the corruption tracked
+    // tile INDEX, not screen position (moved from the bottom two rows to
+    // the top two), which is what pinned this as a layout overlap and
+    // not a decompression/heap bug. mapBaseIndex 29 (0xE800) leaves the
+    // full tileset room with 1,728 bytes to spare before BG0's own map at
+    // block 30 (0xF000). priority 3 (lowest) keeps this behind every one
+    // of BG0's opaque list/panel/description-box windows.
+    {
+        .bg = 2,
+        .charBaseIndex = 2,
+        .mapBaseIndex = 29,
+        .paletteMode = 1, // 8bpp -- the backdrop's real color count (32) doesn't need this, but 8bpp sidesteps the 16-colors-per-4bpp-tile juggling entirely, and VRAM headroom is ample (see LoadPokePvPMenuBackdrop's own budget comment)
+        .priority = 3
     }
-    // POKEPVP (ADR-186, de-skin): the BattleDex arena BG2 backdrop is
-    // removed -- it ate screen rows 0-5/16-19 on every menu screen for
-    // decorative art with no functional value, and per the owner's
-    // request a minimalistic UI should not have anything competing with
-    // the actual menu content for the screen. BG0 (the real window/list
-    // layer) is the only background this menu uses now.
 };
 
 static const u8 sMenuCursorYMax[] = { 0, 1, 2, 4 }; // POKEPVP (ADR-189): back to 5 items, cursor 0-4
@@ -911,6 +974,19 @@ static void PokePvP_SanitizePlayerName(void)
     gSaveBlock2Ptr->playerName[PLAYER_NAME_LENGTH] = EOS;
 }
 
+// POKEPVP (2026-09-25 theme pass): loads the BG2 scenic backdrop. Palette
+// lands at bank 3 (BG_PLTT_ID(3)) -- clear of bank 0 (sBg_Pal), bank 2
+// (the window frame border, GetUserWindowGraphics), and bank 15
+// (sTextbox_Pal, the list text/fill colors). Tile data at charBaseIndex
+// 2 offset 0 (tile 0 within that char block), tilemap at mapBaseIndex 26
+// -- see sBgTemplate's own BG2 entry for why those slots are safe.
+static void LoadPokePvPMenuBackdrop(void)
+{
+    LoadPalette(sPokePvPBackdrop_Pal, BG_PLTT_ID(3), sizeof(sPokePvPBackdrop_Pal));
+    DecompressAndCopyTileDataToVram(2, sPokePvPBackdrop_Gfx, 0, 0, 0);
+    DecompressAndCopyTileDataToVram(2, sPokePvPBackdrop_Map, 0, 0, 1);
+}
+
 static bool32 MainMenuGpuInit(u8 a0)
 {
     u8 taskId;
@@ -948,6 +1024,7 @@ static bool32 MainMenuGpuInit(u8 a0)
     DeactivateAllTextPrinters();
     LoadPalette(sBg_Pal, BG_PLTT_ID(0), sizeof(sBg_Pal));
     LoadPalette(sTextbox_Pal, BG_PLTT_ID(15), sizeof(sTextbox_Pal));
+    LoadPokePvPMenuBackdrop();
     SetGpuReg(REG_OFFSET_WIN0H, 0);
     SetGpuReg(REG_OFFSET_WIN0V, 0);
     SetGpuReg(REG_OFFSET_WININ, 0);
@@ -974,9 +1051,9 @@ static void Task_SetWin0BldRegsAndCheckSaveFile(u8 taskId)
     {
         SetGpuReg(REG_OFFSET_WIN0H, 0);
         SetGpuReg(REG_OFFSET_WIN0V, 0);
-        SetGpuReg(REG_OFFSET_WININ, 0x0001);
-        SetGpuReg(REG_OFFSET_WINOUT, 0x0021);
-        SetGpuReg(REG_OFFSET_BLDCNT, BLDCNT_TGT1_BG0 | BLDCNT_TGT1_BG1 | BLDCNT_TGT1_BG3 | BLDCNT_TGT1_OBJ | BLDCNT_TGT1_BD | BLDCNT_EFFECT_DARKEN);
+        SetGpuReg(REG_OFFSET_WININ, 0x0001 | WININ_WIN0_BG2); // POKEPVP: let the BG2 backdrop show too
+        SetGpuReg(REG_OFFSET_WINOUT, 0x0021 | WINOUT_WIN01_BG2);
+        SetGpuReg(REG_OFFSET_BLDCNT, BLDCNT_TGT1_BG0 | BLDCNT_TGT1_BG1 | BLDCNT_TGT1_BG2 | BLDCNT_TGT1_BG3 | BLDCNT_TGT1_OBJ | BLDCNT_TGT1_BD | BLDCNT_EFFECT_DARKEN);
         SetGpuReg(REG_OFFSET_BLDALPHA, BLDALPHA_BLEND(0, 0));
         SetGpuReg(REG_OFFSET_BLDY, 0); // POKEPVP: selection is a real color swap now, not a darken
         // POKEPVP (ADR-085, D7): this product has no Continue/Mystery Gift
@@ -1023,6 +1100,7 @@ static void PrintSaveErrorStatus(u8 taskId, const u8 *str)
     gTasks[taskId].func = Task_SaveErrorStatus_RunPrinterThenWaitButton;
     BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
     ShowBg(0);
+    ShowBg(2);
     SetVBlankCallback(VBlankCB_MainMenu);
 }
 
@@ -1050,9 +1128,9 @@ static void Task_SetWin0BldRegsNoSaveFileCheck(u8 taskId)
     {
         SetGpuReg(REG_OFFSET_WIN0H, 0);
         SetGpuReg(REG_OFFSET_WIN0V, 0);
-        SetGpuReg(REG_OFFSET_WININ, 0x0001);
-        SetGpuReg(REG_OFFSET_WINOUT, 0x0021);
-        SetGpuReg(REG_OFFSET_BLDCNT, BLDCNT_TGT1_BG0 | BLDCNT_TGT1_BG1 | BLDCNT_TGT1_BG3 | BLDCNT_TGT1_OBJ | BLDCNT_TGT1_BD | BLDCNT_EFFECT_DARKEN);
+        SetGpuReg(REG_OFFSET_WININ, 0x0001 | WININ_WIN0_BG2); // POKEPVP: let the BG2 backdrop show too
+        SetGpuReg(REG_OFFSET_WINOUT, 0x0021 | WINOUT_WIN01_BG2);
+        SetGpuReg(REG_OFFSET_BLDCNT, BLDCNT_TGT1_BG0 | BLDCNT_TGT1_BG1 | BLDCNT_TGT1_BG2 | BLDCNT_TGT1_BG3 | BLDCNT_TGT1_OBJ | BLDCNT_TGT1_BD | BLDCNT_EFFECT_DARKEN);
         SetGpuReg(REG_OFFSET_BLDALPHA, BLDALPHA_BLEND(0, 0));
         SetGpuReg(REG_OFFSET_BLDY, 0); // POKEPVP: selection is a real color swap now, not a darken
         if (gTasks[taskId].tMenuType == MAIN_MENU_NEWGAME)
@@ -1135,9 +1213,9 @@ static void Task_PrintMainMenuText(u8 taskId)
     u16 pal;
     SetGpuReg(REG_OFFSET_WIN0H, 0);
     SetGpuReg(REG_OFFSET_WIN0V, 0);
-    SetGpuReg(REG_OFFSET_WININ, 0x0001);
-    SetGpuReg(REG_OFFSET_WINOUT, 0x0021);
-    SetGpuReg(REG_OFFSET_BLDCNT, BLDCNT_TGT1_BG0 | BLDCNT_TGT1_BG1 | BLDCNT_TGT1_BG3 | BLDCNT_TGT1_OBJ | BLDCNT_TGT1_BD | BLDCNT_EFFECT_DARKEN);
+    SetGpuReg(REG_OFFSET_WININ, 0x0001 | WININ_WIN0_BG2); // POKEPVP: let the BG2 backdrop show too
+    SetGpuReg(REG_OFFSET_WINOUT, 0x0021 | WINOUT_WIN01_BG2);
+    SetGpuReg(REG_OFFSET_BLDCNT, BLDCNT_TGT1_BG0 | BLDCNT_TGT1_BG1 | BLDCNT_TGT1_BG2 | BLDCNT_TGT1_BG3 | BLDCNT_TGT1_OBJ | BLDCNT_TGT1_BD | BLDCNT_EFFECT_DARKEN);
     SetGpuReg(REG_OFFSET_BLDALPHA, BLDALPHA_BLEND(0, 0));
     SetGpuReg(REG_OFFSET_BLDY, 0); // POKEPVP: selection is a real color swap now, not a darken
     if (gSaveBlock2Ptr->playerGender == MALE)
@@ -1291,6 +1369,7 @@ static void Task_WaitDma3AndFadeIn(u8 taskId)
         gTasks[taskId].func = Task_UpdateVisualSelection;
         BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
         ShowBg(0);
+        ShowBg(2);
             SetVBlankCallback(VBlankCB_MainMenu);
     }
 }
@@ -3478,6 +3557,7 @@ static void Task_PokePvPPostMatch(u8 taskId)
         ResetTempTileDataBuffers();
         gTasks[taskId].tSubCursorPos = 0;
         ShowBg(0);
+        ShowBg(2);
             SetVBlankCallback(VBlankCB_MainMenu);
         BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
         gTasks[taskId].tMGErrorMsgState++;
@@ -4047,14 +4127,14 @@ static void ClearSpritePickerContentArea(void)
 // MYSTERY GIFT curtain transition, unverified and out of scope here.
 static void EnableSpritePickerObjWindow(void)
 {
-    SetGpuReg(REG_OFFSET_WININ, 0x0011);  // BG0 + OBJ inside win0
-    SetGpuReg(REG_OFFSET_WINOUT, 0x0031); // BG0 + OBJ + color-effect outside win0
+    SetGpuReg(REG_OFFSET_WININ, 0x0011 | WININ_WIN0_BG2);  // BG0 + OBJ + BG2 backdrop inside win0
+    SetGpuReg(REG_OFFSET_WINOUT, 0x0031 | WINOUT_WIN01_BG2); // BG0 + OBJ + color-effect + BG2 backdrop outside win0
 }
 
 static void RestorePokePvPStandardWindow(void)
 {
-    SetGpuReg(REG_OFFSET_WININ, 0x0001);
-    SetGpuReg(REG_OFFSET_WINOUT, 0x0021);
+    SetGpuReg(REG_OFFSET_WININ, 0x0001 | WININ_WIN0_BG2);
+    SetGpuReg(REG_OFFSET_WINOUT, 0x0021 | WINOUT_WIN01_BG2);
 }
 
 static void DrawSpritePickerPreview(u8 taskId, u8 index)
@@ -4079,9 +4159,14 @@ static void DrawSpritePickerPreview(u8 taskId, u8 index)
     if (gTasks[taskId].data[4] == -1)
         DebugPrintf("POKEPVP: sprite picker preview alloc FAILED for class=%d (heap pressure)", index);
 
+    // POKEPVP (2026-09-25 theme pass): was name + 2 spaces + prompt on one
+    // line, which fit the old 192px-wide box but clips ("B=CAN") in the
+    // new 160px one -- real capture caught this ("BRENDAN" is the longest
+    // label). A newline instead of the wasted double space puts each half
+    // on its own line within this window's existing 4-tile height, with
+    // no risk of a proportional-font pixel-width guess being wrong again.
     ptr = StringCopy(buf, sPokePvPSpriteLabels[index]);
-    *ptr++ = CHAR_SPACE;
-    *ptr++ = CHAR_SPACE;
+    ptr = StringCopy(ptr, sString_Newline);
     StringCopy(ptr, sText_SpritePickerPrompt);
     PrintMessageOnWindow4(buf);
 }
@@ -4819,6 +4904,7 @@ static void Task_PokePvPInbox(u8 taskId)
         FreeTempTileDataBuffersIfPossible();
         ResetTempTileDataBuffers();
         ShowBg(0);
+        ShowBg(2);
             SetVBlankCallback(VBlankCB_MainMenu);
         DrawInboxItems(gTasks[taskId].tInboxSlot, gTasks[taskId].tSubCursorPos);
         BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
@@ -6185,7 +6271,18 @@ static void Task_ReturnToTileScreen(u8 taskId)
 static void MoveWindowByMenuTypeAndCursorPos(u8 menuType, u8 cursorPos)
 {
     u16 win0vTop, win0vBot;
-    SetGpuReg(REG_OFFSET_WIN0H, WIN_RANGE(18, 222));
+    // POKEPVP (2026-09-25 theme pass): WIN0H used to be one shared
+    // WIN_RANGE(18, 222) for every menuType, matching the old 192px-wide
+    // panel with 6px of outward padding on each side. The panel is now
+    // 160px wide (px 40-200) -- narrowing this unconditionally would also
+    // shrink the vanilla NEWGAME/CONTINUE/MYSTERYGIFT cases below, which
+    // are unreachable in this product (D7: it boots straight to
+    // MAIN_MENU_POKEPVP) but still compiled and sharing this function, so
+    // it's switched per menuType now, matching how WIN0V already is.
+    if (menuType == MAIN_MENU_POKEPVP)
+        SetGpuReg(REG_OFFSET_WIN0H, WIN_RANGE(34, 206)); // 40-6, 200+6 -- same 6px padding convention as before
+    else
+        SetGpuReg(REG_OFFSET_WIN0H, WIN_RANGE(18, 222));
     switch (menuType)
     {
     default:
@@ -6261,7 +6358,10 @@ static void PrintMessageOnWindow4(const u8 *str)
     AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 2, sTextColor1, 2, str);
     PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
     CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
-    SetGpuReg(REG_OFFSET_WIN0H, WIN_RANGE( 19, 221));
+    // POKEPVP (2026-09-25 theme pass): 5px padding either side of the
+    // panel's new 40-200px width, same convention as the old 19/221
+    // against the old 24-216px width.
+    SetGpuReg(REG_OFFSET_WIN0H, WIN_RANGE(35, 205));
     SetGpuReg(REG_OFFSET_WIN0V, WIN_RANGE(115, 157));
 }
 
