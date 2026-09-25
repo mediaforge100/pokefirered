@@ -737,6 +737,23 @@ static const struct WindowTemplate sPokePvPMenuPanelTemplate = {
     .bg = 0, .tilemapLeft = 3, .tilemapTop = 6, .width = 24, .height = 10
 };
 
+// POKEPVP (item — START MATCH submenu description box border): geometry-
+// only, never AddWindow'd, handed to MainMenu_DrawWindow the same way
+// sPokePvPMenuPanelTemplate is just above. Framing MAIN_MENU_WINDOW_ERROR's
+// own real geometry (tilemapTop=15, height=4 -> rows 15-18) would stamp a
+// border across rows 14-15, which is POKEPVP_4's own content row on this
+// screen -- MATCH HISTORY and the SPRITE picker can border that same
+// window directly only because they leave POKEPVP_4 blank; START MATCH
+// can't, since PRACTICE (or whichever mode lands in the 5th slot) is real
+// content there. This template frames only rows 16-18 (the description
+// text's own two rows, tilemapTop=17 height=2, sharing row 16 with the
+// panel's own bottom border rather than colliding with POKEPVP_4 at all)
+// -- see DrawStartMatchSubmenuItems's own ADR-297/302 history for why that
+// row was left borderless before.
+static const struct WindowTemplate sPokePvPSubmenuDescBorderTemplate = {
+    .bg = 0, .tilemapLeft = 3, .tilemapTop = 17, .width = 24, .height = 2
+};
+
 // POKEPVP (ADR-093): the move editor's list window. Added and removed on
 // demand (AddWindow/RemoveWindow) rather than living in sWindowTemplate:
 // at 18x18 tiles its buffer is ~10KB of heap, which there is no reason to
@@ -1954,6 +1971,17 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
     for (i = 0; i < 4; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
     CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+
+    // Drawn last, after every window's own commit above: MainMenu_DrawWindow
+    // does its own immediate CopyBgTilemapBufferToVram (see its own body),
+    // so running it any earlier would flush a bg tilemap buffer that
+    // POKEPVP_4's own COPYWIN_FULL commit hadn't populated yet -- the exact
+    // "wrong commit order" bug class ADR-302 root-caused for this same
+    // function. sPokePvPSubmenuDescBorderTemplate's rows (16-18) never touch
+    // POKEPVP_4's rows (14-15), so this is safe regardless of what the
+    // description text above did.
+    if (selectedIdx < n)
+        MainMenu_DrawWindow(&sPokePvPSubmenuDescBorderTemplate);
 }
 
 /* POKEPVP (UI plan slice 3): the START MATCH mode tree (Build Plan §2.2
@@ -3945,7 +3973,16 @@ static const u8 sText_SpritePickerPrompt[] = _("<>=CHANGE A=OK B=CANCEL");
 
 #define POKEPVP_SPRITE_PICKER_PAL_SLOT 6
 #define POKEPVP_SPRITE_PICKER_X 120
-#define POKEPVP_SPRITE_PICKER_Y 60
+// POKEPVP (sprite picker preview clipping): CreateSprite treats x/y as the
+// sprite's CENTER (OAM corner is derived from size at commit time), and
+// this pic is a fixed 64x64 OAM shape (sOamData_Normal). The shared panel
+// box (sPokePvPMenuPanelTemplate) this preview sits inside spans tilemap
+// rows 6-15, i.e. screen pixels 48-128. The old Y=60 centered the sprite
+// at pixel rows 28-92 -- 20px of the trainer's head/hat rendered above the
+// box's own top border, invisible/clipped by the border tile in front of
+// it. Y=86 centers the sprite at rows 54-118, a few pixels inside the box
+// on both edges.
+#define POKEPVP_SPRITE_PICKER_Y 86
 
 // POKEPVP (item 41, second real bug found this session): every other
 // PrintMessageOnWindow4 caller in this file passes a static/const string
