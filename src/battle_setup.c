@@ -966,6 +966,31 @@ static void CB2_EndPokePvPBattle(void)
     // deeper -- see PokePvP_ResetMailboxPumpState's own doc comment
     // (battle_controller_pokepvp.c) for the live evidence this closes.
     PokePvP_ResetMailboxPumpState();
+    // POKEPVP (ADR-303): the fourth member of the exact same family as the
+    // three resets above -- state set when a battle starts that the CB2
+    // ending it never cleared. gBattleTypeFlags is assigned (`=`, not
+    // `|=`) at every battle start, so nothing needs its old value after a
+    // battle, but BATTLE_TYPE_POKEPVP stayed set for the rest of the
+    // process once any PokePvP battle had run. HandlePresentationRecord's
+    // own "is a PokePvP battle in progress" gate is that bit alone, so
+    // after the first match every later match's *opening* presentation
+    // burst (SEND_OUT/PP_UPDATE, which arrive before the ROM has started
+    // that battle) was applied into the finished battle's dead context
+    // instead of being dropped the way a first match correctly drops it.
+    // PokePvP_CommitSwitchIn then emitted a real
+    // BtlController_EmitSwitchInAnim and set gBattleControllerExecFlags
+    // for a battler with no running battle to ever dispatch or clear it --
+    // a permanent `gate=pendingAck` pump jam, live-confirmed on both
+    // instances (logs/launcher-699232.log frame 132414 onward,
+    // logs/launcher-723384.log), which is the real mechanism behind the
+    // owner's "REMATCH just waits and times out", "re-queueing takes much
+    // longer" (the gateway correctly refuses with already_in_match until
+    // the jammed match forfeits on the inactivity clock) and "second match
+    // gets stuck on waiting for opponent forever" reports. Every reader of
+    // this bit lives inside battle code (battle_main.c,
+    // battle_controller_*.c, battle_message.c); none runs from the menu or
+    // post-match flow, so clearing it here costs nothing.
+    gBattleTypeFlags = 0;
     // POKEPVP (ADR-196): flag that a real battle just ended so
     // Task_WaitFadeAndPrintMainMenuText knows this CB2_InitMainMenu entry
     // (unlike a cold boot or a PC/team-builder/naming/options return) may
