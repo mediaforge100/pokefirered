@@ -1320,7 +1320,15 @@ static void DrawPokePvPMenuItems(u8 selectedIdx)
     // the top menu once here. Same "erase, don't occlude" discipline as
     // every sibling screen; done first, before the panel border below.
     ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
-    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    // POKEPVP (2026-09-25, scroll-flash fix): this used to be
+    // MainMenu_EraseWindow (an immediate commit) followed later by
+    // MainMenu_DrawWindow (a second immediate commit) -- two real,
+    // non-vblank-synced VRAM writes on every single top-menu D-pad press,
+    // the same mechanism already fixed in DrawStartMatchSubmenuItems/
+    // DrawPackPickerItems but missed here, since this function wasn't
+    // touched by either of those passes. *NoCommit + one explicit
+    // CopyBgTilemapBufferToVram(0) at the end, same fix shape.
+    MainMenu_EraseWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
     for (i = 0; i < 5; i++)
     {
         bool8 selected = (i == selectedIdx);
@@ -1332,15 +1340,14 @@ static void DrawPokePvPMenuItems(u8 selectedIdx)
     // wordmark it held was already deleted; the empty footer box it left
     // behind interfered with submenu content). Border is now the plain
     // 5-row template like every other screen.
-    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    MainMenu_DrawWindowNoCommit(&sPokePvPMenuPanelTemplate);
     for (i = 0; i < 5; i++)
         PutWindowTilemap(sWindowIds[i]);
-    // ADR-299: last copy is COPYWIN_FULL, not COPYWIN_GFX, matching every
-    // sibling screen -- window 5's own removed final COPYWIN_FULL call
-    // used to be the only full BG-tilemap flush this function had.
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < 5; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
-    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    // The one real hardware write for this whole redraw -- see this
+    // function's own "scroll-flash fix" comment above.
+    CopyBgTilemapBufferToVram(0);
 }
 
 static void Task_WaitDma3AndFadeIn(u8 taskId)
@@ -2494,20 +2501,23 @@ static void DrawInviteTargetTypeItems(u8 selectedIdx)
      * band. Erase before the panel is painted, never after: the erase
      * covers rows 14-19, which includes this panel's own last row and
      * bottom border. */
-    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    // POKEPVP (2026-09-25, scroll-flash fix): *NoCommit + one explicit
+    // commit at the end -- this is called on every D-pad press (2-row
+    // FRIENDS/RIVALS selector), same fix as DrawPokePvPMenuItems's own
+    // identical comment.
+    MainMenu_EraseWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    MainMenu_DrawWindowNoCommit(&sPokePvPMenuPanelTemplate);
     for (i = 0; i < 2; i++)
         PutWindowTilemap(sWindowIds[i]);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
     PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
-    // ADR-299: last copy is COPYWIN_FULL, matching every sibling screen --
-    // see DrawPokePvPMenuItems's identical comment.
     CopyWindowToVram(sWindowIds[0], COPYWIN_GFX);
     CopyWindowToVram(sWindowIds[1], COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_GFX);
+    CopyBgTilemapBufferToVram(0);
 }
 
 static void Task_PokePvPInviteTargetTypePicker(u8 taskId)
@@ -3849,7 +3859,10 @@ static void DrawProfileItems(u8 selectedIdx)
     // bottom border row, so erasing afterward wiped the border this
     // function had just painted.
     ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
-    MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    // POKEPVP (2026-09-25, scroll-flash fix): *NoCommit + one explicit
+    // commit -- called on every D-pad press, same fix as
+    // DrawPokePvPMenuItems's own identical comment.
+    MainMenu_EraseWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
     for (i = 0; i < 5; i++)
     {
         bool8 selected = (i == selectedIdx);
@@ -3859,10 +3872,10 @@ static void DrawProfileItems(u8 selectedIdx)
                 selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
         PutWindowTilemap(sWindowIds[i]);
     }
-    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
-    for (i = 0; i < 4; i++)
+    MainMenu_DrawWindowNoCommit(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 5; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
-    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    CopyBgTilemapBufferToVram(0);
 }
 
 static void Task_PokePvPProfile(u8 taskId)
