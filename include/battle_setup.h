@@ -48,6 +48,10 @@ u8 PokePvP_GetRealOpponentLevel(void);
 // StartPokePvPRealMatch; read by the mid-match switch resolver.
 void PokePvP_SetOpponentRevealedCount(u8 count);
 bool8 PokePvP_IsOnlineMode(void);
+// Playtest fallout (2026-09-26, owner-requested feature): the last
+// server-wide connected-session count received (POKEPVP_MSG_ONLINE_COUNT).
+// Returns FALSE, *count unwritten, until the first push has arrived.
+bool8 PokePvP_GetOnlineCount(u16 *count);
 bool8 PokePvP_IsRealMatchPending(void);
 void PokePvP_ClearRealMatchPending(void);
 // POKEPVP (ADR-207): HANDOFF item 7 -- the wait-task counterpart to

@@ -73,6 +73,11 @@ enum MainMenuWindow
     MAIN_MENU_WINDOW_POKEPVP_3, // MATCH HISTORY
     MAIN_MENU_WINDOW_POKEPVP_4, // OPTIONS
     MAIN_MENU_WINDOW_ERROR,
+    // Playtest fallout (2026-09-26, owner-requested feature): the small
+    // online-player-count line, bottom-left of the screen, outside the
+    // panel's own bordered geometry entirely -- see its own window
+    // template comment below for the exact tile math.
+    MAIN_MENU_WINDOW_ONLINE_COUNT,
     MAIN_MENU_WINDOW_COUNT
 };
 
@@ -276,10 +281,19 @@ static void DrawSocialRowMenuItems(u8 list, u8 selectedIdx);
 static void Task_PokePvPPostMatch(u8 taskId);
 static void Task_PokePvPPostMatchWait(u8 taskId);
 static void Task_PokePvPPostMatchRivalWait(u8 taskId);
+static void ReturnToPostMatchScreen(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId);
 static void SendLeaveQueue(void);
 static void SendSetSprite(u8 spriteId);
 static void DrawPokePvPMenuItems(u8 selectedIdx);
+// Playtest fallout (2026-09-26, owner-requested feature): the small
+// bottom-left online-player-count line -- see MAIN_MENU_WINDOW_ONLINE_
+// COUNT's own template comment for the geometry, and this function's own
+// body for why it never calls CopyBgTilemapBufferToVram itself (both call
+// sites -- DrawPokePvPMenuItems's shared batched commit, and
+// Task_HandleMenuInput's own occasional standalone refresh -- own that
+// decision instead).
+static void DrawOnlineCountItem(void);
 // POKEPVP (ADR-091): START MATCH -> AUTO-MATCH/INVITE MATCH submenu.
 static void DrawStartMatchSubmenuItems(u8 selectedIdx);
 static u8 StartMatchRowCount(void);
@@ -393,6 +407,18 @@ static EWRAM_DATA bool8 sPokePvPReturnToSocialFriends = FALSE;
 // DoNamingScreen, consumed in Task_UpdateVisualSelection to land straight
 // back on the PLAYER submenu (SPRITE/NAME) instead of the top menu.
 static EWRAM_DATA bool8 sPokePvPReturnToPlayerMenu = FALSE;
+
+// POKEPVP (playtest fallout, 2026-09-26): same shape again -- set right
+// before Task_PokePvPPostMatch hands off to Task_PokePvPInbox (a REMATCH
+// challenge arriving while the player sits on the post-match screen,
+// see that hand-off's own comment), consumed in Task_UpdateVisualSelection
+// to land back on the post-match screen instead of the top menu once the
+// inbox interaction (accept/decline/block/dismiss) finishes.
+static EWRAM_DATA bool8 sPokePvPReturnToPostMatch = FALSE;
+// The post-match screen's own cursor position, saved across the inbox
+// round trip above (Task_PokePvPInbox reuses tSubCursorPos, data[2], for
+// its own ACCEPT/DECLINE/BLOCK cursor).
+static EWRAM_DATA u8 sPokePvPPostMatchSavedCursor = 0;
 
 /* POKEPVP (UI plan slice 4): set when the player dismisses the challenge
  * inbox with B ("later"); cleared on every fresh menu init
@@ -565,6 +591,12 @@ static const u8 sText_RandomPack[] = _("RANDOM");
 // still level 100 -- only the FROZEN suffix drops there.
 static const u8 sText_QuickRulesLineEarly[] = _("3v3 LVL20");
 static const u8 sText_QuickRulesLineElite[] = _("6v6 LVL100");
+// Playtest fallout (2026-09-26, owner design ask): the bottom-left
+// online-count window's own label, its own line above the number --
+// MAIN_MENU_WINDOW_ONLINE_COUNT is only 5 tiles/40px wide (the free
+// margin left of the panel, ADR-295), too narrow for "ONLINE: 42" on one
+// line, so it wraps to two.
+static const u8 sText_OnlineCountLabel[] = _("ONLINE:");
 // POKEPVP (UI plan slice 3): the ready-check prompt (Build Plan §8 item
 // 2 -- both players must confirm within the window; the gateway's
 // timeout frame budget is held ROM-side by ready_check.c).
@@ -737,6 +769,35 @@ static const struct WindowTemplate sWindowTemplate[] = {
         .height = 4,
         .paletteNum = 15,
         .baseBlock = 0x001 // unchanged from original -- proven safe to alias CONTINUE's block, mutually exclusive draw
+    },
+    // Playtest fallout (2026-09-26, owner-requested feature): bottom-left
+    // corner of the screen, columns 0-4 (the left margin the 2026-09-25
+    // theme pass's panel-narrowing already left permanently free -- see
+    // this file's own "Rows 0-5/16-19 ... free for a 6th row" comment
+    // just above sPokePvPMenuPanelTemplate) -- entirely outside both the
+    // menu panel (tilemapLeft=5) and MAIN_MENU_WINDOW_ERROR's own geometry
+    // (also tilemapLeft=5), so it can be drawn and left visible
+    // continuously without ever colliding with either. Rows 17-18 (bottom
+    // rows) keep it clear of the top logo band too. baseBlock picked past
+    // POKEPVP_4's own 0x211 + its 40-tile allocation, not aliased with
+    // anything drawn at the same time as the top menu.
+    // Playtest fallout (2026-09-26, owner design ask): the two-line
+    // version (height=3, width=5, confined to columns 0-4) read as
+    // visually broken -- back to one line, "ONLINE: 2", which needs ~80px
+    // (10 tiles), wider than the columns 0-4 margin alone allows. Widened
+    // into columns 5-9 instead of columns 0-4 alone: those columns belong
+    // to the shared panel (rows 6-15) and MAIN_MENU_WINDOW_ERROR (rows
+    // 15-18) elsewhere in this file, but this window's own rows (17-18)
+    // only overlap ERROR's range, and ERROR is provably blank there --
+    // this window is only ever drawn while idling on the plain top menu
+    // (DrawPokePvPMenuItems/Task_HandleMenuInput's own MAIN_MENU_POKEPVP
+    // guard), a state that never puts anything into ERROR itself. Height
+    // kept at 2 (an already-proven size elsewhere in this file) rather
+    // than an untried height=1 -- no window in this file uses height=1
+    // for real text.
+    [MAIN_MENU_WINDOW_ONLINE_COUNT] = {
+        .bg = 0, .tilemapLeft = 0, .tilemapTop = 17, .width = 10, .height = 2,
+        .paletteNum = 15, .baseBlock = 0x241
     },
     [MAIN_MENU_WINDOW_COUNT] = DUMMY_WIN_TEMPLATE
 };
@@ -976,6 +1037,26 @@ static void PokePvP_SanitizePlayerName(void)
     gSaveBlock2Ptr->playerName[PLAYER_NAME_LENGTH] = EOS;
 }
 
+// Playtest fallout (2026-09-26, owner ask): same reasoning as
+// PokePvP_SanitizePlayerName just above -- vanilla only ever sets
+// optionsTextSpeed's real default (new_game.c, OPTIONS_TEXT_SPEED_MID)
+// during the New Game naming flow, which PokePvP's boot never runs
+// (ADR-085/159), so a genuinely fresh save's copy of this 3-bit field can
+// be raw, out-of-range save-block garbage. Vanilla's own defensive
+// fallback (GetPlayerTextSpeedDelay, new_menu_helpers.c) already clamps
+// an out-of-range value back to MID the first time any text is printed --
+// this runs first, at every menu entry, and defaults straight to FAST
+// instead, matching the owner's ask for a real, chosen default rather
+// than vanilla's own incidental one. Only ever fires for that genuinely
+// out-of-range case: once set to any real value (FAST here, or SLOW/MID
+// if the player later changes it in OPTIONS), the guard is permanently
+// false, so this never overwrites a player's own real choice.
+static void PokePvP_DefaultTextSpeedIfUnset(void)
+{
+    if (gSaveBlock2Ptr->optionsTextSpeed > OPTIONS_TEXT_SPEED_FAST)
+        gSaveBlock2Ptr->optionsTextSpeed = OPTIONS_TEXT_SPEED_FAST;
+}
+
 // POKEPVP (2026-09-25 theme pass): loads the BG2 scenic backdrop. Palette
 // lands at bank 3 (BG_PLTT_ID(3)) -- clear of bank 0 (sBg_Pal), bank 2
 // (the window frame border, GetUserWindowGraphics), and bank 15
@@ -994,6 +1075,7 @@ static bool32 MainMenuGpuInit(u8 a0)
     u8 taskId;
 
     PokePvP_SanitizePlayerName(); /* POKEPVP (ADR-159) */
+    PokePvP_DefaultTextSpeedIfUnset(); /* Playtest fallout (2026-09-26) */
     gPokePvPInboxSnoozed = FALSE; /* POKEPVP (UI plan slice 4): a fresh menu init re-arms the inbox popup for an unanswered challenge */
     SetVBlankCallback(NULL);
     SetGpuReg(REG_OFFSET_DISPCNT, 0);
@@ -1284,6 +1366,32 @@ static void Task_PrintMainMenuText(u8 taskId)
 // rather than one embedded panel. Shared by Task_PrintMainMenuText (first
 // draw, with the fade-in) and every redraw-on-return/redraw-on-cursor-move
 // path below.
+// Playtest fallout (2026-09-26, owner-requested feature): fills, prints,
+// and PutWindowTilemaps the small bottom-left online-count window, but
+// deliberately does not call CopyBgTilemapBufferToVram(0) itself -- same
+// "batch into the tilemap buffer, let the caller own the one real
+// hardware flush" discipline DrawPokePvPMenuItems's own scroll-flash fix
+// established. Draws nothing (leaves the window's last content alone)
+// until the first real push arrives (PokePvP_GetOnlineCount returns
+// FALSE before then) -- never shows a misleading "0".
+static void DrawOnlineCountItem(void)
+{
+    u16 count;
+    u8 buf[16];
+    u8 *dst;
+
+    if (!PokePvP_GetOnlineCount(&count))
+        return;
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_ONLINE_COUNT, PIXEL_FILL(10));
+    dst = StringCopy(buf, sText_OnlineCountLabel);
+    *dst++ = CHAR_SPACE;
+    dst = ConvertIntToDecimalStringN(dst, count, STR_CONV_MODE_LEFT_ALIGN, 5);
+    *dst = EOS;
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ONLINE_COUNT, FONT_NORMAL, 1, 2, sTextColor1, -1, buf);
+    PutWindowTilemap(MAIN_MENU_WINDOW_ONLINE_COUNT);
+    CopyWindowToVram(MAIN_MENU_WINDOW_ONLINE_COUNT, COPYWIN_GFX);
+}
+
 static void DrawPokePvPMenuItems(u8 selectedIdx)
 {
     // POKEPVP (ADR-189): back to 5 real rows. ADR-188 added LEADERBOARD as
@@ -1345,6 +1453,10 @@ static void DrawPokePvPMenuItems(u8 selectedIdx)
         PutWindowTilemap(sWindowIds[i]);
     for (i = 0; i < 5; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    // Playtest fallout (2026-09-26): batched into the same tilemap buffer
+    // as the 5 rows above, same shared commit just below -- see
+    // DrawOnlineCountItem's own doc comment.
+    DrawOnlineCountItem();
     // The one real hardware write for this whole redraw -- see this
     // function's own "scroll-flash fix" comment above.
     CopyBgTilemapBufferToVram(0);
@@ -1397,6 +1509,18 @@ static void Task_UpdateVisualSelection(u8 taskId)
         gTasks[taskId].func = Task_PokePvPTeamList;
         return;
     }
+    // POKEPVP (playtest fallout, 2026-09-26): same shape as
+    // sPokePvPReturnToTeamList above -- a REMATCH challenge that surfaced
+    // the inbox from the post-match screen (Task_PokePvPPostMatch) must
+    // land back there, not the top menu, once accept/decline/block/dismiss
+    // finishes.
+    if (sPokePvPReturnToPostMatch)
+    {
+        sPokePvPReturnToPostMatch = FALSE;
+        gTasks[taskId].tSubCursorPos = sPokePvPPostMatchSavedCursor;
+        ReturnToPostMatchScreen(taskId);
+        return;
+    }
     // POKEPVP (ADR-233): same shape as sPokePvPReturnToTeamList just
     // above -- skip the top menu (and PROFILE) entirely and land straight
     // back on FRIENDS, with any pending ADD FRIEND result shown
@@ -1440,6 +1564,15 @@ static void Task_UpdateVisualSelection(u8 taskId)
     gTasks[taskId].func = Task_HandleMenuInput;
 }
 
+// Playtest fallout (2026-09-26): what DrawOnlineCountItem last actually
+// drew, so Task_HandleMenuInput's own idle refresh below only touches
+// VRAM on a real change instead of every single idle frame. sPokePvP
+// OnlineCountDrawnKnown starts FALSE so the very first real push (which
+// DrawPokePvPMenuItems's own call already draws once, at menu entry)
+// isn't redundantly redrawn a second time the next idle frame.
+static u16 sPokePvPOnlineCountDrawn;
+static bool8 sPokePvPOnlineCountDrawnKnown;
+
 static void Task_HandleMenuInput(u8 taskId)
 {
     /* POKEPVP (UI plan slice 4): while the player idles on the top menu
@@ -1450,6 +1583,23 @@ static void Task_HandleMenuInput(u8 taskId)
      * reaches this task -- those own their own funcs -- so "don't
      * interrupt battles or destructive flows" (Build Plan2 item 6) is
      * structural, not a flag. */
+    // Playtest fallout (2026-09-26, owner-requested feature): the online
+    // count can change at any time, independent of any input -- refresh
+    // just this one small window (its own standalone commit, not batched
+    // with anything else) whenever it actually changes while idling here.
+    if (!gPaletteFade.active && gTasks[taskId].tMenuType == MAIN_MENU_POKEPVP)
+    {
+        u16 count;
+
+        if (PokePvP_GetOnlineCount(&count)
+         && (!sPokePvPOnlineCountDrawnKnown || count != sPokePvPOnlineCountDrawn))
+        {
+            DrawOnlineCountItem();
+            CopyBgTilemapBufferToVram(0);
+            sPokePvPOnlineCountDrawn = count;
+            sPokePvPOnlineCountDrawnKnown = TRUE;
+        }
+    }
     if (!gPaletteFade.active
      && gTasks[taskId].tMenuType == MAIN_MENU_POKEPVP
      && PokePvPInbox_Count() > 0
@@ -3468,23 +3618,38 @@ static void DrawPostMatchMeta(void)
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
     if (PokePvPPostMatch_Get(&pm))
     {
+        // ADR-30x (playtest fallout, 2026-09-26): these were raw ASCII
+        // literals ((u8)'m' etc, values 0x6D/0x73/0x54/0x2D) written
+        // straight into a FRLG text buffer. FRLG's own font uses a custom
+        // charmap, not ASCII (see charmap.txt / include/characters.h) --
+        // 'm' is really CHAR_m (0xE1), 's' is CHAR_s (0xE7), 'T' is CHAR_T
+        // (0xCE), '-' is CHAR_HYPHEN (0xAE). The raw ASCII byte values
+        // landed on whatever unrelated glyphs those slots hold instead,
+        // rendering as garbage ("?", stray letters) -- CHAR_SPACE just
+        // below was already correct (0x00 in both encodings), which is
+        // why only the letters/hyphen were visibly wrong.
         dst = buf;
         dst = ConvertIntToDecimalStringN(dst, pm.durationSec / 60, STR_CONV_MODE_LEFT_ALIGN, 1);
-        *dst++ = (u8)'m';
+        *dst++ = CHAR_m;
         dst = ConvertIntToDecimalStringN(dst, pm.durationSec % 60, STR_CONV_MODE_LEADING_ZEROS, 2);
-        *dst++ = (u8)'s';
+        *dst++ = CHAR_s;
         *dst++ = CHAR_SPACE;
         dst = ConvertIntToDecimalStringN(dst, pm.turnCount, STR_CONV_MODE_LEFT_ALIGN, 1);
-        *dst++ = (u8)'T';
+        *dst++ = CHAR_T;
         *dst++ = CHAR_SPACE;
         dst = ConvertIntToDecimalStringN(dst, pm.myRemaining, STR_CONV_MODE_LEFT_ALIGN, 1);
-        *dst++ = (u8)'-';
+        *dst++ = CHAR_HYPHEN;
         dst = ConvertIntToDecimalStringN(dst, pm.oppRemaining, STR_CONV_MODE_LEFT_ALIGN, 1);
         *dst = EOS;
         AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 2, sTextColor1, -1, buf);
     }
     PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
-    CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
+    // ADR-299's own lesson: this is the last draw call in the post-match
+    // screen's sequence (called right after DrawPostMatchItems, which
+    // already does its own COPYWIN_FULL flush on window 5) -- a
+    // COPYWIN_GFX-only commit here leaves that flush as stale, corrupting
+    // the bottom of the panel exactly like the 3 siblings ADR-299 found.
+    CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
 }
 
 static void DrawPostMatchItems(u8 selectedIdx)
@@ -3539,8 +3704,12 @@ static void ReturnToPostMatchScreen(u8 taskId)
 {
     ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
     MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-    DrawPostMatchItems(gTasks[taskId].tSubCursorPos);
+    // Playtest fallout (2026-09-26): same reordering as Task_PokePvPPostMatch's
+    // own case 0 -- see that call site's comment for the full reasoning.
+    // Meta first (its own erase happens here), Items last (paints the
+    // panel + EXIT fresh, nothing erases them again afterward).
     DrawPostMatchMeta();
+    DrawPostMatchItems(gTasks[taskId].tSubCursorPos);
     gTasks[taskId].tMGErrorMsgState = 1;
     gTasks[taskId].func = Task_PokePvPPostMatch;
 }
@@ -3588,9 +3757,26 @@ static void Task_PokePvPPostMatch(u8 taskId)
         /* First entry (from the menu-init chain): draw everything, then
          * fade in exactly like Task_WaitDma3AndFadeIn does for the top
          * menu (incl. the temp-tile-buffer release that prevents the
-         * ADR-158 backdrop leak on repeated inits). */
-        DrawPostMatchItems(0);
+         * ADR-158 backdrop leak on repeated inits).
+         *
+         * Playtest fallout (2026-09-26): order matters here, same lesson
+         * ADR-301/302 already learned for DrawStartMatchSubmenuItems --
+         * DrawPostMatchMeta's own MainMenu_EraseWindow(ERROR) blanks a
+         * 1-tile margin around ERROR's geometry (rows 14-19, columns
+         * 4-26), which reaches into the shared panel's own last content
+         * row (window POKEPVP_4/EXIT, row 14) and its left/right border
+         * columns (4, 25). Meta used to run *after* Items painted the
+         * panel, silently erasing EXIT's label and the border's bottom
+         * corners with nothing ever repainting them -- exactly the
+         * "borderless cream box floating below the panel" shape ADR-297/
+         * 300/301 already fought once, just never propagated to this
+         * screen. Meta now runs first (prepares the band), Items last
+         * (paints the panel + EXIT fresh, after Meta's own erase has
+         * already happened) -- Items' own MainMenu_DrawWindow/COPYWIN_FULL
+         * calls are real, immediate commits, so nothing erases them again
+         * afterward. */
         DrawPostMatchMeta();
+        DrawPostMatchItems(0);
         FreeTempTileDataBuffersIfPossible();
         ResetTempTileDataBuffers();
         gTasks[taskId].tSubCursorPos = 0;
@@ -3603,6 +3789,42 @@ static void Task_PokePvPPostMatch(u8 taskId)
     case 1:
         if (gPaletteFade.active)
             return;
+        // POKEPVP (playtest fallout, 2026-09-26, owner design ask): a
+        // REMATCH challenge arriving while sitting right here on the
+        // post-match screen used to be invisible until the player left
+        // to the top menu (Task_HandleMenuInput's own inbox poll never
+        // runs for this screen) -- exactly the "got the challenge after
+        // exiting" report. Polls for a REMATCH-flagged entry specifically
+        // (not any ordinary challenge/invite -- those still only surface
+        // at the top menu, unchanged) and pops the same real ACCEPT/
+        // DECLINE/BLOCK inbox screen used everywhere else, so this is
+        // provably the same already-tested rendering, not a new custom
+        // popup that could introduce its own visual bug. tSubCursorPos is
+        // saved/restored across the round trip (Task_PokePvPInbox reuses
+        // the same data slot for its own cursor) so the post-match cursor
+        // doesn't visibly jump on return.
+        if (!gPokePvPInboxSnoozed)
+        {
+            u8 i;
+            u8 count = PokePvPInbox_Count();
+
+            for (i = 0; i < count; i++)
+            {
+                PokePvPInboxEntry entry;
+
+                if (PokePvPInbox_Get(i, &entry) && (entry.flags & POKEPVP_INBOX_FLAG_REMATCH))
+                {
+                    sPokePvPPostMatchSavedCursor = gTasks[taskId].tSubCursorPos;
+                    sPokePvPReturnToPostMatch = TRUE;
+                    gTasks[taskId].tInboxSlot = i;
+                    gTasks[taskId].tSubCursorPos = 0;
+                    BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+                    gTasks[taskId].tMGErrorMsgState = 0;
+                    gTasks[taskId].func = Task_PokePvPInbox;
+                    return;
+                }
+            }
+        }
         MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
         if (JOY_NEW(A_BUTTON))
         {
@@ -3929,7 +4151,16 @@ static void DrawPlayerMenuItems(u8 selectedIdx)
         MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
         MAIN_MENU_WINDOW_POKEPVP_4,
     };
-    const u8 *const sLabels[] = { sText_PlayerMenuSprite, sText_PlayerMenuName };
+    // Playtest fallout (2026-09-26, owner ask): NAME removed for now --
+    // it only ever edited FireRed's own local save-block player name, with
+    // no wire message and no effect on any player-facing name shown
+    // anywhere else (opponent name, match history, social lists all come
+    // from the account's own registered displayName instead). SPRITE is
+    // the only real row now; row 1 stays blank (sString_Dummy, same
+    // "intentionally unlabeled" convention DrawPostMatchItems already uses
+    // for its own dummy row) rather than removing the row's window
+    // entirely, since sPokePvPMenuPanelTemplate's border spans all 5.
+    const u8 *const sLabels[] = { sText_PlayerMenuSprite, sString_Dummy };
     u8 i;
 
     for (i = 0; i < 5; i++)
@@ -3956,37 +4187,23 @@ static void Task_PokePvPPlayerMenu(u8 taskId)
 
     if (JOY_NEW(A_BUTTON))
     {
+        // Playtest fallout (2026-09-26, owner ask): NAME's own branch
+        // (DoNamingScreen(NAMING_SCREEN_PLAYER, ...) -> sPokePvP
+        // ReturnToPlayerMenu) removed for now -- see DrawPlayerMenuItems'
+        // own doc comment for why. SPRITE is the only real row; row 1 is
+        // an unselectable blank (DPAD_DOWN below no longer reaches it), so
+        // this is unconditional now rather than branching on tSubCursorPos.
         PlaySE(SE_SELECT);
-        if (gTasks[taskId].tSubCursorPos == 0)
-        {
-            // SPRITE: same trainer-sprite picker as before (ADR-209),
-            // but its own confirm no longer chains into the naming
-            // screen -- see Task_PokePvPSpritePicker's own A-button
-            // branch. Explicit tMGErrorMsgState reset before the handoff
-            // (ADR-214's own lesson: this task struct is reused all
-            // session, so a stale nonzero value left by an earlier
-            // screen would skip the picker's own case 0 setup entirely).
-            gTasks[taskId].tSubCursorPos = 0;
-            gTasks[taskId].tMGErrorMsgState = 0;
-            gTasks[taskId].func = Task_PokePvPSpritePicker;
-        }
-        else
-        {
-            // NAME: DoNamingScreen tears down every task itself
-            // (EnterPokeStorage-style) -- this screen's own window
-            // buffers/task must be freed first, same as every other
-            // DoNamingScreen call site in this file (ADR-233's own
-            // ADD FRIEND fix named this exact class of gap when it was
-            // missing at that call site; built correctly here from the
-            // start). sPokePvPReturnToPlayerMenu (ADR-233's own
-            // sPokePvPReturnToSocialFriends shape) lands the player back
-            // on this submenu directly afterward instead of the top menu.
-            sPokePvPReturnToPlayerMenu = TRUE;
-            gExitStairsMovementDisabled = FALSE;
-            FreeAllWindowBuffers();
-            DestroyTask(taskId);
-            DoNamingScreen(NAMING_SCREEN_PLAYER, gSaveBlock2Ptr->playerName, gSaveBlock2Ptr->playerGender, 0, 0, CB2_InitMainMenu);
-        }
+        // SPRITE: same trainer-sprite picker as before (ADR-209), but its
+        // own confirm no longer chains into the naming screen -- see
+        // Task_PokePvPSpritePicker's own A-button branch. Explicit
+        // tMGErrorMsgState reset before the handoff (ADR-214's own lesson:
+        // this task struct is reused all session, so a stale nonzero value
+        // left by an earlier screen would skip the picker's own case 0
+        // setup entirely).
+        gTasks[taskId].tSubCursorPos = 0;
+        gTasks[taskId].tMGErrorMsgState = 0;
+        gTasks[taskId].func = Task_PokePvPSpritePicker;
     }
     else if (JOY_NEW(B_BUTTON))
     {
@@ -3995,16 +4212,8 @@ static void Task_PokePvPPlayerMenu(u8 taskId)
         gTasks[taskId].func = Task_PokePvPProfile;
         DrawProfileItems(1);
     }
-    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
-    {
-        gTasks[taskId].tSubCursorPos--;
-        DrawPlayerMenuItems(gTasks[taskId].tSubCursorPos);
-    }
-    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
-    {
-        gTasks[taskId].tSubCursorPos++;
-        DrawPlayerMenuItems(gTasks[taskId].tSubCursorPos);
-    }
+    // DPAD_UP/DOWN removed: SPRITE (row 0) is the only real row now, so
+    // there is nothing left to navigate to.
 }
 
 // ---------------------------------------------------------------------------
@@ -4996,7 +5205,51 @@ static void Task_PokePvPInbox(u8 taskId)
                     SendInboxAction(gTasks[taskId].tInboxSlot, 0,
                         PokePvPTeamBuilder_GetActiveSlot());
                     PokePvPInbox_Remove(gTasks[taskId].tInboxSlot);
-                    LeaveInboxToMenu(taskId);
+                    // Playtest fallout (2026-09-26): this shortcut never
+                    // went through Task_PokePvPTeamSelector's own shared
+                    // tail (StartPokePvPMatchWithTeam), which is the only
+                    // thing that ever arms StartPokePvPAutoMatch()/enters
+                    // Task_PokePvPWaitForRealOpponent -- so a REMATCH
+                    // accepted from here paired for real over the wire
+                    // (REAL_MATCH_PENDING, REAL_OPPONENT_MON all arrived
+                    // and were silently buffered, exempted from needing a
+                    // battle in progress per HandlePresentationRecord's own
+                    // pre-battle switch) but the ROM never actually
+                    // launched it -- confirmed live: the acceptor sat here
+                    // indefinitely while the requester alone entered a real
+                    // battle against an opponent who could never answer,
+                    // and the acceptor's own next PLAY AGAIN failed with
+                    // "already_in_match" (a fresh, unrelated queueJoin
+                    // against an account already committed to the real
+                    // match nothing ever started). This bug was always
+                    // real and always here (ADR-302's own shortcut, not
+                    // introduced by this session's post-match-screen entry
+                    // point) -- it was simply never reachable before this
+                    // session's other fixes made the REMATCH-accept wire
+                    // path actually succeed for the first time. Same check
+                    // as StartPokePvPMatchWithTeam's own tail, verbatim.
+                    //
+                    // This branch never reaches LeaveInboxToMenu, the one
+                    // place sPokePvPReturnToPostMatch is normally consumed
+                    // -- clear it explicitly here so a stale TRUE (set if
+                    // this challenge was surfaced from the post-match
+                    // screen) can never wrongly redirect some later,
+                    // unrelated inbox exit back to a screen that has
+                    // nothing to do with it.
+                    sPokePvPReturnToPostMatch = FALSE;
+                    if (PokePvP_IsOnlineMode() || PokePvP_IsRealMatchPending())
+                    {
+                        ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+                        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+                        gTasks[taskId].tMGErrorMsgState = 0;
+                        gTasks[taskId].func = Task_PokePvPWaitForRealOpponent;
+                    }
+                    else
+                    {
+                        FreeAllWindowBuffers();
+                        DestroyTask(taskId);
+                        StartPokePvPAutoMatch();
+                    }
                     break;
                 }
                 DrawTeamSelectorItems(0);
