@@ -52,6 +52,15 @@ bool8 PokePvP_IsOnlineMode(void);
 // server-wide connected-session count received (POKEPVP_MSG_ONLINE_COUNT).
 // Returns FALSE, *count unwritten, until the first push has arrived.
 bool8 PokePvP_GetOnlineCount(u16 *count);
+// 2026-10-01 playtest insight: how many sessions are waiting in the
+// queue we're currently in (POKEPVP_MSG_QUEUE_COUNT), for the "IN
+// QUEUE: N" line under the waiting screen. Same FALSE-until-first-push
+// contract as PokePvP_GetOnlineCount above, but unlike that one, must be
+// cleared at the start of every new wait episode -- see
+// PokePvP_ClearQueueCount and sPokePvPQueueCount's own doc comment
+// (battle_controller_pokepvp.c) for why.
+bool8 PokePvP_GetQueueCount(u16 *count);
+void PokePvP_ClearQueueCount(void);
 bool8 PokePvP_IsRealMatchPending(void);
 void PokePvP_ClearRealMatchPending(void);
 // POKEPVP (ADR-207): HANDOFF item 7 -- the wait-task counterpart to

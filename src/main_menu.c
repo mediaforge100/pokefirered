@@ -239,6 +239,13 @@ static void Task_ExecuteMainMenuSelection(u8 taskId);
 static void Task_MysteryGiftError(u8 taskId);
 static void Task_PokePvPMenuStub(u8 taskId);
 static void Task_PokePvPMatchHistory(u8 taskId);
+// 2026-10-01, owner-directed feature: GUIDE -- a concept list (top-menu
+// row 3, GUIDE's new slot) opening into a scrolling detail text box per
+// concept. See DrawGuideConceptItems's own doc comment for the full
+// design.
+static void DrawGuideConceptItems(u8 selectedIdx);
+static void Task_PokePvPGuideConceptList(u8 taskId);
+static void Task_PokePvPGuideConceptDetail(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromHistory(u8 taskId);
 // POKEPVP (ADR-189): Task_PokePvPLeaderboard / Task_PokePvPReturnToTop-
 // MenuFromLeaderboard (ADR-188) removed with the top menu's 6th row --
@@ -294,6 +301,7 @@ static void DrawPokePvPMenuItems(u8 selectedIdx);
 // Task_HandleMenuInput's own occasional standalone refresh -- own that
 // decision instead).
 static void DrawOnlineCountItem(void);
+static void DrawQueueCountLine(void);
 // POKEPVP (ADR-091): START MATCH -> AUTO-MATCH/INVITE MATCH submenu.
 static void DrawStartMatchSubmenuItems(u8 selectedIdx);
 static u8 StartMatchRowCount(void);
@@ -452,6 +460,11 @@ static const u8 sText_TeamBuilder[] = _("TEAM BUILDER");
 // BattleDex creative (pokepvp_title1.png) -- labels only, same stubs.
 static const u8 sText_Profile[] = _("PROFILE");
 static const u8 sText_MatchHistory[] = _("MATCH HISTORY");
+// 2026-10-01, owner-directed restructure: MATCH HISTORY moves under
+// PROFILE as a 3rd row (same shape ADR-238 used to add PLAYER there),
+// reusing sText_MatchHistory verbatim -- GUIDE takes its old top-menu
+// slot (sLabels in DrawPokePvPMenuItems).
+static const u8 sText_Guide[] = _("GUIDE");
 static const u8 sText_HistoryWSep[] = _("   W: ");
 static const u8 sText_HistoryL[] = _("  L: ");
 static const u8 sText_HistoryEmpty[] = _("No matches yet.");
@@ -509,6 +522,9 @@ static const u8 sText_PreparingTeamBuilder[] = _("Preparing team builder…");
 // PrintLinkStandbyMsg's own POKEPVP note), rather than duplicating the
 // same text as a second constant.
 const u8 gText_PokePvPWaitingForOpponent[] = _("Waiting for opponent…");
+// 2026-10-01 playtest insight: the second line under the waiting
+// message, "IN QUEUE: N" -- see DrawQueueCountLine's own doc comment.
+static const u8 sText_QueueCountLabel[] = _("IN QUEUE: ");
 // POKEPVP (ADR-124): the AUTO-MATCH wait's honest timeout message.
 static const u8 sText_NoOpponentFound[] = _("No opponent found.");
 // POKEPVP (ADR-207, HANDOFF item 7): the AUTO-MATCH/INVITE wait's honest
@@ -1392,6 +1408,33 @@ static void DrawOnlineCountItem(void)
     CopyWindowToVram(MAIN_MENU_WINDOW_ONLINE_COUNT, COPYWIN_GFX);
 }
 
+// 2026-10-01 playtest insight: "IN QUEUE: N" as a second line under
+// gText_PokePvPWaitingForOpponent, inside the same MAIN_MENU_WINDOW_ERROR
+// window the wait screens already use (PrintMessageOnWindow4). Printed at
+// y=18 -- below the primary line's own y=2 scrolling text, still inside
+// this window's 4-tile (32px) height -- without ever calling
+// FillWindowPixelBuffer itself, so it never disturbs whatever
+// PrintMessageOnWindow4 already drew above it; only CopyWindowToVram's
+// own COPYWIN_GFX flushes the new pixels. Safe to call repeatedly: every
+// real redraw of the primary message (PrintMessageOnWindow4, including
+// TickReadyCheckPrompt's own prompt text) starts with its own
+// FillWindowPixelBuffer, which clears this line along with everything
+// else in the window -- there is no stale-leftover case to guard against.
+static void DrawQueueCountLine(void)
+{
+    u16 count;
+    u8 buf[24];
+    u8 *dst;
+
+    if (!PokePvP_GetQueueCount(&count))
+        return;
+    dst = StringCopy(buf, sText_QueueCountLabel);
+    dst = ConvertIntToDecimalStringN(dst, count, STR_CONV_MODE_LEFT_ALIGN, 5);
+    *dst = EOS;
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 18, sTextColor1, -1, buf);
+    CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
+}
+
 static void DrawPokePvPMenuItems(u8 selectedIdx)
 {
     // POKEPVP (ADR-189): back to 5 real rows. ADR-188 added LEADERBOARD as
@@ -1416,7 +1459,7 @@ static void DrawPokePvPMenuItems(u8 selectedIdx)
     };
     const u8 *const sLabels[] = {
         sText_StartMatch, sText_TeamBuilder, sText_Profile,
-        sText_MatchHistory, sText_Options,
+        sText_Guide, sText_Options,
     };
     u8 i;
 
@@ -1573,6 +1616,18 @@ static void Task_UpdateVisualSelection(u8 taskId)
 static u16 sPokePvPOnlineCountDrawn;
 static bool8 sPokePvPOnlineCountDrawnKnown;
 
+// 2026-10-01: same "only touch VRAM on a real change" dedupe as
+// sPokePvPOnlineCountDrawn above, shared by both wait tasks since only
+// one is ever on screen at a time. Both tasks' own case 0 resets
+// sPokePvPQueueCountDrawnKnown to FALSE alongside PokePvP_ClearQueueCount
+// -- deliberately a *separate* reset, not inferred from the latter, since
+// a fresh episode's first real push could coincidentally carry the exact
+// same count as the last thing drawn for the *previous* episode, which
+// would otherwise skip the redraw this window's own fresh
+// PrintMessageOnWindow4 fill just blanked.
+static u16 sPokePvPQueueCountDrawn;
+static bool8 sPokePvPQueueCountDrawnKnown;
+
 static void Task_HandleMenuInput(u8 taskId)
 {
     /* POKEPVP (UI plan slice 4): while the player idles on the top menu
@@ -1692,16 +1747,15 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
             }
             else if (gTasks[taskId].tCursorPos == 3)
             {
-                /* POKEPVP (ADR-168): MATCH HISTORY -- real screen now
-                 * (was LEADERBOARD/stub). The task draws whatever the
-                 * launcher already buffered in history.c; fade back in
-                 * like the START MATCH/Team Builder branches above (the
-                 * A-press already blacked the screen). */
-                // POKEPVP (ADR-189): reset the draw-once latch explicitly --
-                // see tScreenDrawn's own comment for why this can't be
-                // trusted to already be 0.
-                gTasks[taskId].tScreenDrawn = 0;
-                gTasks[taskId].func = Task_PokePvPMatchHistory;
+                /* 2026-10-01, owner-directed restructure: GUIDE takes
+                 * MATCH HISTORY's old top-menu slot (see
+                 * Task_PokePvPGuide's own doc comment for where MATCH
+                 * HISTORY moved -- PROFILE's own 3rd row now). Same
+                 * "redraw into the existing windows and fade back in"
+                 * shape as START MATCH/Team Builder/PROFILE above. */
+                gTasks[taskId].tSubCursorPos = 0;
+                DrawGuideConceptItems(0);
+                gTasks[taskId].func = Task_PokePvPGuideConceptList;
                 BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
             }
             else
@@ -1921,21 +1975,13 @@ static void Task_PokePvPMatchHistory(u8 taskId)
         recentCount = PokePvPProfile_RecentCount();
 
 
-        // Window 0: the permanent NAME#1234 tag.
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
-        dst = buf;
-        if (haveProfile && profile.tag[0] != EOS)
-            dst = StringCopy(dst, profile.tag);
-        else
-            dst = StringCopy(dst, sText_ProfileNoTag);
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
-        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
-        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_FULL);
-
-        // Window 1: M/W/L/T on one line (qualifying matches only, per
+        // 2026-10-01, owner-directed rework ("mainly display statistics:
+        // number of matches, wins, losses"): M/W/L/T now leads in window
+        // 0, the panel's first/most prominent slot -- the tag (still
+        // real, useful content, just not the headline) moves to window 1.
+        // Window 0: M/W/L/T on one line (qualifying matches only, per
         // ADR-175's counts_for_stats).
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(10));
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
         dst = buf;
         if (haveProfile)
         {
@@ -1955,6 +2001,19 @@ static void Task_PokePvPMatchHistory(u8 taskId)
         {
             dst = StringCopy(dst, sText_ProfileEmpty);
         }
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
+        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_FULL);
+
+        // Window 1: the permanent NAME#1234 tag (moved from window 0 --
+        // see this block's own doc comment above).
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(10));
+        dst = buf;
+        if (haveProfile && profile.tag[0] != EOS)
+            dst = StringCopy(dst, profile.tag);
+        else
+            dst = StringCopy(dst, sText_ProfileNoTag);
         *dst = EOS;
         AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
         PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
@@ -2059,15 +2118,23 @@ static void Task_PokePvPMatchHistory(u8 taskId)
 
     if (JOY_NEW(B_BUTTON))
     {
+        // 2026-10-01, owner-directed restructure: MATCH HISTORY is now
+        // reached from PROFILE (its 3rd row), not the top menu directly
+        // -- B returns there instead of the top menu, same immediate
+        // "no fade, redraw and hand back" shape Task_PokePvPPlayerMenu's
+        // own B-button uses to return to the same screen.
         PlaySE(SE_SELECT);
         MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
-        gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromHistory;
+        gTasks[taskId].tSubCursorPos = 2;
+        gTasks[taskId].func = Task_PokePvPProfile;
+        DrawProfileItems(2);
     }
 }
 
 /* POKEPVP (ADR-168): fade-out already ran (B above); redraw the top menu
- * and hand back to selection, same as Task_PokePvPReturnToTopMenuFromSubmenu. */
+ * and hand back to selection, same as Task_PokePvPReturnToTopMenuFromSubmenu.
+ * Still used by Task_PokePvPGuideConceptList's own B-button (GUIDE is a
+ * direct top-menu row, unlike MATCH HISTORY above). */
 static void Task_PokePvPReturnToTopMenuFromHistory(u8 taskId)
 {
     if (gPaletteFade.active)
@@ -2076,6 +2143,187 @@ static void Task_PokePvPReturnToTopMenuFromHistory(u8 taskId)
     BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
     gTasks[taskId].tCursorPos = 0;
     gTasks[taskId].func = Task_UpdateVisualSelection;
+}
+
+// ---------------------------------------------------------------------------
+// 2026-10-01, owner-directed feature: GUIDE. A concept list (this
+// project's own 5-row panel, same shape as every other picker in this
+// file) opening into a scrolling detail text box per concept, reusing
+// MAIN_MENU_WINDOW_ERROR and the exact RunTextPrinters-pumped scrolling
+// mechanism PrintMessageOnWindow4/the wait screens already use -- no new
+// window geometry, no vendored upstream edits. Content lives as plain
+// ROM-resident string constants (zero EWRAM/IWRAM cost, unlike a runtime
+// buffer), which matters on this project: EWRAM is already at ~99% (see
+// CLAUDE.md's pinned-versions history) and ROM space is the one budget
+// with real headroom (45.99% used).
+//
+// The 5 concepts below are a first, functional set covering mechanics
+// this project's own menus already reference (queues, ready checks,
+// battle packs, match types, ratings) -- real placeholder *content*, not
+// placeholder *code*; swapping the text or adding more concepts (up to
+// a scrolling list, not built here) is a content change, not a redesign.
+// ---------------------------------------------------------------------------
+
+static const u8 sText_GuideConceptQueues[] = _("QUEUES");
+static const u8 sText_GuideConceptReadyCheck[] = _("READY CHECK");
+static const u8 sText_GuideConceptBattlePacks[] = _("BATTLE PACKS");
+static const u8 sText_GuideConceptMatchTypes[] = _("MATCH TYPES");
+static const u8 sText_GuideConceptRatings[] = _("RATINGS");
+
+static const u8 sText_GuideBodyQueues[] = _(
+    "A queue is a shared waiting room for\n"
+    "one match type. AUTO-MATCH joins the\n"
+    "queue for your chosen pack; PLAY\n"
+    "AGAIN rejoins the same one.\n"
+    "\n"
+    "IN QUEUE shows how many players are\n"
+    "waiting with you right now.");
+static const u8 sText_GuideBodyReadyCheck[] = _(
+    "Once two players are matched, both\n"
+    "get a short window to confirm with\n"
+    "A before the battle starts.\n"
+    "\n"
+    "Missing the window or pressing B\n"
+    "returns you to the queue -- it does\n"
+    "not count as a loss.");
+static const u8 sText_GuideBodyBattlePacks[] = _(
+    "A battle pack is a ready-made team\n"
+    "for QUICK EARLY/QUICK ELITE -- pick\n"
+    "a pack instead of building your own\n"
+    "team first.\n"
+    "\n"
+    "CUSTOM ELITE uses a team you built\n"
+    "yourself in TEAM BUILDER instead.");
+static const u8 sText_GuideBodyMatchTypes[] = _(
+    "AUTO-MATCH pairs you with anyone\n"
+    "waiting in the same queue.\n"
+    "\n"
+    "INVITE MATCH challenges one real\n"
+    "friend or rival by name instead of\n"
+    "matching with a stranger.\n"
+    "\n"
+    "PRACTICE battles a local AI -- it\n"
+    "never affects your real record.");
+static const u8 sText_GuideBodyRatings[] = _(
+    "MATCH HISTORY (under PROFILE) shows\n"
+    "your total matches, wins, and\n"
+    "losses, plus a record against each\n"
+    "opponent you've played.\n"
+    "\n"
+    "Only real, completed matches count\n"
+    "toward these numbers -- PRACTICE\n"
+    "never does.");
+
+struct PokePvPGuideConcept
+{
+    const u8 *label;
+    const u8 *body;
+};
+
+static const struct PokePvPGuideConcept sGuideConcepts[] = {
+    { sText_GuideConceptQueues, sText_GuideBodyQueues },
+    { sText_GuideConceptReadyCheck, sText_GuideBodyReadyCheck },
+    { sText_GuideConceptBattlePacks, sText_GuideBodyBattlePacks },
+    { sText_GuideConceptMatchTypes, sText_GuideBodyMatchTypes },
+    { sText_GuideConceptRatings, sText_GuideBodyRatings },
+};
+#define POKEPVP_GUIDE_CONCEPT_COUNT (sizeof(sGuideConcepts) / sizeof(sGuideConcepts[0]))
+
+// Same 5-window/one-panel-border shape as DrawPokePvPMenuItems/
+// DrawProfileItems. POKEPVP_GUIDE_CONCEPT_COUNT is 5 -- exactly this
+// panel's own row count -- so every row is a real concept with no
+// scrolling/pagination needed yet; a 6th concept would need that, not
+// attempted here.
+static void DrawGuideConceptItems(u8 selectedIdx)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    u8 i;
+
+    ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+    MainMenu_EraseWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    for (i = 0; i < POKEPVP_GUIDE_CONCEPT_COUNT; i++)
+    {
+        bool8 selected = (i == selectedIdx);
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+            selected ? sTextColorSelected : sTextColor1, -1, sGuideConcepts[i].label);
+        PutWindowTilemap(sWindowIds[i]);
+    }
+    MainMenu_DrawWindowNoCommit(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < POKEPVP_GUIDE_CONCEPT_COUNT; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyBgTilemapBufferToVram(0);
+}
+
+static void Task_PokePvPGuideConceptList(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tMGErrorMsgState = 0;
+        gTasks[taskId].func = Task_PokePvPGuideConceptDetail;
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+        gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromHistory;
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+        DrawGuideConceptItems(gTasks[taskId].tSubCursorPos);
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < POKEPVP_GUIDE_CONCEPT_COUNT - 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+        DrawGuideConceptItems(gTasks[taskId].tSubCursorPos);
+    }
+}
+
+// The detail view: the selected concept's full body text, scrolled into
+// MAIN_MENU_WINDOW_ERROR exactly like PrintMessageOnWindow4's own
+// mechanism (same window, same RunTextPrinters pump -- this project's
+// own ADR-191/237 already found and fixed the "forgot to pump this"
+// bug class once; this reuses the proven, already-pumped helper outright
+// rather than re-deriving it). tMGErrorMsgState mirrors the wait
+// screens' own case-0/case-1 shape: state 0 kicks off the print, state 1
+// waits for it to finish before accepting B.
+static void Task_PokePvPGuideConceptDetail(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    switch (gTasks[taskId].tMGErrorMsgState)
+    {
+    case 0:
+        PrintMessageOnWindow4(sGuideConcepts[gTasks[taskId].tSubCursorPos].body);
+        gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 1:
+        RunTextPrinters();
+        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
+            gTasks[taskId].tMGErrorMsgState++;
+        break;
+    case 2:
+        if (JOY_NEW(B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            DrawGuideConceptItems(gTasks[taskId].tSubCursorPos);
+            gTasks[taskId].func = Task_PokePvPGuideConceptList;
+        }
+        break;
+    }
 }
 
 // POKEPVP (ADR-189): Task_PokePvPLeaderboard / Task_PokePvPReturnToTop-
@@ -2969,6 +3217,11 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
         // above -- a stale busy flag from an earlier, already-abandoned
         // wait must not bleed into this new one.
         PokePvP_ClearOpponentBusy();
+        // 2026-10-01: same reasoning, for the "IN QUEUE: N" line -- see
+        // sPokePvPQueueCountDrawnKnown's own doc comment for why both
+        // halves (the value and the redraw-dedupe) need resetting here.
+        PokePvP_ClearQueueCount();
+        sPokePvPQueueCountDrawnKnown = FALSE;
         break;
     case 1:
         RunTextPrinters();
@@ -3058,6 +3311,20 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
         }
 
         gTasks[taskId].tWaitFrames++;
+        if (!ready)
+        {
+            // 2026-10-01 playtest insight: "IN QUEUE: N" -- only while
+            // still genuinely waiting (a `ready` opponent tears this
+            // window down below, nothing left to redraw into).
+            u16 queueCount;
+            if (PokePvP_GetQueueCount(&queueCount)
+             && (!sPokePvPQueueCountDrawnKnown || queueCount != sPokePvPQueueCountDrawn))
+            {
+                DrawQueueCountLine();
+                sPokePvPQueueCountDrawn = queueCount;
+                sPokePvPQueueCountDrawnKnown = TRUE;
+            }
+        }
         if (ready)
         {
             DebugPrintf("POKEPVP: AUTO-MATCH real opponent ready after %d frames", gTasks[taskId].tWaitFrames);
@@ -3887,6 +4154,10 @@ static void Task_PokePvPPostMatchWait(u8 taskId)
         PrintMessageOnWindow4(gText_PokePvPWaitingForOpponent);
         gTasks[taskId].tWaitFrames = 0;
         gTasks[taskId].tMGErrorMsgState++;
+        // 2026-10-01: same reset as Task_PokePvPWaitForRealOpponent's own
+        // case 0 -- see sPokePvPQueueCountDrawnKnown's own doc comment.
+        PokePvP_ClearQueueCount();
+        sPokePvPQueueCountDrawnKnown = FALSE;
         break;
     case 1:
         RunTextPrinters();
@@ -3950,6 +4221,23 @@ static void Task_PokePvPPostMatchWait(u8 taskId)
             }
         }
         gTasks[taskId].tWaitFrames++;
+        if (!PokePvP_IsRealOpponentReady())
+        {
+            // 2026-10-01 playtest insight: same "IN QUEUE: N" line as
+            // Task_PokePvPWaitForRealOpponent's own copy above -- a real
+            // queueJoin only ever happens here for PLAY AGAIN's pack-queue
+            // path (REMATCH is a direct rematchRequest, no queue, so
+            // PokePvP_GetQueueCount simply never starts returning TRUE for
+            // it and this is a no-op, which is correct).
+            u16 queueCount;
+            if (PokePvP_GetQueueCount(&queueCount)
+             && (!sPokePvPQueueCountDrawnKnown || queueCount != sPokePvPQueueCountDrawn))
+            {
+                DrawQueueCountLine();
+                sPokePvPQueueCountDrawn = queueCount;
+                sPokePvPQueueCountDrawnKnown = TRUE;
+            }
+        }
         if (PokePvP_IsRealOpponentReady())
         {
             DebugPrintf("POKEPVP: post-match wait resolved by real opponent after %d frames", gTasks[taskId].tWaitFrames);
@@ -4069,7 +4357,9 @@ static void DrawProfileItems(u8 selectedIdx)
         MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
         MAIN_MENU_WINDOW_POKEPVP_4,
     };
-    const u8 *const sLabels[] = { sText_ProfileSocialRow, sText_ProfilePlayerRow };
+    // 2026-10-01, owner-directed restructure: MATCH HISTORY added as a
+    // 3rd row, same shape ADR-238 used to add PLAYER as a 2nd row here.
+    const u8 *const sLabels[] = { sText_ProfileSocialRow, sText_ProfilePlayerRow, sText_MatchHistory };
     u8 i;
 
     // This screen no longer uses the ERROR band (ADR-238 moved all of
@@ -4089,7 +4379,7 @@ static void DrawProfileItems(u8 selectedIdx)
     {
         bool8 selected = (i == selectedIdx);
         FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
-        if (i < 2)
+        if (i < 3)
             AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
                 selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
         PutWindowTilemap(sWindowIds[i]);
@@ -4116,11 +4406,24 @@ static void Task_PokePvPProfile(u8 taskId)
             gTasks[taskId].func = Task_PokePvPSocial;
             DrawSocialItems(0);
         }
-        else
+        else if (gTasks[taskId].tSubCursorPos == 1)
         {
             gTasks[taskId].tSubCursorPos = 0;
             gTasks[taskId].func = Task_PokePvPPlayerMenu;
             DrawPlayerMenuItems(0);
+        }
+        else
+        {
+            // 2026-10-01, owner-directed restructure: MATCH HISTORY, now
+            // PROFILE's 3rd row. No fade here, unlike the old top-level
+            // dispatch this replaced -- SOCIAL/PLAYER just above don't
+            // fade either, since (unlike the top-level menu's own
+            // A-press) nothing faded this screen to black on the way in.
+            // Task_PokePvPMatchHistory's own tScreenDrawn==0 draw doesn't
+            // require an active fade to run correctly -- gPaletteFade.active
+            // is already false here, so it draws on its very next tick.
+            gTasks[taskId].tScreenDrawn = 0;
+            gTasks[taskId].func = Task_PokePvPMatchHistory;
         }
     }
     else if (JOY_NEW(B_BUTTON))
@@ -4134,7 +4437,7 @@ static void Task_PokePvPProfile(u8 taskId)
         gTasks[taskId].tSubCursorPos--;
         DrawProfileItems(gTasks[taskId].tSubCursorPos);
     }
-    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 2)
     {
         gTasks[taskId].tSubCursorPos++;
         DrawProfileItems(gTasks[taskId].tSubCursorPos);
