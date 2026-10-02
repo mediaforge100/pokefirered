@@ -22,6 +22,7 @@
 #include "profile.h" // POKEPVP (UI plan slice 5): PROFILE screen buffer
 #include "pokepvp/social.h" // POKEPVP (UI plan slice 6): SOCIAL screen buffer (friends/rivals/blocks)
 #include "history.h" // POKEPVP (ADR-168): MATCH HISTORY buffer
+#include "achievements.h" // POKEPVP (ADR-316): ACHIEVEMENTS/TEAM ACHIEVEMENTS buffers
 // leaderboard.h intentionally NOT included here anymore (ADR-189) -- this
 // file no longer has a LEADERBOARD screen; the buffer module itself is
 // still built (rom/pvp-gen3/leaderboard.c/h), just unreferenced from the
@@ -78,6 +79,17 @@ enum MainMenuWindow
     // panel's own bordered geometry entirely -- see its own window
     // template comment below for the exact tile math.
     MAIN_MENU_WINDOW_ONLINE_COUNT,
+    // Owner-directed feature (2026-10-02): GUIDE's detail screen, redone
+    // as one big static box instead of the 1-line-at-a-time pager
+    // DrawPokePvPErrorBandPage still serves MATCH HISTORY. Reuses
+    // MAIN_MENU_WINDOW_CONTINUE's own geometry exactly (same baseBlock
+    // 0x001 pool -- see that comment just above: CONTINUE/NEWGAME_ONLY
+    // are FireRed originals, "left compiled but unreachable" in this
+    // build, so this is a second alias onto already-proven-safe, already-
+    // idle VRAM, not a new claim). Never visible at the same time as
+    // CONTINUE (dead), NEWGAME_ONLY (dead), or ERROR (this screen erases
+    // the panel and never touches ERROR itself).
+    MAIN_MENU_WINDOW_GUIDE_DETAIL,
     MAIN_MENU_WINDOW_COUNT
 };
 
@@ -186,6 +198,15 @@ enum MainMenuWindow
 // one move never leaks into the next move hovered.
 #define tMoveInfoPage data[13]
 
+// POKEPVP (ADR-320): the current page shown in MAIN_MENU_WINDOW_ERROR's own
+// 2-line pager (Task_PokePvPGuideConceptDetail / Task_PokePvPMatchHistory).
+// Same data[11] slot as tMoveInfoWindowId above -- never live at the same
+// time, same reuse precedent tSocialList/tPickerClass already establish for
+// data[14]/data[15] (GUIDE/MATCH HISTORY are entirely separate task
+// functions from the Team Builder move-slot/movepool-list screens that own
+// tMoveInfoWindowId).
+#define tPageNum data[11]
+
 // POKEPVP (ADR-121): Task_PokePvPWaitForRealOpponent's own bounded-wait
 // frame counter. Reuses tMGErrorMsgState for its 0/1/2 state machine, same
 // shape as Task_PokePvPPrepareRoster's.
@@ -239,6 +260,11 @@ static void Task_ExecuteMainMenuSelection(u8 taskId);
 static void Task_MysteryGiftError(u8 taskId);
 static void Task_PokePvPMenuStub(u8 taskId);
 static void Task_PokePvPMatchHistory(u8 taskId);
+// POKEPVP (ADR-320): shared MAIN_MENU_WINDOW_ERROR 2-line pager, defined
+// alongside the GUIDE detail screen below but used by Task_PokePvP
+// MatchHistory above it in the file too -- forward-declared here for that
+// earlier call site.
+static void DrawPokePvPErrorBandPage(const u8 *headerPrefix, const u8 *contentLine, u8 pageNum1Based, u8 totalPages);
 // 2026-10-01, owner-directed feature: GUIDE -- a concept list (top-menu
 // row 3, GUIDE's new slot) opening into a scrolling detail text box per
 // concept. See DrawGuideConceptItems's own doc comment for the full
@@ -263,6 +289,24 @@ static void Task_PokePvPProfile(u8 taskId);
 static void DrawProfileItems(u8 selectedIdx);
 static void Task_PokePvPPlayerMenu(u8 taskId);
 static void DrawPlayerMenuItems(u8 selectedIdx);
+// Owner-directed feature (2026-10-02): ACCOUNT -- PLAYER's 2nd row, a
+// 1-row submenu (LOG OUT) with its own "ARE YOU SURE?" confirm.
+static void Task_PokePvPAccountMenu(u8 taskId);
+static void DrawAccountMenuItems(u8 selectedIdx);
+static void Task_PokePvPLogOutConfirm(u8 taskId);
+static void Task_PokePvPLoggingOut(u8 taskId);
+// ADR-316: ACHIEVEMENTS -- PROFILE's 4th row, a 2-row submenu
+// (ACHIEVEMENTS / TEAM ACHIEVEMENTS) same shape as Task_PokePvPPlayerMenu,
+// each opening onto a static list screen (same shape as
+// Task_PokePvPMatchHistory -- no per-row navigation or pagination, the
+// catalogs are small and fixed per ADR-316's own non-goals). A third
+// screen, the main-menu "unlocked" notice, is surfaced from
+// Task_HandleMenuInput exactly like the challenge inbox.
+static void Task_PokePvPAchievementsMenu(u8 taskId);
+static void DrawAchievementsMenuItems(u8 selectedIdx);
+static void Task_PokePvPAchievementsList(u8 taskId);
+static void Task_PokePvPTeamAchievementsList(u8 taskId);
+static void Task_PokePvPAchievementUnlocked(u8 taskId);
 // POKEPVP (UI plan slice 6, Phase G): the SOCIAL screen (friends /
 // rivals / blocks / name) and the per-list screens with per-row
 // CHALLENGE / REMOVE / UNBLOCK actions.
@@ -672,7 +716,28 @@ static const u8 sText_Blocks[] = _("BLOCKS");
 static const u8 sText_ProfileSocialRow[] = _("SOCIAL");
 static const u8 sText_ProfilePlayerRow[] = _("PLAYER");
 static const u8 sText_PlayerMenuSprite[] = _("SPRITE");
+// Owner-directed feature (2026-10-02): PLAYER's own 2nd row, replacing
+// the unused sString_Dummy placeholder NAME's removal (ADR-238 playtest
+// fallout) left behind. Opens Task_PokePvPAccountMenu.
+static const u8 sText_PlayerMenuAccount[] = _("ACCOUNT");
+static const u8 sText_AccountLogOut[] = _("LOG OUT");
+static const u8 sText_AccountLogOutConfirm[] = _("Log out of this account?\nA: YES   B: NO");
+static const u8 sText_LoggingOut[] = _("Logging out...");
 static const u8 sText_PlayerMenuName[] = _("NAME");
+// ADR-316: PROFILE's 4th row, the ACHIEVEMENTS submenu's own 2 rows, and
+// the list-screen chrome shared by both ACHIEVEMENTS and TEAM ACHIEVEMENTS.
+static const u8 sText_ProfileAchievementsRow[] = _("ACHIEVEMENTS");
+static const u8 sText_AchievementsRow[] = _("ACHIEVEMENTS");
+static const u8 sText_TeamAchievementsRow[] = _("TEAM ACHIEVEMENTS");
+static const u8 sText_AchievementsEmpty[] = _("No achievements yet.");
+// Brackets aren't in this ROM's text charmap (confirmed live: "unknown
+// character U+5B" from the preprocessor) -- same ASCII-safe-glyph
+// constraint every other charmap string in this file already lives
+// under, so a plain letter/dash marker is used instead of [X]/[ ].
+static const u8 sText_AchievementMarkEarned[] = _("DONE ");
+static const u8 sText_AchievementMarkLocked[] = _("-    ");
+static const u8 sText_AchievementTitleDescSep[] = _(": ");
+static const u8 sText_AchievementUnlockedHeader[] = _("ACHIEVEMENT UNLOCKED!");
 static const u8 sText_Challenge[] = _("CHALLENGE");
 static const u8 sText_Remove[] = _("REMOVE");
 static const u8 sText_Unblock[] = _("UNBLOCK");
@@ -814,6 +879,22 @@ static const struct WindowTemplate sWindowTemplate[] = {
     [MAIN_MENU_WINDOW_ONLINE_COUNT] = {
         .bg = 0, .tilemapLeft = 0, .tilemapTop = 17, .width = 10, .height = 2,
         .paletteNum = 15, .baseBlock = 0x241
+    },
+    // Owner-directed feature (2026-10-02): same size and baseBlock as
+    // MAIN_MENU_WINDOW_CONTINUE (24x10 tiles, 0x001 -- see MAIN_MENU_
+    // WINDOW_GUIDE_DETAIL's own enum comment for why reusing that exact
+    // tile budget is safe), but vertically centered in the screen's full
+    // 20-row height (tilemapTop = (20-10)/2 = 5, rows 5-14) instead of
+    // CONTINUE's own flush-top tilemapTop=1 -- moving tilemapTop only
+    // changes which tilemap cells this window's tiles land in, not how
+    // many tiles baseBlock 0x001 consumes, so this is still the same safe
+    // reuse. Playtest fallout (owner ask): flush-top left a large dead
+    // gap below the box where the erased top menu panel used to be;
+    // centered, the box now covers roughly the same screen area the menu
+    // itself occupied (rows 6-15) instead of leaving it blank.
+    [MAIN_MENU_WINDOW_GUIDE_DETAIL] = {
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 5, .width = 24, .height = 10,
+        .paletteNum = 15, .baseBlock = 0x001
     },
     [MAIN_MENU_WINDOW_COUNT] = DUMMY_WIN_TEMPLATE
 };
@@ -1667,6 +1748,20 @@ static void Task_HandleMenuInput(u8 taskId)
         gTasks[taskId].func = Task_PokePvPInbox;
         return;
     }
+    // ADR-316 §5: the achievement-unlocked notice, same interruptibility
+    // shape as the inbox check just above -- checked second so a
+    // challenge arriving the same tick always takes priority (both are
+    // purely informational pop-ins; there is no ordering requirement
+    // beyond "never show both at once").
+    if (!gPaletteFade.active
+     && gTasks[taskId].tMenuType == MAIN_MENU_POKEPVP
+     && PokePvPAchievementUnlocked_Count() > 0)
+    {
+        gTasks[taskId].tScreenDrawn = 0;
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+        gTasks[taskId].func = Task_PokePvPAchievementUnlocked;
+        return;
+    }
     if (!gPaletteFade.active && HandleMenuInput(taskId))
     {
         gTasks[taskId].func = Task_UpdateVisualSelection;
@@ -1925,6 +2020,52 @@ static void Task_PokePvPMenuStub(u8 taskId)
     }
 }
 
+// POKEPVP (ADR-320, 2026-10-01 playtest fallout): draws one page of the
+// ERROR band's "RECORD:" list -- the "RECORD:" divider plus "N/N" as the
+// pager's persistent header line, and exactly one history entry (or
+// sText_HistoryEmpty when there are none at all) as its content line.
+// pageNum is read from the task's own tPageNum (clamped defensively in
+// case historyCount ever shrinks out from under an open page, e.g. a
+// fresh fetch landing while this screen is up).
+static void DrawPokePvPHistoryPage(u8 taskId, u8 historyCount)
+{
+    u8 buf[48];
+    u8 *dst;
+    u8 page = gTasks[taskId].tPageNum;
+
+    if (historyCount == 0)
+    {
+        DrawPokePvPErrorBandPage(sText_MatchHistoryDivider, sText_HistoryEmpty, 1, 1);
+        return;
+    }
+
+    if (historyCount > POKEPVP_HISTORY_MAX_ENTRIES)
+        historyCount = POKEPVP_HISTORY_MAX_ENTRIES;
+    if (page >= historyCount)
+        page = historyCount - 1;
+
+    dst = buf;
+    {
+        PokePvPHistoryEntry entry;
+
+        if (PokePvPMatchHistory_Get(page, &entry))
+        {
+            dst = StringCopy(dst, entry.name);
+            dst = StringCopy(dst, sText_HistoryWSep);
+            dst = ConvertIntToDecimalStringN(dst, entry.wins, STR_CONV_MODE_LEFT_ALIGN, 2);
+            dst = StringCopy(dst, sText_HistoryL);
+            dst = ConvertIntToDecimalStringN(dst, entry.losses, STR_CONV_MODE_LEFT_ALIGN, 2);
+        }
+        else
+        {
+            dst = StringCopy(dst, sText_HistoryEmpty);
+        }
+    }
+    *dst = EOS;
+
+    DrawPokePvPErrorBandPage(sText_MatchHistoryDivider, buf, page + 1, historyCount);
+}
+
 // POKEPVP (ADR-238, owner-directed restructure, 2026-09-19): MATCH
 // HISTORY now also shows the tag/aggregate-stats/top-species/recent-
 // opponent content PROFILE used to (ADR-188) -- the owner's own read was
@@ -1934,34 +2075,28 @@ static void Task_PokePvPMenuStub(u8 taskId)
 // recent opponent); window 4 is a plain divider label; the ERROR band
 // (4 tile rows, twice window 0's own old height) now holds the per-
 // opponent win/loss list this screen already showed, relocated here from
-// window 0 alone -- strictly more room than before for that list, not
-// less, though the list's own worst case (8 entries) still would not
-// fully fit even in 4 rows; this was already true of the original
-// window-0-only layout and is not a new regression, just not fully
-// solved by this pass either.
+// window 0 alone. ADR-320 (2026-10-01): that list's own worst case (8
+// entries) never fit in 4 rows even after this move -- this file's own
+// comment said so outright -- and the owner's playtest confirmed it as a
+// real bug ("doesn't open properly"); now paged one entry at a time
+// instead, see DrawPokePvPHistoryPage above.
 static void Task_PokePvPMatchHistory(u8 taskId)
 {
     PokePvPProfile profile;
     bool8 haveProfile;
     u8 recentCount;
     u8 historyCount = PokePvPMatchHistory_Count();
-    // Sized for the worst case of the ERROR band's own combined buffer.
-    // Found live during P6's max-length-name gate pass: this previously
-    // read "NAME" (16) here, but history.c's real wire cap is
-    // POKEPVP_HISTORY_MAX_NAME_LEN (24) -- history.c's own receive path
-    // never clamps to 16 the way post_match.c/profile.c/social.c/inbox.c
-    // do, and 24 matches the real max username length (apps/api's
-    // `displayName.length > 24` check, auth.ts) -- so a genuine
-    // real-world 17-24 char opponent name was never actually impossible,
-    // just never tried against this buffer. Real worst case: "RECORD:"
-    // (7) + newline (1) + POKEPVP_HISTORY_MAX_ENTRIES (8) list lines
-    // (24 + "   W: " (6) + 2 digits (wins clamped <=99 launcher-side) +
-    // "  L: " (5) + 2 digits (losses, same clamp) + newline = 40 each)
-    // = 8 + 320 = 328, + EOS = 329 -- reused per-window below, so sized
-    // for its own single largest user, not the sum of all of them
-    // (ADR-198's own lesson, which this buffer had silently drifted
-    // out of sync with). See ADR-198 for the original overflow class.
-    u8 buf[336];
+    // Reused across windows 0-3 below (tag/M-W-L-T/top species/recent
+    // opponent), each overwriting it in turn -- sized for its own single
+    // largest user (window 3's "RECENT: " + a 24-char name + " vs " + a
+    // tag, ADR-198's own lesson about sizing for the real worst case, not
+    // a guess). ADR-320 (2026-10-01): this buffer used to also hold the
+    // ERROR band's entire "RECORD:" list (up to 329 bytes, history.h's
+    // real 24-char name cap x POKEPVP_HISTORY_MAX_ENTRIES) in one shot --
+    // that list is now paged one entry at a time (DrawPokePvPHistoryPage,
+    // its own small 48-byte buffer), so this one no longer needs to be
+    // sized for it.
+    u8 buf[96];
     u8 *dst;
     u8 i;
 
@@ -2080,40 +2215,20 @@ static void Task_PokePvPMatchHistory(u8 taskId)
         PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
         CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
 
-        // ERROR band: a "RECORD:" divider line followed by the per-
-        // opponent win/loss list (unchanged content and format from
-        // before this screen absorbed PROFILE's own rows -- just
-        // relocated from window 0 alone into this taller, 4-tile band).
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
-        MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-        dst = buf;
-        dst = StringCopy(dst, sText_MatchHistoryDivider);
-        dst = StringCopy(dst, sString_Newline);
-        if (historyCount == 0)
-        {
-            dst = StringCopy(dst, sText_HistoryEmpty);
-        }
-        else
-        {
-            for (i = 0; i < historyCount && i < POKEPVP_HISTORY_MAX_ENTRIES; i++)
-            {
-                PokePvPHistoryEntry entry;
-
-                if (PokePvPMatchHistory_Get(i, &entry))
-                {
-                    dst = StringCopy(dst, entry.name);
-                    dst = StringCopy(dst, sText_HistoryWSep);
-                    dst = ConvertIntToDecimalStringN(dst, entry.wins, STR_CONV_MODE_LEFT_ALIGN, 2);
-                    dst = StringCopy(dst, sText_HistoryL);
-                    dst = ConvertIntToDecimalStringN(dst, entry.losses, STR_CONV_MODE_LEFT_ALIGN, 2);
-                    dst = StringCopy(dst, sString_Newline);
-                }
-            }
-        }
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 2, sTextColor1, -1, buf);
-        PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
-        CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
+        // ERROR band (ADR-320, 2026-10-01 playtest fallout -- "MATCH
+        // HISTORY doesn't open properly in its own screen"): the old code
+        // concatenated the "RECORD:" divider plus every one of up to
+        // POKEPVP_HISTORY_MAX_ENTRIES (8) lines into one block and printed
+        // it in a single shot into a window this file's own comment (just
+        // above this function) already admitted "still would not fully
+        // fit even in 4 rows" -- i.e. a known, never-fixed overflow, not a
+        // new regression. Now paged one entry at a time through the same
+        // DrawPokePvPErrorBandPage pager the GUIDE detail screen uses (see
+        // its own doc comment for the real 2-line/32px math): the
+        // "RECORD:" divider is the pager's headerPrefix, so it repeats on
+        // every page as required, with "N/N" appended after it.
+        gTasks[taskId].tPageNum = 0;
+        DrawPokePvPHistoryPage(taskId, historyCount);
     }
 
     if (JOY_NEW(B_BUTTON))
@@ -2122,12 +2237,31 @@ static void Task_PokePvPMatchHistory(u8 taskId)
         // reached from PROFILE (its 3rd row), not the top menu directly
         // -- B returns there instead of the top menu, same immediate
         // "no fade, redraw and hand back" shape Task_PokePvPPlayerMenu's
-        // own B-button uses to return to the same screen.
+        // own B-button uses to return to the same screen. Unchanged by
+        // ADR-320's pagination -- still fires regardless of which page is
+        // showing.
         PlaySE(SE_SELECT);
         MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
         gTasks[taskId].tSubCursorPos = 2;
         gTasks[taskId].func = Task_PokePvPProfile;
         DrawProfileItems(2);
+    }
+    else if (JOY_NEW(DPAD_LEFT) && gTasks[taskId].tPageNum > 0)
+    {
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tPageNum--;
+        DrawPokePvPHistoryPage(taskId, historyCount);
+    }
+    else if (JOY_NEW(DPAD_RIGHT))
+    {
+        u8 totalPages = (historyCount == 0) ? 1
+            : (historyCount > POKEPVP_HISTORY_MAX_ENTRIES ? POKEPVP_HISTORY_MAX_ENTRIES : historyCount);
+        if (gTasks[taskId].tPageNum + 1 < totalPages)
+        {
+            PlaySE(SE_SELECT);
+            gTasks[taskId].tPageNum++;
+            DrawPokePvPHistoryPage(taskId, historyCount);
+        }
     }
 }
 
@@ -2291,36 +2425,251 @@ static void Task_PokePvPGuideConceptList(u8 taskId)
     }
 }
 
-// The detail view: the selected concept's full body text, scrolled into
-// MAIN_MENU_WINDOW_ERROR exactly like PrintMessageOnWindow4's own
-// mechanism (same window, same RunTextPrinters pump -- this project's
-// own ADR-191/237 already found and fixed the "forgot to pump this"
-// bug class once; this reuses the proven, already-pumped helper outright
-// rather than re-deriving it). tMGErrorMsgState mirrors the wait
-// screens' own case-0/case-1 shape: state 0 kicks off the print, state 1
-// waits for it to finish before accepting B.
+// POKEPVP (ADR-320, 2026-10-01 playtest fallout -- GUIDE entries cropped
+// with no way to read the rest, MATCH HISTORY cramped/unreadable): shared
+// 2-line pager for MAIN_MENU_WINDOW_ERROR, used by both the GUIDE concept
+// detail screen below and Task_PokePvPMatchHistory. The window is only 4
+// tiles (32px) tall; this file's own established convention for a
+// manually-laid-out multi-line block in this font (FONT_NORMAL) is a 16px
+// line pitch, not the font's raw 14px CHAR_NEWLINE advance -- see
+// DrawPokePvPMoveDescription's own `18 + (i * 16)` just below, and
+// berry_pouch.c's `GetFontAttribute(FONT_NORMAL, FONTATTR_MAX_LETTER_
+// HEIGHT) + 2` (14+2=16) for the same number derived the same way
+// elsewhere in this ROM. 32px / 16px = exactly 2 lines, no partial-line
+// remainder -- the real, provable ceiling for this window, not a guess.
+// One line is a persistent "PAGE N/N" (or, when headerPrefix is supplied,
+// "<headerPrefix> N/N" -- MATCH HISTORY's own "RECORD:" divider stays
+// visible on every page this way, per that bug's own required behavior)
+// so the indicator never collides with or gets scrolled off by content;
+// the other shows exactly one real line/entry at a time. DPAD_LEFT/
+// DPAD_RIGHT at each call site turn the page; B_BUTTON's own existing
+// exit logic is untouched by this helper.
+#define POKEPVP_ERROR_PAGE_HEADER_Y  2
+#define POKEPVP_ERROR_PAGE_CONTENT_Y 18
+
+static void DrawPokePvPErrorBandPage(const u8 *headerPrefix, const u8 *contentLine, u8 pageNum1Based, u8 totalPages)
+{
+    u8 buf[32];
+    u8 *dst = buf;
+
+    if (headerPrefix != NULL)
+        dst = StringCopy(dst, headerPrefix);
+    else
+        dst = StringCopy(dst, gText_Page);
+    *dst++ = CHAR_SPACE;
+    dst = ConvertIntToDecimalStringN(dst, pageNum1Based, STR_CONV_MODE_LEFT_ALIGN, 2);
+    *dst++ = CHAR_SLASH;
+    dst = ConvertIntToDecimalStringN(dst, totalPages, STR_CONV_MODE_LEFT_ALIGN, 2);
+    *dst = EOS;
+
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, POKEPVP_ERROR_PAGE_HEADER_Y, sTextColor1, -1, buf);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, POKEPVP_ERROR_PAGE_CONTENT_Y, sTextColor1, -1, contentLine);
+    PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+    CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
+}
+
+// POKEPVP (ADR-320): real runtime word-wrap for sGuideConcepts' body text
+// to the ERROR band's actual ~160px width, same greedy/GetStringWidth-
+// measured technique ADR-217's WrapMoveDescription already proved for the
+// move info panel's own (narrower, 80px) window -- CHAR_NEWLINE folds into
+// CHAR_SPACE for the same reason ADR-217 gave: these bodies' hand-placed
+// newlines were authored without ever being fitted against this window's
+// real width (confirmed: the first line of sText_GuideBodyQueues alone is
+// 37 characters, far wider than this window can show on one row), so the
+// layout is rebuilt from scratch rather than trusted. Never splits a word.
+// POKEPVP_GUIDE_BODY_MAX_LINES (16) is a generous ceiling against the 5
+// real bodies in sGuideConcepts today (the longest, 229 characters, wraps
+// to roughly a dozen lines even at a conservative per-line estimate) --
+// not a real content limit silently eating text; a 6th, much longer
+// concept would need this raised, named here rather than silently
+// truncated.
+#define POKEPVP_GUIDE_BODY_MAX_LINES  16
+#define POKEPVP_GUIDE_LINE_BUF        40
+// Owner-directed feature (2026-10-02): widened from 150 to 190 now that
+// the detail screen is MAIN_MENU_WINDOW_GUIDE_DETAIL's own 192px-wide box
+// (24 tiles) instead of MAIN_MENU_WINDOW_ERROR's narrower 160px one --
+// same ~10px-margin ratio the old 150-vs-160 pairing used.
+#define POKEPVP_GUIDE_LINE_WIDTH_PX   190
+// 10 tiles (80px) at this file's established 16px-per-line convention is
+// 5 lines; 1 is reserved as a persistent footer (see
+// DrawPokePvPGuideBigBox), leaving 4 real lines of body per page.
+#define POKEPVP_GUIDE_BOX_LINES_PER_PAGE 4
+
+static u8 WrapPokePvPGuideText(const u8 *src, u8 outLines[][POKEPVP_GUIDE_LINE_BUF])
+{
+    u8 word[POKEPVP_GUIDE_LINE_BUF];
+    u8 line[POKEPVP_GUIDE_LINE_BUF];
+    u8 candidate[POKEPVP_GUIDE_LINE_BUF];
+    u8 lineCount = 0;
+    u16 lineLen = 0, wordLen;
+    const u8 *s = src;
+
+    line[0] = EOS;
+
+    while (*s != EOS && lineCount < POKEPVP_GUIDE_BODY_MAX_LINES)
+    {
+        while (*s == CHAR_SPACE || *s == CHAR_NEWLINE)
+            s++;
+        if (*s == EOS)
+            break;
+
+        wordLen = 0;
+        while (*s != EOS && *s != CHAR_SPACE && *s != CHAR_NEWLINE
+               && wordLen < POKEPVP_GUIDE_LINE_BUF - 1)
+        {
+            word[wordLen++] = *s++;
+        }
+        word[wordLen] = EOS;
+
+        if (lineLen == 0)
+        {
+            StringCopy(candidate, word);
+        }
+        else
+        {
+            StringCopy(candidate, line);
+            candidate[lineLen] = CHAR_SPACE;
+            candidate[lineLen + 1] = EOS;
+            StringAppend(candidate, word);
+        }
+
+        if (lineLen != 0 && GetStringWidth(FONT_NORMAL, candidate, 0) > POKEPVP_GUIDE_LINE_WIDTH_PX)
+        {
+            // Candidate overflows -- commit the line as it stood before
+            // this word, start a fresh line with the word that didn't fit.
+            StringCopy(outLines[lineCount], line);
+            lineCount++;
+            if (lineCount >= POKEPVP_GUIDE_BODY_MAX_LINES)
+                break;
+            StringCopy(line, word);
+            lineLen = StringLength(line);
+        }
+        else
+        {
+            StringCopy(line, candidate);
+            lineLen = StringLength(line);
+        }
+    }
+
+    if (lineLen != 0 && lineCount < POKEPVP_GUIDE_BODY_MAX_LINES)
+    {
+        StringCopy(outLines[lineCount], line);
+        lineCount++;
+    }
+
+    return lineCount;
+}
+
+static const u8 sText_GuideBoxBackHint[] = _("B: BACK");
+
+// Owner-directed feature (2026-10-02): draws up to POKEPVP_GUIDE_BOX_
+// LINES_PER_PAGE body lines at once into MAIN_MENU_WINDOW_GUIDE_DETAIL,
+// plus a persistent footer row (B: BACK, and a "N/M" page indicator only
+// when the body doesn't fit on one page) -- replaces the old 1-line-at-a-
+// time DrawPokePvPErrorBandPage pager for this screen specifically (MATCH
+// HISTORY keeps using that helper; its own content shape is different).
+static void DrawPokePvPGuideBigBox(u8 lines[][POKEPVP_GUIDE_LINE_BUF], u8 lineCount, u8 pageNum0Based, u8 totalPages)
+{
+    u8 i, firstLine;
+    u8 footer[32];
+
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_GUIDE_DETAIL, PIXEL_FILL(10));
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_GUIDE_DETAIL]);
+
+    firstLine = pageNum0Based * POKEPVP_GUIDE_BOX_LINES_PER_PAGE;
+    for (i = 0; i < POKEPVP_GUIDE_BOX_LINES_PER_PAGE && firstLine + i < lineCount; i++)
+    {
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_GUIDE_DETAIL, FONT_NORMAL, 2, 2 + i * 16,
+            sTextColor1, -1, lines[firstLine + i]);
+    }
+
+    if (totalPages > 1)
+    {
+        u8 *dst = StringCopy(footer, sText_GuideBoxBackHint);
+        *dst++ = CHAR_SPACE;
+        *dst++ = CHAR_SPACE;
+        *dst++ = CHAR_SPACE;
+        *dst++ = CHAR_SPACE;
+        dst = ConvertIntToDecimalStringN(dst, pageNum0Based + 1, STR_CONV_MODE_LEFT_ALIGN, 2);
+        *dst++ = CHAR_SLASH;
+        dst = ConvertIntToDecimalStringN(dst, totalPages, STR_CONV_MODE_LEFT_ALIGN, 2);
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_GUIDE_DETAIL, FONT_NORMAL, 2, 2 + POKEPVP_GUIDE_BOX_LINES_PER_PAGE * 16,
+            sTextColor1, -1, footer);
+    }
+    else
+    {
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_GUIDE_DETAIL, FONT_NORMAL, 2, 2 + POKEPVP_GUIDE_BOX_LINES_PER_PAGE * 16,
+            sTextColor1, -1, sText_GuideBoxBackHint);
+    }
+
+    PutWindowTilemap(MAIN_MENU_WINDOW_GUIDE_DETAIL);
+    CopyWindowToVram(MAIN_MENU_WINDOW_GUIDE_DETAIL, COPYWIN_FULL);
+}
+
+// The detail view: the selected concept's body, word-wrapped into
+// MAIN_MENU_WINDOW_GUIDE_DETAIL's own wide static box, up to
+// POKEPVP_GUIDE_BOX_LINES_PER_PAGE (4) real lines visible at once instead
+// of the old 1-line-at-a-time pager -- most of the 5 real GUIDE bodies fit
+// in a single page now; only the longest still needs DPAD_LEFT/RIGHT to
+// turn to a 2nd page, by a whole screenful rather than one line. Word-wrap
+// is recomputed from the static body text on open and on every page turn
+// rather than cached in a task-persistent buffer -- EWRAM/IWRAM are
+// already at 99.66%/96.23% (docs/HANDOFF.md), so this intentionally
+// spends a few hundred bytes of transient stack per call instead of
+// adding new .bss.
 static void Task_PokePvPGuideConceptDetail(u8 taskId)
 {
+    u8 lines[POKEPVP_GUIDE_BODY_MAX_LINES][POKEPVP_GUIDE_LINE_BUF];
+    u8 lineCount;
+    u8 totalPages;
+
     if (gPaletteFade.active)
         return;
 
     switch (gTasks[taskId].tMGErrorMsgState)
     {
     case 0:
-        PrintMessageOnWindow4(sGuideConcepts[gTasks[taskId].tSubCursorPos].body);
-        gTasks[taskId].tMGErrorMsgState++;
+        gTasks[taskId].tPageNum = 0;
+        // The new box overlaps the top menu panel's own rows (6-10 of its
+        // 6-15 span) but doesn't cover rows 11-15 -- erase the whole
+        // panel (content + border) in one shot rather than leave stale
+        // concept-list rows visible underneath/beside the box. Restored
+        // by DrawGuideConceptItems on the way back out (B-button below).
+        MainMenu_EraseWindow(&sPokePvPMenuPanelTemplate);
+        lineCount = WrapPokePvPGuideText(sGuideConcepts[gTasks[taskId].tSubCursorPos].body, lines);
+        totalPages = (lineCount + POKEPVP_GUIDE_BOX_LINES_PER_PAGE - 1) / POKEPVP_GUIDE_BOX_LINES_PER_PAGE;
+        if (totalPages == 0)
+            totalPages = 1;
+        DrawPokePvPGuideBigBox(lines, lineCount, 0, totalPages);
+        gTasks[taskId].tMGErrorMsgState = 1;
         break;
     case 1:
-        RunTextPrinters();
-        if (!IsTextPrinterActive(MAIN_MENU_WINDOW_ERROR))
-            gTasks[taskId].tMGErrorMsgState++;
-        break;
-    case 2:
         if (JOY_NEW(B_BUTTON))
         {
             PlaySE(SE_SELECT);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_GUIDE_DETAIL]);
             DrawGuideConceptItems(gTasks[taskId].tSubCursorPos);
             gTasks[taskId].func = Task_PokePvPGuideConceptList;
+            break;
+        }
+        lineCount = WrapPokePvPGuideText(sGuideConcepts[gTasks[taskId].tSubCursorPos].body, lines);
+        totalPages = (lineCount + POKEPVP_GUIDE_BOX_LINES_PER_PAGE - 1) / POKEPVP_GUIDE_BOX_LINES_PER_PAGE;
+        if (totalPages == 0)
+            totalPages = 1;
+        if (JOY_NEW(DPAD_LEFT) && gTasks[taskId].tPageNum > 0)
+        {
+            PlaySE(SE_SELECT);
+            gTasks[taskId].tPageNum--;
+            DrawPokePvPGuideBigBox(lines, lineCount, gTasks[taskId].tPageNum, totalPages);
+        }
+        else if (JOY_NEW(DPAD_RIGHT) && gTasks[taskId].tPageNum + 1 < totalPages)
+        {
+            PlaySE(SE_SELECT);
+            gTasks[taskId].tPageNum++;
+            DrawPokePvPGuideBigBox(lines, lineCount, gTasks[taskId].tPageNum, totalPages);
         }
         break;
     }
@@ -3511,6 +3860,23 @@ static void SendLeaveQueue(void)
     DebugPrintf("POKEPVP: leave queue sent");
 }
 
+// Owner-directed feature (2026-10-02): PLAYER -> ACCOUNT -> LOG OUT's
+// confirm. Same zero-payload, zero-retry fire-and-forget shape as
+// SendLeaveQueue just above -- a dropped send here just means the
+// launcher process doesn't get the signal this frame; low-stakes, since
+// the player can press LOG OUT again.
+static void SendLogoutRequest(void)
+{
+    PokePvPMailboxRing_TryWrite(&gPokePvPMailbox.romToHost,
+                                POKEPVP_MAILBOX_ROM_TO_HOST_MAGIC,
+                                POKEPVP_MSG_LOGOUT_REQUEST,
+                                0,
+                                0,
+                                NULL,
+                                0);
+    DebugPrintf("POKEPVP: logout request sent");
+}
+
 // ADR-209: sent when the trainer-sprite picker confirms a pick. Same
 // fire-and-forget shape as SendLeaveQueue/SendReadyChoice above -- see
 // that ADR's own Non-goals for why a dropped send here is low-stakes
@@ -4359,7 +4725,10 @@ static void DrawProfileItems(u8 selectedIdx)
     };
     // 2026-10-01, owner-directed restructure: MATCH HISTORY added as a
     // 3rd row, same shape ADR-238 used to add PLAYER as a 2nd row here.
-    const u8 *const sLabels[] = { sText_ProfileSocialRow, sText_ProfilePlayerRow, sText_MatchHistory };
+    // ADR-316: ACHIEVEMENTS added as a 4th row, same shape again -- the
+    // 5th window (sWindowIds[4]) stays the one blank row, same as every
+    // earlier addition to this screen.
+    const u8 *const sLabels[] = { sText_ProfileSocialRow, sText_ProfilePlayerRow, sText_MatchHistory, sText_ProfileAchievementsRow };
     u8 i;
 
     // This screen no longer uses the ERROR band (ADR-238 moved all of
@@ -4379,7 +4748,7 @@ static void DrawProfileItems(u8 selectedIdx)
     {
         bool8 selected = (i == selectedIdx);
         FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
-        if (i < 3)
+        if (i < 4)
             AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
                 selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
         PutWindowTilemap(sWindowIds[i]);
@@ -4412,7 +4781,7 @@ static void Task_PokePvPProfile(u8 taskId)
             gTasks[taskId].func = Task_PokePvPPlayerMenu;
             DrawPlayerMenuItems(0);
         }
-        else
+        else if (gTasks[taskId].tSubCursorPos == 2)
         {
             // 2026-10-01, owner-directed restructure: MATCH HISTORY, now
             // PROFILE's 3rd row. No fade here, unlike the old top-level
@@ -4424,6 +4793,14 @@ static void Task_PokePvPProfile(u8 taskId)
             // is already false here, so it draws on its very next tick.
             gTasks[taskId].tScreenDrawn = 0;
             gTasks[taskId].func = Task_PokePvPMatchHistory;
+        }
+        else
+        {
+            // ADR-316: ACHIEVEMENTS, PROFILE's 4th row -- same no-fade
+            // shape as MATCH HISTORY/SOCIAL/PLAYER just above.
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPAchievementsMenu;
+            DrawAchievementsMenuItems(0);
         }
     }
     else if (JOY_NEW(B_BUTTON))
@@ -4437,16 +4814,20 @@ static void Task_PokePvPProfile(u8 taskId)
         gTasks[taskId].tSubCursorPos--;
         DrawProfileItems(gTasks[taskId].tSubCursorPos);
     }
-    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 2)
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 3)
     {
         gTasks[taskId].tSubCursorPos++;
         DrawProfileItems(gTasks[taskId].tSubCursorPos);
     }
 }
 
-// POKEPVP (ADR-238): the PLAYER submenu -- SPRITE and NAME as two fully
-// independent actions, reached from PROFILE's own PLAYER row. Same 2-row
-// selector shape as DrawProfileItems just above.
+// POKEPVP (ADR-238, extended 2026-10-02): the PLAYER submenu -- SPRITE and
+// ACCOUNT as two fully independent actions, reached from PROFILE's own
+// PLAYER row. Same 2-row selector shape as DrawProfileItems just above.
+// ACCOUNT replaces the NAME row ADR-238's own playtest fallout removed
+// (see that commit's doc comment, now superseded) -- the row's window
+// was always real, just unlabeled, so this reuses it rather than
+// restructuring the panel.
 static void DrawPlayerMenuItems(u8 selectedIdx)
 {
     static const u8 sWindowIds[] = {
@@ -4454,16 +4835,7 @@ static void DrawPlayerMenuItems(u8 selectedIdx)
         MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
         MAIN_MENU_WINDOW_POKEPVP_4,
     };
-    // Playtest fallout (2026-09-26, owner ask): NAME removed for now --
-    // it only ever edited FireRed's own local save-block player name, with
-    // no wire message and no effect on any player-facing name shown
-    // anywhere else (opponent name, match history, social lists all come
-    // from the account's own registered displayName instead). SPRITE is
-    // the only real row now; row 1 stays blank (sString_Dummy, same
-    // "intentionally unlabeled" convention DrawPostMatchItems already uses
-    // for its own dummy row) rather than removing the row's window
-    // entirely, since sPokePvPMenuPanelTemplate's border spans all 5.
-    const u8 *const sLabels[] = { sText_PlayerMenuSprite, sString_Dummy };
+    const u8 *const sLabels[] = { sText_PlayerMenuSprite, sText_PlayerMenuAccount };
     u8 i;
 
     for (i = 0; i < 5; i++)
@@ -4490,23 +4862,24 @@ static void Task_PokePvPPlayerMenu(u8 taskId)
 
     if (JOY_NEW(A_BUTTON))
     {
-        // Playtest fallout (2026-09-26, owner ask): NAME's own branch
-        // (DoNamingScreen(NAMING_SCREEN_PLAYER, ...) -> sPokePvP
-        // ReturnToPlayerMenu) removed for now -- see DrawPlayerMenuItems'
-        // own doc comment for why. SPRITE is the only real row; row 1 is
-        // an unselectable blank (DPAD_DOWN below no longer reaches it), so
-        // this is unconditional now rather than branching on tSubCursorPos.
         PlaySE(SE_SELECT);
-        // SPRITE: same trainer-sprite picker as before (ADR-209), but its
-        // own confirm no longer chains into the naming screen -- see
-        // Task_PokePvPSpritePicker's own A-button branch. Explicit
-        // tMGErrorMsgState reset before the handoff (ADR-214's own lesson:
-        // this task struct is reused all session, so a stale nonzero value
-        // left by an earlier screen would skip the picker's own case 0
-        // setup entirely).
-        gTasks[taskId].tSubCursorPos = 0;
-        gTasks[taskId].tMGErrorMsgState = 0;
-        gTasks[taskId].func = Task_PokePvPSpritePicker;
+        if (gTasks[taskId].tSubCursorPos == 0)
+        {
+            // SPRITE: same trainer-sprite picker as before (ADR-209).
+            // Explicit tMGErrorMsgState reset before the handoff
+            // (ADR-214's own lesson: this task struct is reused all
+            // session, so a stale nonzero value left by an earlier
+            // screen would skip the picker's own case 0 setup entirely).
+            gTasks[taskId].tMGErrorMsgState = 0;
+            gTasks[taskId].func = Task_PokePvPSpritePicker;
+        }
+        else
+        {
+            // ACCOUNT: 2026-10-02, owner-directed feature.
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPAccountMenu;
+            DrawAccountMenuItems(0);
+        }
     }
     else if (JOY_NEW(B_BUTTON))
     {
@@ -4515,8 +4888,333 @@ static void Task_PokePvPPlayerMenu(u8 taskId)
         gTasks[taskId].func = Task_PokePvPProfile;
         DrawProfileItems(1);
     }
-    // DPAD_UP/DOWN removed: SPRITE (row 0) is the only real row now, so
-    // there is nothing left to navigate to.
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+        DrawPlayerMenuItems(gTasks[taskId].tSubCursorPos);
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+        DrawPlayerMenuItems(gTasks[taskId].tSubCursorPos);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Owner-directed feature (2026-10-02): ACCOUNT -- PLAYER's 2nd row. A
+// 1-row submenu (room to grow; CHANGE PASSWORD deliberately isn't a row
+// here -- see POKEPVP_MSG_LOGOUT_REQUEST's own doc comment in
+// presentation_types.h for why). Same DrawXxxMenuItems/Task_PokePvPXxx
+// shape as Task_PokePvPAchievementsMenu above, trimmed to 1 row.
+// ---------------------------------------------------------------------------
+
+static void DrawAccountMenuItems(u8 selectedIdx)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    const u8 *const sLabels[] = { sText_AccountLogOut, sString_Dummy };
+    u8 i;
+
+    for (i = 0; i < 5; i++)
+    {
+        bool8 selected = (i == selectedIdx);
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        if (i < 2)
+            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
+        PutWindowTilemap(sWindowIds[i]);
+    }
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 4; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+}
+
+static void Task_PokePvPAccountMenu(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        // Only one real row (LOG OUT) -- unconditional, same shape
+        // Task_PokePvPPlayerMenu used before ACCOUNT existed.
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tScreenDrawn = 0;
+        gTasks[taskId].func = Task_PokePvPLogOutConfirm;
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tSubCursorPos = 1;
+        gTasks[taskId].func = Task_PokePvPPlayerMenu;
+        DrawPlayerMenuItems(1);
+    }
+}
+
+// "ARE YOU SURE?" confirm, same ERROR-band text-box shape
+// DrawAchievementListScreen uses, trimmed to a two-line prompt. A
+// confirms (sends POKEPVP_MSG_LOGOUT_REQUEST and shows a final static
+// message -- the launcher process exits shortly after, so there is
+// nothing further for this task to do); B backs out to the ACCOUNT menu
+// without sending anything.
+static void Task_PokePvPLogOutConfirm(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    if (gTasks[taskId].tScreenDrawn == 0)
+    {
+        gTasks[taskId].tScreenDrawn = 1;
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+        MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 2,
+            sTextColor1, -1, sText_AccountLogOutConfirm);
+        PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+        CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
+    }
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        SendLogoutRequest();
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 2,
+            sTextColor1, -1, sText_LoggingOut);
+        CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
+        gTasks[taskId].func = Task_PokePvPLoggingOut;
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+        gTasks[taskId].tSubCursorPos = 0;
+        gTasks[taskId].func = Task_PokePvPAccountMenu;
+        DrawAccountMenuItems(0);
+    }
+}
+
+// Idle terminal state: the logout request is already sent and the
+// launcher process is expected to exit on its own within a frame or two
+// (run_windowed's own 'running loop, main.rs). Nothing left to do here
+// but hold the "Logging out..." message -- deliberately no further input
+// handling, matching that there is no meaningful next action once the
+// process is already tearing down.
+static void Task_PokePvPLoggingOut(u8 taskId)
+{
+}
+
+// ---------------------------------------------------------------------------
+// ADR-316: ACHIEVEMENTS -- PROFILE's 4th row. A 2-row submenu (ACHIEVEMENTS /
+// TEAM ACHIEVEMENTS), same shape as DrawPlayerMenuItems/Task_PokePvPPlayerMenu
+// just above, each row opening onto a static list screen built the same way
+// Task_PokePvPMatchHistory renders its own ERROR-band list: every catalog
+// entry at once (both catalogs are small and fixed -- ADR-316 explicitly
+// does not add pagination), earned entries marked, locked entries shown
+// with title+description only.
+// ---------------------------------------------------------------------------
+
+static void DrawAchievementsMenuItems(u8 selectedIdx)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    const u8 *const sLabels[] = { sText_AchievementsRow, sText_TeamAchievementsRow };
+    u8 i;
+
+    for (i = 0; i < 5; i++)
+    {
+        bool8 selected = (i == selectedIdx);
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        if (i < 2)
+            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
+        PutWindowTilemap(sWindowIds[i]);
+    }
+    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 4; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+}
+
+static void Task_PokePvPAchievementsMenu(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tScreenDrawn = 0;
+        gTasks[taskId].func = gTasks[taskId].tSubCursorPos == 0
+            ? Task_PokePvPAchievementsList
+            : Task_PokePvPTeamAchievementsList;
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tSubCursorPos = 3;
+        gTasks[taskId].func = Task_PokePvPProfile;
+        DrawProfileItems(3);
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+        DrawAchievementsMenuItems(gTasks[taskId].tSubCursorPos);
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+        DrawAchievementsMenuItems(gTasks[taskId].tSubCursorPos);
+    }
+}
+
+/* Shared by Task_PokePvPAchievementsList and
+ * Task_PokePvPTeamAchievementsList -- both render their whole catalog
+ * (locked and earned) into the ERROR band, same single-shot
+ * tScreenDrawn-gated draw as Task_PokePvPMatchHistory. `title` names the
+ * screen; `count`/`get` abstract over which buffer (achievements.h) is
+ * being read. */
+static void DrawAchievementListScreen(const u8 *title, u8 count, bool8 (*get)(u8, PokePvPAchievementEntry *))
+{
+    // Worst case: POKEPVP_ACHIEVEMENTS_MAX_ENTRIES (8) lines of
+    // "DONE "/"-    " (5) + title (20) + ": " (2) + description (48) +
+    // newline (1) = 76 each, + the title line + EOS -- sized for this
+    // screen's own single largest user (ADR-198's own discipline), not
+    // guessed.
+    u8 buf[8 * 76 + 32];
+    u8 *dst = buf;
+    u8 i;
+
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    dst = StringCopy(dst, title);
+    dst = StringCopy(dst, sString_Newline);
+    if (count == 0)
+    {
+        dst = StringCopy(dst, sText_AchievementsEmpty);
+    }
+    else
+    {
+        for (i = 0; i < count; i++)
+        {
+            PokePvPAchievementEntry entry;
+
+            if (get(i, &entry))
+            {
+                dst = StringCopy(dst, entry.earned ? sText_AchievementMarkEarned : sText_AchievementMarkLocked);
+                dst = StringCopy(dst, entry.title);
+                dst = StringCopy(dst, sText_AchievementTitleDescSep);
+                dst = StringCopy(dst, entry.description);
+                dst = StringCopy(dst, sString_Newline);
+            }
+        }
+    }
+    *dst = EOS;
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 2, sTextColor1, -1, buf);
+    PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+    CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
+}
+
+static void Task_PokePvPAchievementsList(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    if (gTasks[taskId].tScreenDrawn == 0)
+    {
+        gTasks[taskId].tScreenDrawn = 1;
+        DrawAchievementListScreen(sText_AchievementsRow, PokePvPAchievements_Count(), PokePvPAchievements_Get);
+    }
+
+    if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+        gTasks[taskId].tSubCursorPos = 0;
+        gTasks[taskId].func = Task_PokePvPAchievementsMenu;
+        DrawAchievementsMenuItems(0);
+    }
+}
+
+static void Task_PokePvPTeamAchievementsList(u8 taskId)
+{
+    if (gPaletteFade.active)
+        return;
+
+    if (gTasks[taskId].tScreenDrawn == 0)
+    {
+        gTasks[taskId].tScreenDrawn = 1;
+        DrawAchievementListScreen(sText_TeamAchievementsRow, PokePvPTeamAchievements_Count(), PokePvPTeamAchievements_Get);
+    }
+
+    if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+        gTasks[taskId].tSubCursorPos = 1;
+        gTasks[taskId].func = Task_PokePvPAchievementsMenu;
+        DrawAchievementsMenuItems(1);
+    }
+}
+
+/* ADR-316 §5: the main-menu "unlocked" notice -- surfaced from
+ * Task_HandleMenuInput exactly like the challenge inbox
+ * (PokePvPInbox_Count), never mid-battle (structural: only the top-menu
+ * idle task reaches this check at all). A/B both dismiss -- there is no
+ * action to take here, just acknowledgement -- and clear the buffer so
+ * it never re-draws if the player lingers on the top menu after the
+ * server-side ack already stopped new pushes. */
+static void Task_PokePvPAchievementUnlocked(u8 taskId)
+{
+    u8 buf[POKEPVP_ACHIEVEMENT_UNLOCKED_MAX_ENTRIES * (POKEPVP_ACHIEVEMENT_MAX_TITLE_LEN + 1) + 48];
+    u8 *dst = buf;
+    u8 count = PokePvPAchievementUnlocked_Count();
+    u8 i;
+
+    if (gPaletteFade.active)
+        return;
+
+    if (gTasks[taskId].tScreenDrawn == 0)
+    {
+        gTasks[taskId].tScreenDrawn = 1;
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+        MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+        dst = StringCopy(dst, sText_AchievementUnlockedHeader);
+        dst = StringCopy(dst, sString_Newline);
+        for (i = 0; i < count; i++)
+        {
+            u8 title[POKEPVP_ACHIEVEMENT_MAX_TITLE_LEN + 1];
+
+            if (PokePvPAchievementUnlocked_GetTitle(i, title, sizeof(title)))
+            {
+                dst = StringCopy(dst, title);
+                dst = StringCopy(dst, sString_Newline);
+            }
+        }
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 0, 2, sTextColor1, -1, buf);
+        PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+        CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
+    }
+
+    if (JOY_NEW(A_BUTTON) || JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        PokePvPAchievementUnlocked_Clear();
+        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+        BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
+        gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromHistory;
+    }
 }
 
 // ---------------------------------------------------------------------------

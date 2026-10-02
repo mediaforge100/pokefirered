@@ -16,6 +16,9 @@
 #include "save_failed_screen.h"
 #include "quest_log.h"
 #include "sloopsvc.h"
+#include "new_game.h"
+#include "save.h"
+#include "main_menu.h"
 
 extern u32 intr_main[];
 
@@ -239,12 +242,34 @@ static void UpdateLinkAndCallCallbacks(void)
         CallCallbacks();
 }
 
+// POKEPVP upstream patch (2026-10-02, owner-directed, D7 follow-up):
+// skips the real copyright screen -> GAMEFREAK logo -> title screen
+// chain FireRed normally boots through before CB2_InitMainMenu. D7 only
+// ever promised no New Game/overworld flow; this chain was still real
+// and still shown -- confirmed by a live headless capture this session
+// (the GAMEFREAK/Charizard title screen rendering, requiring a real
+// START press that this launcher never sends) before this patch.
+//
+// The vanilla chain (CB2_InitCopyrightScreenAfterBootup, intro.c) isn't
+// pure animation: once its own copyright-screen setup finishes, it does
+// real, load-bearing state init -- ResetMenuAndMonGlobals,
+// Save_ResetSaveCounters, LoadGameSave(SAVE_NORMAL) (the actual flash
+// read that populates gSaveBlock1/2 and gSaveFileStatus --
+// Task_SetWin0BldRegsAndCheckSaveFile in main_menu.c reads
+// gSaveFileStatus directly and would misread an unset/zero value as
+// SAVE_STATUS_OK), Sav2_ClearSetDefault on an empty/invalid save, and
+// SetPokemonCryStereo. All of it is reproduced here verbatim, in the
+// same order, with the same gSaveBlock2Ptr prerequisite the original
+// also depended on (assigned just above) -- the only thing skipped is
+// the visual copyright/GAMEFREAK/title rendering and its GameCube
+// multi-boot link-cable polling (SetUpCopyrightScreen, intro.c), which
+// has no state-affecting side effect of its own in this launcher's
+// no-link-cable environment.
 static void InitMainCallbacks(void)
 {
     gMain.vblankCounter1 = 0;
     gMain.vblankCounter2 = 0;
     gMain.callback1 = NULL;
-    SetMainCallback2(CB2_InitCopyrightScreenAfterBootup);
     gSaveBlock2Ptr = &gSaveBlock2;
     gSaveBlock1Ptr = &gSaveBlock1;
     gSaveBlock2.encryptionKey = 0;
@@ -252,6 +277,13 @@ static void InitMainCallbacks(void)
 #if REVISION >= 0xA
     svc_SetSaveBlock2(&gSaveBlock2);
 #endif
+    ResetMenuAndMonGlobals();
+    Save_ResetSaveCounters();
+    LoadGameSave(SAVE_NORMAL);
+    if (gSaveFileStatus == SAVE_STATUS_EMPTY || gSaveFileStatus == SAVE_STATUS_INVALID)
+        Sav2_ClearSetDefault();
+    SetPokemonCryStereo(gSaveBlock2Ptr->optionsSound);
+    SetMainCallback2(CB2_InitMainMenu);
 }
 
 static void CallCallbacks(void)
