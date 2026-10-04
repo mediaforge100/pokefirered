@@ -45,8 +45,12 @@ u8 RunHelpSystemCallback(void)
     {
     case 0:
         sInHelpSystem = 0;
-        if (gSaveBlock2Ptr->optionsButtonMode != OPTIONS_BUTTON_MODE_HELP)
-            return 0;
+        // POKEPVP: Help System disabled project-wide. OPTIONS_BUTTON_MODE_HELP
+        // is no longer selectable in option_menu.c, but a save written before
+        // this change may still carry it on disk -- gate unconditionally
+        // rather than trust save data, since RunHelpSystemCallback runs every
+        // frame regardless of which PokePvP screen is active.
+        return 0;
         if (JOY_NEW(R_BUTTON) && gHelpSystemToggleWithRButtonDisabled == TRUE)
             return 0;
         if (JOY_NEW(L_BUTTON | R_BUTTON))

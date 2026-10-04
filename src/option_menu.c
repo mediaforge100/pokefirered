@@ -131,7 +131,8 @@ static const struct BgTemplate sOptionMenuBgTemplates[] =
 };
 
 static const u16 sOptionMenuPalette[] = INCBIN_U16("graphics/misc/option_menu.gbapal");
-static const u16 sOptionMenuItemCounts[MENUITEM_COUNT] = {3, 2, 2, 2, 3, 10, 0};
+// POKEPVP: BUTTONMODE count dropped 3->2 (HELP removed, see sButtonTypeOptions).
+static const u16 sOptionMenuItemCounts[MENUITEM_COUNT] = {3, 2, 2, 2, 2, 10, 0};
 
 static const u8 *const sOptionMenuItemsNames[MENUITEM_COUNT] =
 {
@@ -169,9 +170,15 @@ static const u8 *const sSoundOptions[] =
     gText_SoundStereo
 };
 
+// POKEPVP (RAM budget / ADR-321 follow-up): HELP removed from the selectable
+// list. Its backing buffer (sMapTilesBackup, help_system_util.c) could not be
+// reclaimed -- it's also used by real save-failure recovery -- so this change
+// earns no EWRAM headroom, but a Help System this project's launcher never
+// exercises or demonstrates is dead weight as a player-facing option. Stored
+// value is now 0-based over these 2 entries instead of the raw 3-value enum;
+// see the +1/-1 conversion at this file's load/save sites.
 static const u8 *const sButtonTypeOptions[] =
 {
-    gText_ButtonTypeHelp,
 	gText_ButtonTypeLR,
 	gText_ButtonTypeLEqualsA
 };
@@ -210,7 +217,11 @@ void CB2_OptionsMenuFromStartMenu(void)
     sOptionMenuPtr->option[MENUITEM_BATTLESCENE] = gSaveBlock2Ptr->optionsBattleSceneOff;
     sOptionMenuPtr->option[MENUITEM_BATTLESTYLE] = gSaveBlock2Ptr->optionsBattleStyle;
     sOptionMenuPtr->option[MENUITEM_SOUND] = gSaveBlock2Ptr->optionsSound;
-    sOptionMenuPtr->option[MENUITEM_BUTTONMODE] = gSaveBlock2Ptr->optionsButtonMode;
+    // POKEPVP: remap any save still carrying the removed HELP mode (0) to LR
+    // before converting to this menu's 0-based 2-entry representation.
+    if (gSaveBlock2Ptr->optionsButtonMode == OPTIONS_BUTTON_MODE_HELP)
+        gSaveBlock2Ptr->optionsButtonMode = OPTIONS_BUTTON_MODE_LR;
+    sOptionMenuPtr->option[MENUITEM_BUTTONMODE] = gSaveBlock2Ptr->optionsButtonMode - 1;
     sOptionMenuPtr->option[MENUITEM_FRAMETYPE] = gSaveBlock2Ptr->optionsWindowFrameType;
     
     for (i = 0; i < MENUITEM_COUNT - 1; i++)
@@ -514,7 +525,8 @@ static void CloseAndSaveOptionMenu(u8 taskId)
     gSaveBlock2Ptr->optionsBattleSceneOff = sOptionMenuPtr->option[MENUITEM_BATTLESCENE];
     gSaveBlock2Ptr->optionsBattleStyle = sOptionMenuPtr->option[MENUITEM_BATTLESTYLE];
     gSaveBlock2Ptr->optionsSound = sOptionMenuPtr->option[MENUITEM_SOUND];
-    gSaveBlock2Ptr->optionsButtonMode = sOptionMenuPtr->option[MENUITEM_BUTTONMODE];
+    // POKEPVP: convert back from the 0-based 2-entry (LR/L=A) representation.
+    gSaveBlock2Ptr->optionsButtonMode = sOptionMenuPtr->option[MENUITEM_BUTTONMODE] + 1;
     gSaveBlock2Ptr->optionsWindowFrameType = sOptionMenuPtr->option[MENUITEM_FRAMETYPE];
     SetPokemonCryStereo(gSaveBlock2Ptr->optionsSound);
     FREE_AND_SET_NULL(sOptionMenuPtr);

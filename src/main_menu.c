@@ -73,6 +73,13 @@ enum MainMenuWindow
     MAIN_MENU_WINDOW_POKEPVP_2, // PROFILE
     MAIN_MENU_WINDOW_POKEPVP_3, // MATCH HISTORY
     MAIN_MENU_WINDOW_POKEPVP_4, // OPTIONS
+    // Owner-directed redesign (2026-10-04): the PLAYER trainer-card screen
+    // needs one tall window (sprite + name/level text) instead of the 5
+    // stacked row slots above -- reuses POKEPVP_0's own baseBlock (see this
+    // window's own template comment below for why that's safe) rather than
+    // claiming new VRAM, same "mutually exclusive draw" reuse MAIN_MENU_
+    // WINDOW_ERROR already established for CONTINUE's baseBlock.
+    MAIN_MENU_WINDOW_POKEPVP_CARD,
     MAIN_MENU_WINDOW_ERROR,
     // Playtest fallout (2026-09-26, owner-requested feature): the small
     // online-player-count line, bottom-left of the screen, outside the
@@ -90,6 +97,13 @@ enum MainMenuWindow
     // CONTINUE (dead), NEWGAME_ONLY (dead), or ERROR (this screen erases
     // the panel and never touches ERROR itself).
     MAIN_MENU_WINDOW_GUIDE_DETAIL,
+    // Owner playtest feedback (2026-10-04): the ACHIEVEMENTS/TEAM
+    // ACHIEVEMENTS badge grid used to reuse MAIN_MENU_WINDOW_GUIDE_DETAIL's
+    // own geometry outright -- sat too high on screen, but GUIDE's own
+    // detail screen still needs that exact position, so a *second* window
+    // (own geometry, same baseBlock -- see its own template comment) was
+    // needed rather than moving the shared one.
+    MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL,
     MAIN_MENU_WINDOW_COUNT
 };
 
@@ -287,9 +301,12 @@ static void Task_PokePvPInbox(u8 taskId);
 // PROFILE row (cursor 2); B returns to the top menu.
 static void Task_PokePvPProfile(u8 taskId);
 static void DrawProfileItems(u8 selectedIdx);
+// Owner-directed redesign (2026-10-04): PLAYER is now a real trainer-card
+// screen (sprite + name + a real graphical level/XP bar + ACHIEVEMENTS),
+// not a 3-row action selector -- see DrawPlayerMenuItems's own doc comment.
 static void Task_PokePvPPlayerMenu(u8 taskId);
-static void DrawPlayerMenuItems(u8 selectedIdx);
-// Owner-directed feature (2026-10-02): ACCOUNT -- PLAYER's 2nd row, a
+static void DrawPlayerMenuItems(void);
+// Owner-directed feature (2026-10-02): ACCOUNT -- PROFILE's 2nd row, a
 // 1-row submenu (LOG OUT) with its own "ARE YOU SURE?" confirm.
 static void Task_PokePvPAccountMenu(u8 taskId);
 static void DrawAccountMenuItems(u8 selectedIdx);
@@ -311,7 +328,6 @@ static void Task_PokePvPAchievementUnlocked(u8 taskId);
 // rivals / blocks / name) and the per-list screens with per-row
 // CHALLENGE / REMOVE / UNBLOCK actions.
 static void Task_PokePvPSocial(u8 taskId);
-static void Task_PokePvPSpritePicker(u8 taskId);
 static void Task_PokePvPSocialList(u8 taskId);
 static void Task_PokePvPSocialRowMenu(u8 taskId);
 static void Task_PokePvPSocialRowMenuDismiss(u8 taskId);
@@ -345,6 +361,19 @@ static void DrawPokePvPMenuItems(u8 selectedIdx);
 // Task_HandleMenuInput's own occasional standalone refresh -- own that
 // decision instead).
 static void DrawOnlineCountItem(void);
+// Owner-directed feature (2026-10-02): GUIDE and ACHIEVEMENTS both share
+// this window's rows (17-18 are clear of their own 5-row panel, but the
+// window is still live VRAM left over from the top menu) -- unlike
+// MAIN_MENU_WINDOW_ERROR, nothing else enters or clears this window
+// outside Task_HandleMenuInput's own idle top-menu loop, so it would
+// otherwise sit on screen, stale, for as long as either submenu is open.
+// Single immediate commit (COPYWIN_FULL) rather than the batched
+// ClearWindowTilemap+CopyBgTilemapBufferToVram path, since callers here
+// don't already own a pending bg0 commit the way DrawPokePvPMenuItems
+// does. DrawPokePvPMenuItems's own unconditional DrawOnlineCountItem()
+// call restores it the moment either screen's B-button returns to the
+// top menu -- no restore call needed here.
+static void HideOnlineCountItem(void);
 static void DrawQueueCountLine(void);
 // POKEPVP (ADR-091): START MATCH -> AUTO-MATCH/INVITE MATCH submenu.
 static void DrawStartMatchSubmenuItems(u8 selectedIdx);
@@ -509,13 +538,25 @@ static const u8 sText_MatchHistory[] = _("MATCH HISTORY");
 // reusing sText_MatchHistory verbatim -- GUIDE takes its old top-menu
 // slot (sLabels in DrawPokePvPMenuItems).
 static const u8 sText_Guide[] = _("GUIDE");
-static const u8 sText_HistoryWSep[] = _("   W: ");
-static const u8 sText_HistoryL[] = _("  L: ");
+// ADR-321 (2026-10-02): MATCH HISTORY's ERROR-band list is now a real
+// per-match log (name + this account's own result + battle class),
+// sourced from GET /v1/account/matches -- not the per-opponent
+// win/loss aggregate the old sText_HistoryWSep/sText_HistoryL rendered
+// (that data still exists server-side at GET /v1/leaderboard/head-to-
+// head, just no longer feeds this screen -- see docs/adr/321).
+static const u8 sText_HistoryVs[] = _(" - ");
+static const u8 sText_HistoryWin[] = _("WIN");
+static const u8 sText_HistoryLoss[] = _("LOSS");
+static const u8 sText_HistoryTie[] = _("TIE");
+static const u8 sText_HistoryClassOpen[] = _(" (");
+static const u8 sText_HistoryClassEarly[] = _("EARLY");
+static const u8 sText_HistoryClassElite[] = _("ELITE");
+static const u8 sText_HistoryClassClose[] = _(")");
 static const u8 sText_HistoryEmpty[] = _("No matches yet.");
-// POKEPVP (ADR-238): divider label ahead of the per-opponent list, now
-// that MATCH HISTORY also shows PROFILE's old tag/stats/species/recent
-// rows above it.
-static const u8 sText_MatchHistoryDivider[] = _("RECORD:");
+// POKEPVP (ADR-238, retitled ADR-321): divider label ahead of the
+// per-match list, now that MATCH HISTORY also shows PROFILE's old
+// tag/stats/species/recent rows above it.
+static const u8 sText_MatchHistoryDivider[] = _("HISTORY:");
 // POKEPVP (ADR-189): sText_Leaderboard/sText_LeaderboardRSep/
 // sText_LeaderboardEmpty (ADR-188) removed with the top menu's 6th row
 // and Task_PokePvPLeaderboard -- see docs/adr/189.
@@ -618,7 +659,7 @@ static const u8 sText_QuickEarly[] = _("QUICK EARLY");
 static const u8 sText_QuickElite[] = _("QUICK ELITE");
 static const u8 sText_CustomElite[] = _("CUSTOM ELITE");
 static const u8 sText_InviteMatch[] = _("INVITE MATCH");
-static const u8 sText_PracticeMatch[] = _("PRACTICE");
+static const u8 sText_PracticeMatch[] = _("AI PRACTICE");
 // POKEPVP (owner ask, 2026-09-13, item 6): the START MATCH submenu never
 // told the player what each row actually means before committing to it
 // (team size / level / premade-vs-own-team). One static description per
@@ -699,6 +740,10 @@ static const u8 sText_ProfileEmpty[] = _("No matches yet.");
 static const u8 sText_ProfileStatSep[] = _("  ");
 static const u8 sText_ProfileSpeciesSep[] = _(", ");
 static const u8 sText_ProfileNoTag[] = _("(no tag yet)");
+// Owner-directed feature (2026-10-03): cosmetic trainer level, appended
+// after the tag on MATCH HISTORY's window 1 -- see that call site's own
+// doc comment.
+static const u8 sText_ProfileLevelPrefix[] = _("  LV.");
 static const u8 sText_ProfileNoSpecies[] = _("(none yet)");
 static const u8 sText_ProfileNoOpponent[] = _("(none yet)");
 // POKEPVP (UI plan slice 6): the SOCIAL screen (Build Plan §12) --
@@ -715,7 +760,6 @@ static const u8 sText_Blocks[] = _("BLOCKS");
 // Profile/Task_PokePvPPlayerMenu's own doc comments.
 static const u8 sText_ProfileSocialRow[] = _("SOCIAL");
 static const u8 sText_ProfilePlayerRow[] = _("PLAYER");
-static const u8 sText_PlayerMenuSprite[] = _("SPRITE");
 // Owner-directed feature (2026-10-02): PLAYER's own 2nd row, replacing
 // the unused sString_Dummy placeholder NAME's removal (ADR-238 playtest
 // fallout) left behind. Opens Task_PokePvPAccountMenu.
@@ -842,6 +886,20 @@ static const struct WindowTemplate sWindowTemplate[] = {
         .bg = 0, .tilemapLeft = 5, .tilemapTop = 14, .width = 20, .height = 2,
         .paletteNum = 15, .baseBlock = 0x211
     },
+    // Owner-directed redesign (2026-10-04, revised same day per playtest
+    // feedback): rows 6-13 (64px) for the PLAYER trainer-card screen's own
+    // sprite/name/level content -- NOT the full 6-15 span anymore, so rows
+    // 14-15 (POKEPVP_4, just above) stay free for that screen's own
+    // SPRITE/ACHIEVEMENTS toggle box instead of overlapping it. Reuses
+    // POKEPVP_0's own baseBlock (0x151) rather than claiming new VRAM --
+    // safe because this window and POKEPVP_0..3 are never drawn at the
+    // same time (same "mutually exclusive draw" reasoning MAIN_MENU_
+    // WINDOW_ERROR's own comment already uses for aliasing CONTINUE's
+    // baseBlock).
+    [MAIN_MENU_WINDOW_POKEPVP_CARD] = {
+        .bg = 0, .tilemapLeft = 5, .tilemapTop = 6, .width = 20, .height = 8,
+        .paletteNum = 15, .baseBlock = 0x151
+    },
     [MAIN_MENU_WINDOW_ERROR] = {
         .bg = 0,
         .tilemapLeft = 5,
@@ -894,6 +952,17 @@ static const struct WindowTemplate sWindowTemplate[] = {
     // itself occupied (rows 6-15) instead of leaving it blank.
     [MAIN_MENU_WINDOW_GUIDE_DETAIL] = {
         .bg = 0, .tilemapLeft = 3, .tilemapTop = 5, .width = 24, .height = 10,
+        .paletteNum = 15, .baseBlock = 0x001
+    },
+    // Owner playtest feedback (2026-10-04): the badge grid screen sat too
+    // high reusing GUIDE_DETAIL's own tilemapTop=5 -- this is the *window*
+    // itself shifted down one tile (5 -> 6, 8px) from that, not just the
+    // badge sprites inside it (the first attempt's mistake). Same
+    // baseBlock 0x001 reuse, safe for the same reason GUIDE_DETAIL's own
+    // comment gives: this screen, GUIDE's detail screen, and CONTINUE/
+    // NEWGAME_ONLY/ERROR are never shown at the same time as each other.
+    [MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL] = {
+        .bg = 0, .tilemapLeft = 3, .tilemapTop = 6, .width = 24, .height = 10,
         .paletteNum = 15, .baseBlock = 0x001
     },
     [MAIN_MENU_WINDOW_COUNT] = DUMMY_WIN_TEMPLATE
@@ -1062,6 +1131,16 @@ static const u8 sTextColor1[] = { 10, 11, 12 };
 // POKEPVP (menu redesign): the selected row's red-bar/white-text style,
 // bank 15 indices 13-15 (previously unused padding) -- see textbox.pal.
 static const u8 sTextColorSelected[] = { 13, 14, 15 };
+// Owner-directed feature (2026-10-03): same ink/shadow as sTextColor1,
+// but TEXT_COLOR_TRANSPARENT in the background slot instead of index 10
+// (the cream panel fill) -- paired with PIXEL_FILL(TEXT_COLOR_
+// TRANSPARENT) in DrawOnlineCountItem, this drops the opaque box behind
+// the ONLINE label so its text sits directly over the real backdrop art
+// (BG2, same priority-tie/transparent-pixel fallthrough vanilla FireRed
+// itself uses for every text layer drawn over a scene -- e.g.
+// option_menu.c's own sOptionMenuTextColor). Only this one window uses
+// it; every other menu row keeps its opaque cream box.
+static const u8 sTextColorOnlineCount[] = { TEXT_COLOR_TRANSPARENT, 11, 12 };
 
 static const u8 sTextColor2[] = { 10,  1, 12 };
 
@@ -1511,14 +1590,29 @@ static void DrawOnlineCountItem(void)
 
     if (!PokePvP_GetOnlineCount(&count))
         return;
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_ONLINE_COUNT, PIXEL_FILL(10));
+    // Owner-directed feature (2026-10-03): PIXEL_FILL(TEXT_COLOR_
+    // TRANSPARENT) instead of PIXEL_FILL(10) -- see sTextColorOnlineCount's
+    // own doc comment for why this is the one window on this screen drawn
+    // without an opaque backing box.
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_ONLINE_COUNT, PIXEL_FILL(TEXT_COLOR_TRANSPARENT));
     dst = StringCopy(buf, sText_OnlineCountLabel);
     *dst++ = CHAR_SPACE;
     dst = ConvertIntToDecimalStringN(dst, count, STR_CONV_MODE_LEFT_ALIGN, 5);
     *dst = EOS;
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ONLINE_COUNT, FONT_NORMAL, 1, 2, sTextColor1, -1, buf);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ONLINE_COUNT, FONT_NORMAL, 1, 2, sTextColorOnlineCount, -1, buf);
     PutWindowTilemap(MAIN_MENU_WINDOW_ONLINE_COUNT);
     CopyWindowToVram(MAIN_MENU_WINDOW_ONLINE_COUNT, COPYWIN_GFX);
+}
+
+// See this function's own forward-declaration comment: unmaps the
+// window's tiles from bg0 and blanks its pixel buffer, committed
+// immediately with COPYWIN_FULL so it doesn't depend on the caller's own
+// bg0 tilemap buffer being flushed afterward.
+static void HideOnlineCountItem(void)
+{
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_ONLINE_COUNT, PIXEL_FILL(TEXT_COLOR_TRANSPARENT));
+    ClearWindowTilemap(MAIN_MENU_WINDOW_ONLINE_COUNT);
+    CopyWindowToVram(MAIN_MENU_WINDOW_ONLINE_COUNT, COPYWIN_FULL);
 }
 
 // 2026-10-01 playtest insight: "IN QUEUE: N" as a second line under
@@ -1704,9 +1798,8 @@ static void Task_UpdateVisualSelection(u8 taskId)
     if (sPokePvPReturnToPlayerMenu)
     {
         sPokePvPReturnToPlayerMenu = FALSE;
-        gTasks[taskId].tSubCursorPos = 1;
         gTasks[taskId].tCursorPos = 2;
-        DrawPlayerMenuItems(1);
+        gTasks[taskId].tScreenDrawn = 0;
         gTasks[taskId].func = Task_PokePvPPlayerMenu;
         return;
     }
@@ -1778,6 +1871,11 @@ static void Task_HandleMenuInput(u8 taskId)
         BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
         gTasks[taskId].tMGErrorMsgState = 0;
         gTasks[taskId].func = Task_PokePvPInbox;
+        // Owner-directed feature (2026-10-02): the ONLINE label is a
+        // top-menu-only element -- see HideOnlineCountItem's own doc
+        // comment. This branch leaves the top menu directly, bypassing
+        // Task_ExecuteMainMenuSelection's own hide call below.
+        HideOnlineCountItem();
         return;
     }
     // ADR-316 §5: the achievement-unlocked notice, same interruptibility
@@ -1792,6 +1890,8 @@ static void Task_HandleMenuInput(u8 taskId)
         gTasks[taskId].tScreenDrawn = 0;
         BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
         gTasks[taskId].func = Task_PokePvPAchievementUnlocked;
+        // See the inbox branch's own comment just above.
+        HideOnlineCountItem();
         return;
     }
     if (!gPaletteFade.active && HandleMenuInput(taskId))
@@ -1809,6 +1909,15 @@ static void Task_ExecuteMainMenuSelection(u8 taskId)
         {
         default:
         case MAIN_MENU_POKEPVP:
+            // Owner-directed feature (2026-10-02): every branch below
+            // leaves the plain top menu for some other screen (START
+            // MATCH, TEAM BUILDER, PROFILE, GUIDE, OPTIONS) -- the ONLINE
+            // label is a top-menu-only element (see HideOnlineCountItem's
+            // own doc comment) and nothing past this point ever redraws
+            // it, so hiding it once here, at the single real dispatch
+            // point for every top-menu row, covers all of them instead of
+            // one hide call per destination screen.
+            HideOnlineCountItem();
             // POKEPVP (ADR-085): only slot 0 (START MATCH) is real behavior;
             // slots 1-4 go to the stub handler instead of falling through
             // Task_ExecuteMainMenuSelection's menuAction dispatch below.
@@ -2053,9 +2162,12 @@ static void Task_PokePvPMenuStub(u8 taskId)
 }
 
 // POKEPVP (ADR-320, 2026-10-01 playtest fallout): draws one page of the
-// ERROR band's "RECORD:" list -- the "RECORD:" divider plus "N/N" as the
-// pager's persistent header line, and exactly one history entry (or
-// sText_HistoryEmpty when there are none at all) as its content line.
+// ERROR band's "HISTORY:" list -- the divider plus "N/N" as the pager's
+// persistent header line, and exactly one real past match (or
+// sText_HistoryEmpty when there are none at all) as its content line:
+// "<opponent> - <WIN/LOSS/TIE> (<EARLY/ELITE>)", battle class suffix
+// omitted when PokePvPMatchHistory_ReceiveEntry couldn't resolve one
+// (POKEPVP_HISTORY_CLASS_UNKNOWN -- practice/invite matches today).
 // pageNum is read from the task's own tPageNum (clamped defensively in
 // case historyCount ever shrinks out from under an open page, e.g. a
 // fresh fetch landing while this screen is up).
@@ -2083,10 +2195,26 @@ static void DrawPokePvPHistoryPage(u8 taskId, u8 historyCount)
         if (PokePvPMatchHistory_Get(page, &entry))
         {
             dst = StringCopy(dst, entry.name);
-            dst = StringCopy(dst, sText_HistoryWSep);
-            dst = ConvertIntToDecimalStringN(dst, entry.wins, STR_CONV_MODE_LEFT_ALIGN, 2);
-            dst = StringCopy(dst, sText_HistoryL);
-            dst = ConvertIntToDecimalStringN(dst, entry.losses, STR_CONV_MODE_LEFT_ALIGN, 2);
+            dst = StringCopy(dst, sText_HistoryVs);
+            switch (entry.result)
+            {
+            case POKEPVP_HISTORY_RESULT_WIN:
+                dst = StringCopy(dst, sText_HistoryWin);
+                break;
+            case POKEPVP_HISTORY_RESULT_LOSS:
+                dst = StringCopy(dst, sText_HistoryLoss);
+                break;
+            default:
+                dst = StringCopy(dst, sText_HistoryTie);
+                break;
+            }
+            if (entry.battleClass != POKEPVP_HISTORY_CLASS_UNKNOWN)
+            {
+                dst = StringCopy(dst, sText_HistoryClassOpen);
+                dst = StringCopy(dst, entry.battleClass == POKEPVP_HISTORY_CLASS_ELITE
+                    ? sText_HistoryClassElite : sText_HistoryClassEarly);
+                dst = StringCopy(dst, sText_HistoryClassClose);
+            }
         }
         else
         {
@@ -2174,13 +2302,26 @@ static void Task_PokePvPMatchHistory(u8 taskId)
         CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_FULL);
 
         // Window 1: the permanent NAME#1234 tag (moved from window 0 --
-        // see this block's own doc comment above).
+        // see this block's own doc comment above), plus (owner-directed
+        // feature, 2026-10-03) the cosmetic trainer level -- this window
+        // already has spare width (tag maxes out at 16 chars; "  LV.999"
+        // adds at most 8 more, comfortably under this panel's ~26-char
+        // line budget), so it's appended here rather than claiming
+        // window 4 the way a second ERROR-band line would have to (window
+        // 4 can't take a line of its own on this screen -- see that
+        // window's own "erase, don't occlude" comment just below for the
+        // row-15 overlap this already fought once).
         FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(10));
         dst = buf;
         if (haveProfile && profile.tag[0] != EOS)
             dst = StringCopy(dst, profile.tag);
         else
             dst = StringCopy(dst, sText_ProfileNoTag);
+        if (haveProfile)
+        {
+            dst = StringCopy(dst, sText_ProfileLevelPrefix);
+            dst = ConvertIntToDecimalStringN(dst, profile.trainerLevel, STR_CONV_MODE_LEFT_ALIGN, 3);
+        }
         *dst = EOS;
         AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
         PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
@@ -2312,73 +2453,148 @@ static void Task_PokePvPReturnToTopMenuFromHistory(u8 taskId)
 }
 
 // ---------------------------------------------------------------------------
-// 2026-10-01, owner-directed feature: GUIDE. A concept list (this
-// project's own 5-row panel, same shape as every other picker in this
-// file) opening into a scrolling detail text box per concept, reusing
-// MAIN_MENU_WINDOW_ERROR and the exact RunTextPrinters-pumped scrolling
-// mechanism PrintMessageOnWindow4/the wait screens already use -- no new
-// window geometry, no vendored upstream edits. Content lives as plain
+// 2026-10-01, owner-directed feature: GUIDE. A concept list opening into
+// a scrolling detail text box per concept, reusing MAIN_MENU_WINDOW_ERROR
+// and the exact RunTextPrinters-pumped scrolling mechanism
+// PrintMessageOnWindow4/the wait screens already use -- no new window
+// geometry, no vendored upstream edits. Content lives as plain
 // ROM-resident string constants (zero EWRAM/IWRAM cost, unlike a runtime
 // buffer), which matters on this project: EWRAM is already at ~99% (see
 // CLAUDE.md's pinned-versions history) and ROM space is the one budget
 // with real headroom (45.99% used).
 //
-// The 5 concepts below are a first, functional set covering mechanics
-// this project's own menus already reference (queues, ready checks,
-// battle packs, match types, ratings) -- real placeholder *content*, not
-// placeholder *code*; swapping the text or adding more concepts (up to
-// a scrolling list, not built here) is a content change, not a redesign.
+// Owner-directed content pass (2026-10-03): the original 5 concepts were
+// a first functional set; this pass reviewed every claim against the
+// real code/schema this screen describes (queue/ready-check/gateway
+// logic, the achievements migration's own seed data, the post-match
+// screen's own fields) rather than writing from memory, and fixed two
+// real, live inaccuracies this project's own earlier sessions introduced
+// after the original text was written: MATCH TYPES still said "PRACTICE"
+// after the menu label itself became "AI PRACTICE", and the old RATINGS
+// entry described MATCH HISTORY as a per-opponent win/loss tally after
+// ADR-321 reworked that screen into a real per-match log. Extended from
+// 5 to 10 concepts (RIVALS/FRIENDS/ACHIEVEMENTS/END OF MATCH/YOUR
+// ACCOUNT added) -- see DrawGuideConceptItems's own doc comment for the
+// scrolling this now needs that it didn't at 5.
 // ---------------------------------------------------------------------------
 
 static const u8 sText_GuideConceptQueues[] = _("QUEUES");
 static const u8 sText_GuideConceptReadyCheck[] = _("READY CHECK");
 static const u8 sText_GuideConceptBattlePacks[] = _("BATTLE PACKS");
 static const u8 sText_GuideConceptMatchTypes[] = _("MATCH TYPES");
-static const u8 sText_GuideConceptRatings[] = _("RATINGS");
+static const u8 sText_GuideConceptMatchHistory[] = _("MATCH HISTORY");
+static const u8 sText_GuideConceptRivals[] = _("RIVALS");
+static const u8 sText_GuideConceptFriends[] = _("FRIENDS");
+static const u8 sText_GuideConceptAchievements[] = _("ACHIEVEMENTS");
+static const u8 sText_GuideConceptEndOfMatch[] = _("END OF MATCH");
+static const u8 sText_GuideConceptYourAccount[] = _("YOUR ACCOUNT");
 
 static const u8 sText_GuideBodyQueues[] = _(
-    "A queue is a shared waiting room for\n"
-    "one match type. AUTO-MATCH joins the\n"
-    "queue for your chosen pack; PLAY\n"
-    "AGAIN rejoins the same one.\n"
-    "\n"
-    "IN QUEUE shows how many players are\n"
+    "A queue is a shared waiting room for "
+    "one match type. AUTO-MATCH joins the "
+    "queue for your chosen pack; PLAY "
+    "AGAIN rejoins the same one. "
+    "IN QUEUE shows how many players are "
     "waiting with you right now.");
 static const u8 sText_GuideBodyReadyCheck[] = _(
-    "Once two players are matched, both\n"
-    "get a short window to confirm with\n"
-    "A before the battle starts.\n"
-    "\n"
-    "Missing the window or pressing B\n"
-    "returns you to the queue -- it does\n"
-    "not count as a loss.");
+    "Once two players are matched, both "
+    "get a short window to confirm with "
+    "A before the battle starts. "
+    "Missing the window or pressing B "
+    "returns you to the queue. It does "
+    "not count as a loss, since no real "
+    "match was ever started.");
 static const u8 sText_GuideBodyBattlePacks[] = _(
-    "A battle pack is a ready-made team\n"
-    "for QUICK EARLY/QUICK ELITE -- pick\n"
-    "a pack instead of building your own\n"
-    "team first.\n"
-    "\n"
-    "CUSTOM ELITE uses a team you built\n"
+    "A battle pack is a ready-made team "
+    "for QUICK EARLY/QUICK ELITE. Pick "
+    "a pack instead of building your own "
+    "team first. "
+    "CUSTOM ELITE uses a team you built "
     "yourself in TEAM BUILDER instead.");
 static const u8 sText_GuideBodyMatchTypes[] = _(
-    "AUTO-MATCH pairs you with anyone\n"
-    "waiting in the same queue.\n"
-    "\n"
-    "INVITE MATCH challenges one real\n"
-    "friend or rival by name instead of\n"
-    "matching with a stranger.\n"
-    "\n"
-    "PRACTICE battles a local AI -- it\n"
-    "never affects your real record.");
-static const u8 sText_GuideBodyRatings[] = _(
-    "MATCH HISTORY (under PROFILE) shows\n"
-    "your total matches, wins, and\n"
-    "losses, plus a record against each\n"
-    "opponent you've played.\n"
-    "\n"
-    "Only real, completed matches count\n"
-    "toward these numbers -- PRACTICE\n"
-    "never does.");
+    "AUTO-MATCH pairs you with anyone "
+    "waiting in the same queue. "
+    "INVITE MATCH challenges one real "
+    "friend or rival by name instead of "
+    "matching with a stranger. "
+    "AI PRACTICE battles a local AI "
+    "opponent. It never affects your "
+    "record, your stats, or your "
+    "achievements.");
+static const u8 sText_GuideBodyMatchHistory[] = _(
+    "PROFILE's own stats line shows your "
+    "total matches, wins, losses, and "
+    "ties, plus your 3 most-used "
+    "Pokemon and most recent opponent. "
+    "MATCH HISTORY (PROFILE's 3rd row) "
+    "lists your real past matches one "
+    "at a time: who you played, whether "
+    "you won, lost, or tied, and whether "
+    "it was EARLY or ELITE. "
+    "AI PRACTICE matches appear in this "
+    "list, but never count toward your "
+    "stats or achievements.");
+static const u8 sText_GuideBodyRivals[] = _(
+    "After a real match ends, the END OF "
+    "MATCH screen's ADD RIVAL button "
+    "marks that opponent as a rival. "
+    "You can have up to 3 at once; "
+    "adding a 4th asks you to replace "
+    "one of the others instead of "
+    "dropping one silently. "
+    "Rivals show real-time ONLINE status "
+    "and can be challenged by name from "
+    "PROFILE, then SOCIAL, then RIVALS, "
+    "the same as a friend.");
+static const u8 sText_GuideBodyFriends[] = _(
+    "From PROFILE, then SOCIAL, then "
+    "FRIENDS, ADD FRIEND sends a friend "
+    "request by exact name. It takes "
+    "effect immediately for both "
+    "accounts; there is no accept step. "
+    "Friends show real-time ONLINE "
+    "status and can be challenged "
+    "directly from this same list, or "
+    "removed from it.");
+static const u8 sText_GuideBodyAchievements[] = _(
+    "ACHIEVEMENTS (PROFILE's 4th row) "
+    "tracks milestones: your first win, "
+    "50 or 100 total wins, winning "
+    "right after a loss, 10 flawless "
+    "wins, 10 wins against one rival, "
+    "and facing 20 or 100 different "
+    "opponents. "
+    "TEAM ACHIEVEMENTS instead rewards "
+    "team choices, like 10 wins with "
+    "one Pokemon on your team, or with "
+    "an all-one-type team. "
+    "AI PRACTICE never counts toward "
+    "either.");
+static const u8 sText_GuideBodyEndOfMatch[] = _(
+    "Right after a real match, this "
+    "screen shows who won, your match "
+    "length and turn count, and how "
+    "many Pokemon each side had left. "
+    "REMATCH challenges that same "
+    "opponent again directly. "
+    "PLAY AGAIN rejoins the queue "
+    "instead, open to anyone waiting. "
+    "ADD RIVAL marks that opponent as a "
+    "rival, and EXIT returns to the "
+    "top menu.");
+static const u8 sText_GuideBodyYourAccount[] = _(
+    "LOG IN or SIGN UP, shown before "
+    "the main menu appears, is what "
+    "makes your matches, teams, "
+    "friends, and achievements follow "
+    "this account instead of staying on "
+    "one machine. "
+    "Once logged in, this login is "
+    "saved here and you will not be "
+    "asked again on this computer. "
+    "CHANGE PASSWORD and LOG OUT live "
+    "on that same pre-game screen, not "
+    "inside the game itself.");
 
 struct PokePvPGuideConcept
 {
@@ -2391,15 +2607,27 @@ static const struct PokePvPGuideConcept sGuideConcepts[] = {
     { sText_GuideConceptReadyCheck, sText_GuideBodyReadyCheck },
     { sText_GuideConceptBattlePacks, sText_GuideBodyBattlePacks },
     { sText_GuideConceptMatchTypes, sText_GuideBodyMatchTypes },
-    { sText_GuideConceptRatings, sText_GuideBodyRatings },
+    { sText_GuideConceptMatchHistory, sText_GuideBodyMatchHistory },
+    { sText_GuideConceptRivals, sText_GuideBodyRivals },
+    { sText_GuideConceptFriends, sText_GuideBodyFriends },
+    { sText_GuideConceptAchievements, sText_GuideBodyAchievements },
+    { sText_GuideConceptEndOfMatch, sText_GuideBodyEndOfMatch },
+    { sText_GuideConceptYourAccount, sText_GuideBodyYourAccount },
 };
 #define POKEPVP_GUIDE_CONCEPT_COUNT (sizeof(sGuideConcepts) / sizeof(sGuideConcepts[0]))
 
 // Same 5-window/one-panel-border shape as DrawPokePvPMenuItems/
-// DrawProfileItems. POKEPVP_GUIDE_CONCEPT_COUNT is 5 -- exactly this
-// panel's own row count -- so every row is a real concept with no
-// scrolling/pagination needed yet; a 6th concept would need that, not
-// attempted here.
+// DrawProfileItems, but now a real scrolling window over
+// POKEPVP_GUIDE_CONCEPT_COUNT (10) entries instead of a flat 1:1 mapping
+// -- the content pass that grew this list past 5 needed this too. Same
+// "keep the selection visible, slide the window" math
+// DrawPackPickerItems already uses for its own 6-row pack+RANDOM list
+// (there: a 4-row window; here: the full 5-row panel, since this screen
+// never shares a row with MAIN_MENU_WINDOW_ERROR the way the pack
+// picker's overview line does). `start` never exceeds
+// POKEPVP_GUIDE_CONCEPT_COUNT - 5 because selectedIdx never exceeds
+// POKEPVP_GUIDE_CONCEPT_COUNT - 1 (Task_PokePvPGuideConceptList's own
+// DPAD bounds), so this never needs a separate clamp.
 static void DrawGuideConceptItems(u8 selectedIdx)
 {
     static const u8 sWindowIds[] = {
@@ -2407,22 +2635,35 @@ static void DrawGuideConceptItems(u8 selectedIdx)
         MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
         MAIN_MENU_WINDOW_POKEPVP_4,
     };
+    u8 start = 0;
     u8 i;
+
+    if (selectedIdx > 4)
+        start = (u8)(selectedIdx - 4);
 
     ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
     MainMenu_EraseWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-    for (i = 0; i < POKEPVP_GUIDE_CONCEPT_COUNT; i++)
+    for (i = 0; i < 5; i++)
     {
-        bool8 selected = (i == selectedIdx);
+        u8 row = (u8)(start + i);
+        bool8 selected = (row == selectedIdx);
+
         FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
-        AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
-            selected ? sTextColorSelected : sTextColor1, -1, sGuideConcepts[i].label);
+        if (row < POKEPVP_GUIDE_CONCEPT_COUNT)
+        {
+            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
+                selected ? sTextColorSelected : sTextColor1, -1, sGuideConcepts[row].label);
+        }
         PutWindowTilemap(sWindowIds[i]);
     }
     MainMenu_DrawWindowNoCommit(&sPokePvPMenuPanelTemplate);
-    for (i = 0; i < POKEPVP_GUIDE_CONCEPT_COUNT; i++)
+    for (i = 0; i < 5; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
     CopyBgTilemapBufferToVram(0);
+    // Owner-directed feature (2026-10-02): hide the stale top-menu ONLINE
+    // label for as long as GUIDE is open -- see HideOnlineCountItem's own
+    // doc comment.
+    HideOnlineCountItem();
 }
 
 static void Task_PokePvPGuideConceptList(u8 taskId)
@@ -4112,6 +4353,18 @@ static void CB2_PokePvPAddFriendNameEntered(void)
  * PokePvP_IsReadyCheckCancelled() so the caller returns to its own
  * previous screen immediately -- the prompt text on screen already told
  * the player what B means, so a silent return is unambiguous. */
+// Owner-directed feature (2026-10-03): static, not a local stack buffer --
+// PrintMessageOnWindow4's async speed=2 printer job reads from this pointer
+// across later frames, same reasoning as sPokePvPSpritePickerPreviewBuf's
+// own doc comment above (item 41/ADR-191's bug class). Only one ready-check
+// prompt is ever showing at a time, so there's no aliasing risk.
+// Owner-confirmed live (2026-10-04): this buffer and PrintMessageOnWindow4
+// work correctly here specifically because this screen (Task_PokePvP
+// WaitForRealOpponent) never calls MoveWindowByMenuTypeAndCursorPos -- see
+// DrawPlayerMenuItems's own doc comment for the screen where that assumption
+// broke.
+static u8 sPokePvPReadyPromptBuf[48];
+
 static bool8 TickReadyCheckPrompt(u8 taskId)
 {
     // HANDOFF item 37: mid-flash takes priority over the pending check --
@@ -4134,7 +4387,34 @@ static bool8 TickReadyCheckPrompt(u8 taskId)
 
     if (!sReadyPromptShown)
     {
-        PrintMessageOnWindow4(sText_ReadyPrompt);
+        // Owner-directed feature (2026-10-03): the ready-check prompt now
+        // names the real opponent and their trainer level above the
+        // existing READY?/CANCEL line, same 2-line-in-this-window shape
+        // DrawSpritePickerPreview already uses (name \n prompt) -- sized
+        // the same conservative way that call site's own comment
+        // documents (PLAYER_NAME_LENGTH=7 is the real worst case, plus
+        // " LV." + up to 3 level digits is still far under this window's
+        // proven-fitting width). PokePvP_GetOpponentTrainerName() already
+        // falls back to "RIVAL" when no real name has arrived yet, so no
+        // extra guard is needed here.
+        //
+        // Real bug found live (owner playtest, 2026-10-04): this used a
+        // local stack buffer here first, which is exactly the already-
+        // documented item-41/ADR-191 trap this file's own
+        // DrawSpritePickerPreview comment warns about -- PrintMessageOnWindow4
+        // starts a real speed=2 scrolling printer job that keeps reading
+        // from the pointer it was given across LATER frames, not just this
+        // one, so a local stack buffer is invalid by the time those frames
+        // run (reused by other calls' own locals) and the printer reads
+        // garbage -- observed live as scrambled glyphs. Fixed the same way
+        // that comment's own precedent (sPokePvPSpritePickerPreviewBuf)
+        // already does: static, not local.
+        u8 *ptr = StringCopy(sPokePvPReadyPromptBuf, PokePvP_GetOpponentTrainerName());
+        ptr = StringCopy(ptr, sText_ProfileLevelPrefix);
+        ptr = ConvertIntToDecimalStringN(ptr, PokePvP_GetOpponentTrainerLevel(), STR_CONV_MODE_LEFT_ALIGN, 3);
+        ptr = StringCopy(ptr, sString_Newline);
+        StringCopy(ptr, sText_ReadyPrompt);
+        PrintMessageOnWindow4(sPokePvPReadyPromptBuf);
         sReadyPromptShown = TRUE;
     }
 
@@ -4733,19 +5013,17 @@ static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId)
 }
 
 // ---------------------------------------------------------------------------
-// POKEPVP (ADR-238, owner-directed restructure, 2026-09-19): PROFILE is a
-// plain 2-row action selector now -- SOCIAL and PLAYER -- not a stats
-// display. The owner's own read: a permanent tag/stats/top-species/
-// recent-opponent readout doesn't belong mixed into a plain navigation
-// menu, and belongs with the rest of a player's match record instead --
-// see Task_PokePvPMatchHistory's own doc comment for where it moved.
-// PLAYER is new here: SOCIAL's old 4th "PLAYER" row (ADR-186/209) is gone
-// (see Task_PokePvPSocial's own doc comment) -- sprite and name are now
-// two fully independent actions under this row's own PLAYER submenu
-// (Task_PokePvPPlayerMenu), not one row whose confirm silently chained
-// into the naming screen right after picking a sprite. Same 2-row
-// selector shape as Task_PokePvPPlayerMenu itself and every other small
-// picker in this file (DrawInviteTargetTypeItems, etc).
+// POKEPVP (ADR-238, owner-directed restructure, 2026-09-19; extended
+// 2026-10-04): PROFILE is a plain row action selector, not a stats
+// display -- SOCIAL, ACCOUNT, PLAYER, MATCH HISTORY, 4 rows now. The
+// owner's own read: a permanent tag/stats/top-species/recent-opponent
+// readout doesn't belong mixed into a plain navigation menu, and belongs
+// with the rest of a player's match record instead -- see
+// Task_PokePvPMatchHistory's own doc comment for where it moved. ACCOUNT
+// moved here from under PLAYER (2026-10-04, owner-directed): PLAYER
+// stopped being a plain row selector itself and became a real trainer-card
+// screen (see DrawPlayerMenuItems's own doc comment) with no room, or
+// reason, to keep an unrelated action selector nested under it.
 // ---------------------------------------------------------------------------
 
 static void DrawProfileItems(u8 selectedIdx)
@@ -4755,12 +5033,9 @@ static void DrawProfileItems(u8 selectedIdx)
         MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
         MAIN_MENU_WINDOW_POKEPVP_4,
     };
-    // 2026-10-01, owner-directed restructure: MATCH HISTORY added as a
-    // 3rd row, same shape ADR-238 used to add PLAYER as a 2nd row here.
-    // ADR-316: ACHIEVEMENTS added as a 4th row, same shape again -- the
-    // 5th window (sWindowIds[4]) stays the one blank row, same as every
-    // earlier addition to this screen.
-    const u8 *const sLabels[] = { sText_ProfileSocialRow, sText_ProfilePlayerRow, sText_MatchHistory, sText_ProfileAchievementsRow };
+    const u8 *const sLabels[] = {
+        sText_ProfileSocialRow, sText_PlayerMenuAccount, sText_ProfilePlayerRow, sText_MatchHistory,
+    };
     u8 i;
 
     // This screen no longer uses the ERROR band (ADR-238 moved all of
@@ -4809,30 +5084,29 @@ static void Task_PokePvPProfile(u8 taskId)
         }
         else if (gTasks[taskId].tSubCursorPos == 1)
         {
+            // ACCOUNT: moved here from under PLAYER, 2026-10-04.
             gTasks[taskId].tSubCursorPos = 0;
-            gTasks[taskId].func = Task_PokePvPPlayerMenu;
-            DrawPlayerMenuItems(0);
+            gTasks[taskId].func = Task_PokePvPAccountMenu;
+            DrawAccountMenuItems(0);
         }
         else if (gTasks[taskId].tSubCursorPos == 2)
         {
-            // 2026-10-01, owner-directed restructure: MATCH HISTORY, now
-            // PROFILE's 3rd row. No fade here, unlike the old top-level
-            // dispatch this replaced -- SOCIAL/PLAYER just above don't
-            // fade either, since (unlike the top-level menu's own
-            // A-press) nothing faded this screen to black on the way in.
-            // Task_PokePvPMatchHistory's own tScreenDrawn==0 draw doesn't
-            // require an active fade to run correctly -- gPaletteFade.active
-            // is already false here, so it draws on its very next tick.
+            gTasks[taskId].func = Task_PokePvPPlayerMenu;
             gTasks[taskId].tScreenDrawn = 0;
-            gTasks[taskId].func = Task_PokePvPMatchHistory;
         }
         else
         {
-            // ADR-316: ACHIEVEMENTS, PROFILE's 4th row -- same no-fade
-            // shape as MATCH HISTORY/SOCIAL/PLAYER just above.
-            gTasks[taskId].tSubCursorPos = 0;
-            gTasks[taskId].func = Task_PokePvPAchievementsMenu;
-            DrawAchievementsMenuItems(0);
+            // 2026-10-01, owner-directed restructure: MATCH HISTORY, now
+            // PROFILE's last row. No fade here, unlike the old
+            // top-level dispatch this replaced -- SOCIAL/ACCOUNT/PLAYER
+            // just above don't fade either, since (unlike the top-level
+            // menu's own A-press) nothing faded this screen to black on
+            // the way in. Task_PokePvPMatchHistory's own tScreenDrawn==0
+            // draw doesn't require an active fade to run correctly --
+            // gPaletteFade.active is already false here, so it draws on
+            // its very next tick.
+            gTasks[taskId].tScreenDrawn = 0;
+            gTasks[taskId].func = Task_PokePvPMatchHistory;
         }
     }
     else if (JOY_NEW(B_BUTTON))
@@ -4853,36 +5127,426 @@ static void Task_PokePvPProfile(u8 taskId)
     }
 }
 
-// POKEPVP (ADR-238, extended 2026-10-02): the PLAYER submenu -- SPRITE and
-// ACCOUNT as two fully independent actions, reached from PROFILE's own
-// PLAYER row. Same 2-row selector shape as DrawProfileItems just above.
-// ACCOUNT replaces the NAME row ADR-238's own playtest fallout removed
-// (see that commit's doc comment, now superseded) -- the row's window
-// was always real, just unlabeled, so this reuses it rather than
-// restructuring the panel.
-static void DrawPlayerMenuItems(u8 selectedIdx)
+// POKEPVP (ADR-209): only 4 trainer classes are offered -- see that ADR's
+// own table for why (only Red/Leaf/RS Brendan/RS May have both a real
+// front-pic, for the opponent's own view and the trainer-card screen
+// below, and a real back-pic, for this player's own in-battle view; every
+// other FRLG trainer-class front-pic is opponent-only art).
+static const u16 sPokePvPSpriteFrontPicIds[4] = {
+    TRAINER_PIC_RED, TRAINER_PIC_LEAF, TRAINER_PIC_RS_BRENDAN_1, TRAINER_PIC_RS_MAY_1,
+};
+
+#define POKEPVP_SPRITE_PICKER_PAL_SLOT 6
+
+// POKEPVP (item 56, real root cause found): this file's shared WIN0
+// curtain-reveal setup (MoveWindowByMenuTypeAndCursorPos's own callers,
+// e.g. WININ=0x0001/WINOUT=0x0021 at this file's screen-entry points)
+// never includes the OBJ bit (0x10) in either register -- fine for every
+// other PokePvP screen, since none of them ever show a real OBJ sprite,
+// but the PLAYER trainer-card screen below does (CreateTrainerPicSprite,
+// and now the level-bar's own OBJ segments too). With OBJ excluded from
+// *both* "inside window 0" and "outside window 0" visibility, any such
+// sprite is suppressed everywhere on screen, unconditionally -- not a
+// heap/decompression bug (ADR-237's own leading hypothesis, when this was
+// first found on the old SPRITE picker screen): the sprite is created
+// successfully (a real, valid sprite id, confirmed via ADR-237's own
+// diagnostic) and simply never has a path to be drawn while WIN0 is
+// active. Confirmed live via a headless repro dumping DISPCNT (0x3140 --
+// WIN0+OBJ both nominally on) and pixel-scanning the captured frame: zero
+// trainer-pic-colored pixels anywhere, not a partial WIN0-band clip,
+// consistent with OBJ being masked out of both WININ and WINOUT rather
+// than just one band. Scoped to this screen only (not a blanket file-wide
+// change) since altering the shared constant risks the vanilla CONTINUE/
+// NEW GAME/MYSTERY GIFT curtain transition, unverified and out of scope
+// here.
+static void EnableSpritePickerObjWindow(void)
 {
-    static const u8 sWindowIds[] = {
-        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
-        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
-        MAIN_MENU_WINDOW_POKEPVP_4,
-    };
-    const u8 *const sLabels[] = { sText_PlayerMenuSprite, sText_PlayerMenuAccount };
+    SetGpuReg(REG_OFFSET_WININ, 0x0011 | WININ_WIN0_BG2);  // BG0 + OBJ + BG2 backdrop inside win0
+    SetGpuReg(REG_OFFSET_WINOUT, 0x0031 | WINOUT_WIN01_BG2); // BG0 + OBJ + color-effect + BG2 backdrop outside win0
+}
+
+static void RestorePokePvPStandardWindow(void)
+{
+    SetGpuReg(REG_OFFSET_WININ, 0x0001 | WININ_WIN0_BG2);
+    SetGpuReg(REG_OFFSET_WINOUT, 0x0021 | WINOUT_WIN01_BG2);
+}
+
+// POKEPVP (ADR-238/316, superseded 2026-10-04): PLAYER used to be a plain
+// 3-row action selector (SPRITE/ACCOUNT/ACHIEVEMENTS) with a text-character
+// level bar appended underneath. The owner saw that live and rejected it --
+// "a garbled line, not a Pokemon-style card" -- and asked for a real
+// trainer-card screen instead: sprite + name + a real graphical level/XP
+// bar, sprite changed right here (no separate SPRITE screen), ACHIEVEMENTS
+// still reachable. ACCOUNT moved out to PROFILE (see that screen's own doc
+// comment) since it has nothing to do with a trainer-card view.
+//
+// No new CB2 (this stays a plain Task_PokePvP* swap inside the existing
+// main-menu CB2, same as every sibling screen) and no new ROM graphics --
+// reuses two already-proven mechanisms instead of building new ones:
+//   - The trainer sprite: CreateTrainerPicSprite/FreeAndDestroyTrainerPicSprite
+//     and sPokePvPSpriteFrontPicIds, exactly what the old SPRITE picker used
+//     (ADR-209) -- including EnableSpritePickerObjWindow/
+//     RestorePokePvPStandardWindow, the WININ/WINOUT fix that screen already
+//     found and proved live (item 56): without it, OBJ sprites are masked
+//     out of both "inside WIN0" and "outside WIN0" visibility and never
+//     draw at all. This screen has no per-row cursor, so unlike the old
+//     SPRITE picker's own case 0/1 split, MoveWindowByMenuTypeAndCursorPos
+//     is never called here at all -- never needed to be: that function only
+//     ever moved WIN0's band to highlight a row, and this screen has none.
+//   - The level/XP bar graphics: pokemon_summary_screen.c's own exp-bar art
+//     (gSummaryScreen_ExpBar_Gfx/gSummaryScreen_HpExpBar_Pal) and technique
+//     (a row of 8x8 OBJ segments, each swapped between 9 fill-level frames
+//     via StartSpriteAnim) -- see PokePvPCreateLevelBarObjs below. Its own
+//     create/update/destroy functions are `static` to that file (not
+//     callable), but the graphics/palette symbols are plain `const`
+//     globals, `extern`-declared here exactly as that file declares them
+//     itself. POKEPVP_LEVEL_BAR_SEGMENTS (6) is smaller than the Summary
+//     Screen's own 11 -- this panel is 160px wide, not that screen's wider
+//     layout -- and skips that screen's rounded end-cap overlay sprites
+//     (frames 9-11) for a plain rectangular fill instead: a real
+//     categorical upgrade over the old text bar without replicating that
+//     screen's full pill-shaped-bar complexity in one pass.
+//
+// Real, flagged, open risk (not assumed safe, see the plan this was built
+// from): this is the first screen in this ROM where a trainer-pic
+// decompress buffer AND several exp-bar-segment sprites are heap-resident
+// at the same time -- every existing proof point (the old SPRITE picker,
+// the vanilla Summary Screen) only ever exercises one of these costs alone.
+// Needs a live heap-pressure check (repeated open/close/cycle), not just a
+// single successful boot, per this project's own ADR-158/214 lesson.
+//
+// A real two-item horizontal toggle (SPRITE / ACHIEVEMENTS) lives in its
+// own box below the card, POKEPVP_4's own window -- not text baked into
+// the card itself (the owner's own playtest feedback: "there should not be
+// option text in the big screen"). LEFT/RIGHT toggles which of the two is
+// selected; A on SPRITE enters a second sub-state where LEFT/RIGHT instead
+// cycles the trainer sprite itself (committing immediately, live, same as
+// before), B leaves that sub-state back to the toggle. A on ACHIEVEMENTS
+// opens it. B from the toggle returns to PROFILE. `tMGErrorMsgState` is the
+// state: 0 = toggle (tSubCursorPos selects SPRITE=0/ACHIEVEMENTS=1), 1 =
+// sprite-scroll (gTasks[].data[5] holds the live sprite class index,
+// independent of tSubCursorPos so the toggle's own selection survives a
+// round trip through sprite-scroll mode).
+#define POKEPVP_LEVEL_BAR_SEGMENTS 8
+// Indices 0/1 are permanent rounded end-cap decoration (frames 9/10, forced
+// below regardless of fill -- same shape pokemon_summary_screen.c's own
+// exp bar uses for its first two segments), index 7 is the matching right
+// cap (frame 11); only indices 2-6 (5 segments) are real fill track. A
+// plain rectangular bar (no caps) was the first pass here and read as "not
+// native" in the owner's own playtest -- this is literally the same asset
+// the real Summary Screen bar uses, just missing its own always-on cap
+// overlay, now added back.
+#define POKEPVP_LEVEL_BAR_FILL_FIRST 2
+#define POKEPVP_LEVEL_BAR_FILL_COUNT 5
+#define POKEPVP_LEVEL_BAR_TILE_TAG 0x7530
+#define POKEPVP_LEVEL_BAR_PAL_TAG 0x7531
+// Screen-pixel placement, not yet live-verified against a real captured
+// frame (this project's own standing lesson: "neither this nor pixel-exact
+// bar placement can be verified without live emulator iteration") --
+// expect a follow-up adjustment pass after the first real screenshot.
+#define POKEPVP_CARD_SPRITE_X 72
+#define POKEPVP_CARD_SPRITE_Y 82
+#define POKEPVP_CARD_TEXT_X 86
+#define POKEPVP_LEVEL_BAR_X 128
+#define POKEPVP_LEVEL_BAR_Y 100
+
+extern const u32 gSummaryScreen_ExpBar_Gfx[];
+extern const u16 gSummaryScreen_HpExpBar_Pal[];
+
+static const u8 sText_PlayerCardToggleSprite[] = _("< SPRITE >");
+static const u8 sText_PlayerCardToggleAchievements[] = _("< ACHIEVEMENTS >");
+static const u8 sText_PlayerCardToggleRed[] = _("< RED >");
+static const u8 sText_PlayerCardToggleLeaf[] = _("< LEAF >");
+static const u8 sText_PlayerCardToggleBrendan[] = _("< BRENDAN >");
+static const u8 sText_PlayerCardToggleMay[] = _("< MAY >");
+static const u8 *const sPokePvPSpriteToggleLabels[4] = {
+    sText_PlayerCardToggleRed, sText_PlayerCardToggleLeaf,
+    sText_PlayerCardToggleBrendan, sText_PlayerCardToggleMay,
+};
+
+struct PokePvPLevelBarObjs
+{
+    struct Sprite *sprites[POKEPVP_LEVEL_BAR_SEGMENTS];
+};
+
+// No initializer -- this ROM's linker has no .data output section (see
+// profile.c's identical comment); zero-by-default .bss is what makes a
+// fresh boot start with no bar sprites allocated.
+static struct PokePvPLevelBarObjs *sPokePvPLevelBarObjs;
+
+static const struct OamData sPokePvPLevelBarOamData = {
+    .y = 0,
+    .affineMode = ST_OAM_AFFINE_OFF,
+    .objMode = ST_OAM_OBJ_NORMAL,
+    .mosaic = FALSE,
+    .bpp = ST_OAM_4BPP,
+    .shape = SPRITE_SHAPE(8x8),
+    .x = 0,
+    .matrixNum = 0,
+    .size = SPRITE_SIZE(8x8),
+    .tileNum = 0,
+    .priority = 0,
+    .paletteNum = 0
+};
+
+static const union AnimCmd sPokePvPLevelBarAnim_0[] = { ANIMCMD_FRAME(0, 20), ANIMCMD_JUMP(0) };
+static const union AnimCmd sPokePvPLevelBarAnim_1[] = { ANIMCMD_FRAME(1, 20), ANIMCMD_JUMP(0) };
+static const union AnimCmd sPokePvPLevelBarAnim_2[] = { ANIMCMD_FRAME(2, 20), ANIMCMD_JUMP(0) };
+static const union AnimCmd sPokePvPLevelBarAnim_3[] = { ANIMCMD_FRAME(3, 20), ANIMCMD_JUMP(0) };
+static const union AnimCmd sPokePvPLevelBarAnim_4[] = { ANIMCMD_FRAME(4, 20), ANIMCMD_JUMP(0) };
+static const union AnimCmd sPokePvPLevelBarAnim_5[] = { ANIMCMD_FRAME(5, 20), ANIMCMD_JUMP(0) };
+static const union AnimCmd sPokePvPLevelBarAnim_6[] = { ANIMCMD_FRAME(6, 20), ANIMCMD_JUMP(0) };
+static const union AnimCmd sPokePvPLevelBarAnim_7[] = { ANIMCMD_FRAME(7, 20), ANIMCMD_JUMP(0) };
+static const union AnimCmd sPokePvPLevelBarAnim_8[] = { ANIMCMD_FRAME(8, 20), ANIMCMD_JUMP(0) };
+// Frames 9/10/11: the bar's own rounded end-cap art (left-outer, left-inner,
+// right), same three frames pokemon_summary_screen.c's own exp bar always
+// forces onto its first two segments and its last one, regardless of fill.
+static const union AnimCmd sPokePvPLevelBarAnim_9[] = { ANIMCMD_FRAME(9, 20), ANIMCMD_JUMP(0) };
+static const union AnimCmd sPokePvPLevelBarAnim_10[] = { ANIMCMD_FRAME(10, 20), ANIMCMD_JUMP(0) };
+static const union AnimCmd sPokePvPLevelBarAnim_11[] = { ANIMCMD_FRAME(11, 20), ANIMCMD_JUMP(0) };
+static const union AnimCmd * const sPokePvPLevelBarAnimTable[] = {
+    sPokePvPLevelBarAnim_0, sPokePvPLevelBarAnim_1, sPokePvPLevelBarAnim_2,
+    sPokePvPLevelBarAnim_3, sPokePvPLevelBarAnim_4, sPokePvPLevelBarAnim_5,
+    sPokePvPLevelBarAnim_6, sPokePvPLevelBarAnim_7, sPokePvPLevelBarAnim_8,
+    sPokePvPLevelBarAnim_9, sPokePvPLevelBarAnim_10, sPokePvPLevelBarAnim_11,
+};
+
+// Reuses pokemon_summary_screen.c's own exp-bar art/technique -- see this
+// file's section doc comment above for why. `xpForNextLevel == 0` (the
+// level cap) draws a full bar, not a divide-by-zero, same contract the old
+// text bar relied on.
+static void PokePvPCreateLevelBarObjs(u16 xpIntoLevel, u16 xpForNextLevel)
+{
+    u8 i;
+    u32 totalEighths;
+    void *gfxBufferPtr;
+
+    sPokePvPLevelBarObjs = AllocZeroed(sizeof(struct PokePvPLevelBarObjs));
+    if (sPokePvPLevelBarObjs == NULL)
+    {
+        DebugPrintf("POKEPVP: level bar objs alloc FAILED (heap pressure)");
+        return;
+    }
+
+    // POKEPVP (real bug, found via first live screenshot): the source
+    // asset (gSummaryScreen_ExpBar_Gfx) decompresses to 12 whole tiles
+    // (0x20*12) regardless of how many of its frames this screen's own
+    // anim table (0-8, 9 of them) actually uses -- LZ77UnCompWram writes
+    // the asset's real decompressed size, not whatever this buffer was
+    // sized for. A 0x20*9 buffer overflowed by 3 tiles (96 bytes) into
+    // whatever heap memory followed it every time this screen opened,
+    // which is exactly why the bar never visibly rendered on the first
+    // real build (corrupted tile data, not a missing-asset or WIN0 issue).
+    gfxBufferPtr = AllocZeroed(0x20 * 12);
+    if (gfxBufferPtr != NULL)
+    {
+        struct SpriteSheet sheet = { .data = gfxBufferPtr, .size = 0x20 * 12, .tag = POKEPVP_LEVEL_BAR_TILE_TAG };
+        struct SpritePalette palette = { .data = gSummaryScreen_HpExpBar_Pal, .tag = POKEPVP_LEVEL_BAR_PAL_TAG };
+
+        LZ77UnCompWram(gSummaryScreen_ExpBar_Gfx, gfxBufferPtr);
+        LoadSpriteSheet(&sheet);
+        LoadSpritePalette(&palette);
+        Free(gfxBufferPtr);
+    }
+    else
+    {
+        DebugPrintf("POKEPVP: level bar gfx buffer alloc FAILED (heap pressure)");
+    }
+
+    for (i = 0; i < POKEPVP_LEVEL_BAR_SEGMENTS; i++)
+    {
+        struct SpriteTemplate template = {
+            .tileTag = POKEPVP_LEVEL_BAR_TILE_TAG,
+            .paletteTag = POKEPVP_LEVEL_BAR_PAL_TAG,
+            .oam = &sPokePvPLevelBarOamData,
+            .anims = sPokePvPLevelBarAnimTable,
+            .images = NULL,
+            .affineAnims = gDummySpriteAffineAnimTable,
+            .callback = SpriteCallbackDummy,
+        };
+        u8 spriteId = CreateSprite(&template, POKEPVP_LEVEL_BAR_X + i * 8, POKEPVP_LEVEL_BAR_Y, 0);
+
+        // POKEPVP (real bug, found via live screenshot + pixel scan):
+        // priority=2 (the Summary Screen's own value, copied verbatim
+        // from CreateExpBarObjs) draws BEHIND this screen's own panel
+        // window background (BG0, priority 0) here -- that screen's BG
+        // layering isn't this one's. CreateTrainerPicSprite's own sprite
+        // (visible, confirmed live) uses the template's default priority
+        // instead of an explicit override; matching that here instead of
+        // guessing a number is what actually fixed it.
+        sPokePvPLevelBarObjs->sprites[i] = (spriteId == MAX_SPRITES) ? NULL : &gSprites[spriteId];
+    }
+
+    // Indices 0/1 and the last index are pure cap decoration, forced to
+    // their own frames unconditionally -- real fill only ever touches
+    // indices [POKEPVP_LEVEL_BAR_FILL_FIRST, POKEPVP_LEVEL_BAR_FILL_FIRST +
+    // POKEPVP_LEVEL_BAR_FILL_COUNT).
+    if (sPokePvPLevelBarObjs->sprites[0] != NULL)
+        StartSpriteAnim(sPokePvPLevelBarObjs->sprites[0], 9);
+    if (sPokePvPLevelBarObjs->sprites[1] != NULL)
+        StartSpriteAnim(sPokePvPLevelBarObjs->sprites[1], 10);
+    if (sPokePvPLevelBarObjs->sprites[POKEPVP_LEVEL_BAR_SEGMENTS - 1] != NULL)
+        StartSpriteAnim(sPokePvPLevelBarObjs->sprites[POKEPVP_LEVEL_BAR_SEGMENTS - 1], 11);
+
+    // Total eighths of a segment filled across the real fill track (max
+    // POKEPVP_LEVEL_BAR_FILL_COUNT*8), then distributed 8 (one full
+    // segment) at a time -- the remainder, if any, lands as a single
+    // partial-fill frame on the boundary segment, same shape the vanilla
+    // exp bar uses.
+    totalEighths = (xpForNextLevel == 0)
+        ? (u32)POKEPVP_LEVEL_BAR_FILL_COUNT * 8
+        : ((u32)xpIntoLevel * POKEPVP_LEVEL_BAR_FILL_COUNT * 8) / xpForNextLevel;
+    for (i = 0; i < POKEPVP_LEVEL_BAR_FILL_COUNT; i++)
+    {
+        u8 frame;
+
+        if (totalEighths >= 8)
+        {
+            frame = 8;
+            totalEighths -= 8;
+        }
+        else
+        {
+            frame = (u8)totalEighths;
+            totalEighths = 0;
+        }
+        if (sPokePvPLevelBarObjs->sprites[POKEPVP_LEVEL_BAR_FILL_FIRST + i] != NULL)
+            StartSpriteAnim(sPokePvPLevelBarObjs->sprites[POKEPVP_LEVEL_BAR_FILL_FIRST + i], frame);
+    }
+}
+
+static void PokePvPDestroyLevelBarObjs(void)
+{
     u8 i;
 
-    for (i = 0; i < 5; i++)
+    if (sPokePvPLevelBarObjs == NULL)
+        return;
+    for (i = 0; i < POKEPVP_LEVEL_BAR_SEGMENTS; i++)
+        if (sPokePvPLevelBarObjs->sprites[i] != NULL)
+            DestroySpriteAndFreeResources(sPokePvPLevelBarObjs->sprites[i]);
+    Free(sPokePvPLevelBarObjs);
+    sPokePvPLevelBarObjs = NULL;
+}
+
+// Trainer-pic sprite id lives in gTasks[taskId].data[4], same task-data
+// slot the old SPRITE picker used for the identical purpose (one trainer-
+// pic sprite alive at a time on this screen).
+static void PokePvPRefreshCardSprite(u8 taskId, u8 index)
+{
+    if (gTasks[taskId].data[4] != -1)
+        FreeAndDestroyTrainerPicSprite(gTasks[taskId].data[4]);
+    gTasks[taskId].data[4] = CreateTrainerPicSprite(sPokePvPSpriteFrontPicIds[index], TRUE,
+        POKEPVP_CARD_SPRITE_X, POKEPVP_CARD_SPRITE_Y, POKEPVP_SPRITE_PICKER_PAL_SLOT, TAG_NONE);
+    if (gTasks[taskId].data[4] == -1)
+        DebugPrintf("POKEPVP: card sprite alloc FAILED for class=%d (heap pressure)", index);
+}
+
+// Same local-first-then-wire sequence the old SPRITE picker's A-confirm
+// used (ADR-209) -- just triggered live by the cycle itself now instead of
+// a separate confirm step.
+static void PokePvPCommitCardSprite(u8 index)
+{
+    PokePvPProfile_SetSpriteId(index);
+    if (index == 0)
+        gSaveBlock2Ptr->playerGender = MALE;
+    else if (index == 1)
+        gSaveBlock2Ptr->playerGender = FEMALE;
+    SendSetSprite(index);
+}
+
+static void DrawPlayerMenuItems(void)
+{
+    PokePvPProfile profile;
+    bool8 haveProfile;
+    u8 buf[32];
+    u8 *dst;
+
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_CARD, PIXEL_FILL(10));
+    haveProfile = PokePvPProfile_Get(&profile);
+    if (haveProfile)
     {
-        bool8 selected = (i == selectedIdx);
-        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
-        if (i < 2)
-            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
-                selected ? sTextColorSelected : sTextColor1, -1, sLabels[i]);
-        PutWindowTilemap(sWindowIds[i]);
+        // POKEPVP (playtest fallout, 2026-10-04 second round): the tag used
+        // to be a full-width top line, but the trainer sprite's own head
+        // sits high enough in this box to visually collide with it there.
+        // Moved into the same right-hand column as LV/the bar instead (the
+        // owner's own ask) -- which is too narrow for a full SLUG#DDDDD tag
+        // on one line (found live: it clipped). Split on the space that
+        // replaced '#' (profile.c's own ASCII->charmap conversion -- this
+        // font has no '#' glyph) into two lines instead of truncating:
+        // slug on its own line, the discriminant digits on the next.
+        {
+            const u8 *src = profile.tag;
+            u8 *out = buf;
+
+            if (*src != EOS)
+            {
+                while (*src != EOS && *src != CHAR_SPACE)
+                    *out++ = *src++;
+                if (*src == CHAR_SPACE)
+                {
+                    *out++ = CHAR_NEWLINE;
+                    src++;
+                    while (*src != EOS)
+                        *out++ = *src++;
+                }
+            }
+            else
+            {
+                const u8 *noTag = sText_ProfileNoTag;
+                while (*noTag != EOS)
+                    *out++ = *noTag++;
+            }
+            *out = EOS;
+        }
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_CARD, FONT_NORMAL,
+            POKEPVP_CARD_TEXT_X, 0, sTextColor1, -1, buf);
+
+        // LV.NNN below the (now two-line) tag, same column -- extra
+        // vertical gap from both the tag above and the bar below (owner
+        // playtest feedback: the bar used to sit close enough to touch
+        // this line).
+        dst = buf;
+        dst = StringCopy(dst, sText_ProfileLevelPrefix);
+        dst = ConvertIntToDecimalStringN(dst, profile.trainerLevel, STR_CONV_MODE_LEFT_ALIGN, 3);
+        *dst = EOS;
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_CARD, FONT_NORMAL,
+            POKEPVP_CARD_TEXT_X, 34, sTextColor1, -1, buf);
     }
+    else
+    {
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_CARD, FONT_NORMAL,
+            POKEPVP_CARD_TEXT_X, 0, sTextColor1, -1, sText_ProfileNoTag);
+    }
+    // No option/button-hint text in the card itself (owner playtest
+    // feedback) -- SPRITE/ACHIEVEMENTS navigation lives entirely in its own
+    // toggle box below, see DrawPlayerCardToggle.
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_CARD);
     MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
-    for (i = 0; i < 4; i++)
-        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
-    CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_CARD, COPYWIN_FULL);
+}
+
+// The SPRITE/ACHIEVEMENTS toggle box, POKEPVP_4's own window (the row
+// just below the card, never touched by MAIN_MENU_WINDOW_POKEPVP_CARD
+// itself -- see that window's own template comment for why they no longer
+// overlap). Two looks, matching Task_PokePvPPlayerMenu's own two states:
+// the toggle itself (tMGErrorMsgState==0, showing whichever of SPRITE/
+// ACHIEVEMENTS tSubCursorPos currently selects) or, once SPRITE has been
+// confirmed, the live sprite-class label (tMGErrorMsgState==1).
+static void DrawPlayerCardToggle(u8 taskId)
+{
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
+    if (gTasks[taskId].tMGErrorMsgState == 0)
+    {
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, 2, 2, sTextColor1, -1,
+            gTasks[taskId].tSubCursorPos == 0 ? sText_PlayerCardToggleSprite : sText_PlayerCardToggleAchievements);
+    }
+    else
+    {
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, 2, 2, sTextColor1, -1,
+            sPokePvPSpriteToggleLabels[gTasks[taskId].data[5]]);
+    }
+    PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_4);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
 }
 
 static void Task_PokePvPPlayerMenu(u8 taskId)
@@ -4890,50 +5554,103 @@ static void Task_PokePvPPlayerMenu(u8 taskId)
     if (gPaletteFade.active)
         return;
 
-    MoveWindowByMenuTypeAndCursorPos(MAIN_MENU_POKEPVP, gTasks[taskId].tSubCursorPos);
+    if (gTasks[taskId].tScreenDrawn == 0)
+    {
+        PokePvPProfile profile;
+        u8 startIndex = 0;
+        bool8 haveProfile;
 
-    if (JOY_NEW(A_BUTTON))
+        gTasks[taskId].tScreenDrawn = 1;
+        ResetAllPicSprites();
+        haveProfile = PokePvPProfile_Get(&profile);
+        if (haveProfile && profile.spriteId < 4)
+            startIndex = profile.spriteId;
+        gTasks[taskId].data[5] = startIndex;
+        gTasks[taskId].tSubCursorPos = 0; // toggle: SPRITE selected first
+        gTasks[taskId].tMGErrorMsgState = 0; // toggle mode, not sprite-scroll
+        gTasks[taskId].data[4] = -1;
+        EnableSpritePickerObjWindow();
+        DrawPlayerMenuItems();
+        DrawPlayerCardToggle(taskId);
+        PokePvPRefreshCardSprite(taskId, startIndex);
+        if (haveProfile)
+            PokePvPCreateLevelBarObjs(profile.xpIntoLevel, profile.xpForNextLevel);
+    }
+
+    if (gTasks[taskId].tMGErrorMsgState == 0)
     {
-        PlaySE(SE_SELECT);
-        if (gTasks[taskId].tSubCursorPos == 0)
+        // Toggle mode: LEFT/RIGHT swap which of SPRITE/ACHIEVEMENTS is
+        // selected; A acts on it; B leaves the whole screen.
+        if (JOY_NEW(DPAD_LEFT) || JOY_NEW(DPAD_RIGHT))
         {
-            // SPRITE: same trainer-sprite picker as before (ADR-209).
-            // Explicit tMGErrorMsgState reset before the handoff
-            // (ADR-214's own lesson: this task struct is reused all
-            // session, so a stale nonzero value left by an earlier
-            // screen would skip the picker's own case 0 setup entirely).
+            PlaySE(SE_SELECT);
+            gTasks[taskId].tSubCursorPos ^= 1;
+            DrawPlayerCardToggle(taskId);
+        }
+        else if (JOY_NEW(A_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            if (gTasks[taskId].tSubCursorPos == 0)
+            {
+                // SPRITE confirmed -- enter sprite-scroll mode, same screen.
+                gTasks[taskId].tMGErrorMsgState = 1;
+                DrawPlayerCardToggle(taskId);
+            }
+            else
+            {
+                FreeAndDestroyTrainerPicSprite(gTasks[taskId].data[4]);
+                PokePvPDestroyLevelBarObjs();
+                RestorePokePvPStandardWindow();
+                gTasks[taskId].tScreenDrawn = 0;
+                gTasks[taskId].tSubCursorPos = 0;
+                gTasks[taskId].func = Task_PokePvPAchievementsMenu;
+                DrawAchievementsMenuItems(0);
+            }
+        }
+        else if (JOY_NEW(B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            FreeAndDestroyTrainerPicSprite(gTasks[taskId].data[4]);
+            PokePvPDestroyLevelBarObjs();
+            RestorePokePvPStandardWindow();
+            gTasks[taskId].tScreenDrawn = 0;
+            gTasks[taskId].tSubCursorPos = 2;
+            gTasks[taskId].func = Task_PokePvPProfile;
+            DrawProfileItems(2);
+        }
+    }
+    else
+    {
+        // Sprite-scroll mode: LEFT/RIGHT cycles the live trainer sprite
+        // (committed immediately, same as before); A or B leaves back to
+        // the toggle, not the whole screen.
+        if (JOY_NEW(DPAD_LEFT))
+        {
+            PlaySE(SE_SELECT);
+            gTasks[taskId].data[5] = (gTasks[taskId].data[5] + 3) % 4;
+            PokePvPRefreshCardSprite(taskId, gTasks[taskId].data[5]);
+            PokePvPCommitCardSprite(gTasks[taskId].data[5]);
+            DrawPlayerCardToggle(taskId);
+        }
+        else if (JOY_NEW(DPAD_RIGHT))
+        {
+            PlaySE(SE_SELECT);
+            gTasks[taskId].data[5] = (gTasks[taskId].data[5] + 1) % 4;
+            PokePvPRefreshCardSprite(taskId, gTasks[taskId].data[5]);
+            PokePvPCommitCardSprite(gTasks[taskId].data[5]);
+            DrawPlayerCardToggle(taskId);
+        }
+        else if (JOY_NEW(A_BUTTON) || JOY_NEW(B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
             gTasks[taskId].tMGErrorMsgState = 0;
-            gTasks[taskId].func = Task_PokePvPSpritePicker;
+            DrawPlayerCardToggle(taskId);
         }
-        else
-        {
-            // ACCOUNT: 2026-10-02, owner-directed feature.
-            gTasks[taskId].tSubCursorPos = 0;
-            gTasks[taskId].func = Task_PokePvPAccountMenu;
-            DrawAccountMenuItems(0);
-        }
-    }
-    else if (JOY_NEW(B_BUTTON))
-    {
-        PlaySE(SE_SELECT);
-        gTasks[taskId].tSubCursorPos = 1;
-        gTasks[taskId].func = Task_PokePvPProfile;
-        DrawProfileItems(1);
-    }
-    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
-    {
-        gTasks[taskId].tSubCursorPos--;
-        DrawPlayerMenuItems(gTasks[taskId].tSubCursorPos);
-    }
-    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 1)
-    {
-        gTasks[taskId].tSubCursorPos++;
-        DrawPlayerMenuItems(gTasks[taskId].tSubCursorPos);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Owner-directed feature (2026-10-02): ACCOUNT -- PLAYER's 2nd row. A
+// Owner-directed feature (2026-10-02): ACCOUNT -- PROFILE's 2nd row (moved here from under PLAYER, 2026-10-04). A
 // 1-row submenu (room to grow; CHANGE PASSWORD deliberately isn't a row
 // here -- see POKEPVP_MSG_LOGOUT_REQUEST's own doc comment in
 // presentation_types.h for why). Same DrawXxxMenuItems/Task_PokePvPXxx
@@ -4982,10 +5699,12 @@ static void Task_PokePvPAccountMenu(u8 taskId)
     }
     else if (JOY_NEW(B_BUTTON))
     {
+        // 2026-10-04: ACCOUNT moved from under PLAYER to directly under
+        // PROFILE (row 1) -- back target updated to match.
         PlaySE(SE_SELECT);
         gTasks[taskId].tSubCursorPos = 1;
-        gTasks[taskId].func = Task_PokePvPPlayerMenu;
-        DrawPlayerMenuItems(1);
+        gTasks[taskId].func = Task_PokePvPProfile;
+        DrawProfileItems(1);
     }
 }
 
@@ -5074,6 +5793,10 @@ static void DrawAchievementsMenuItems(u8 selectedIdx)
     for (i = 0; i < 4; i++)
         CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
     CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
+    // Owner-directed feature (2026-10-02): hide the stale top-menu ONLINE
+    // label for as long as ACHIEVEMENTS is open -- see HideOnlineCountItem's
+    // own doc comment.
+    HideOnlineCountItem();
 }
 
 static void Task_PokePvPAchievementsMenu(u8 taskId)
@@ -5093,10 +5816,13 @@ static void Task_PokePvPAchievementsMenu(u8 taskId)
     }
     else if (JOY_NEW(B_BUTTON))
     {
+        // ACHIEVEMENTS' parent is the PLAYER trainer-card screen --
+        // tScreenDrawn=0 re-enters its own setup gate (recreates the
+        // trainer-pic sprite and level bar, both torn down on the way in
+        // here, same as leaving via PROFILE).
         PlaySE(SE_SELECT);
-        gTasks[taskId].tSubCursorPos = 3;
-        gTasks[taskId].func = Task_PokePvPProfile;
-        DrawProfileItems(3);
+        gTasks[taskId].tScreenDrawn = 0;
+        gTasks[taskId].func = Task_PokePvPPlayerMenu;
     }
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
     {
@@ -5114,16 +5840,19 @@ static void Task_PokePvPAchievementsMenu(u8 taskId)
 // Owner-directed feature (2026-10-02): the ACHIEVEMENTS/TEAM ACHIEVEMENTS
 // badge grid. Replaces the old raw-text dump into MAIN_MENU_WINDOW_ERROR
 // (which silently cropped past that window's real ~2-line pixel bounds --
-// the same class of bug GUIDE's own big-box rewrite fixed). Reuses
-// MAIN_MENU_WINDOW_GUIDE_DETAIL's geometry (vertically centered, same
-// safe-reuse VRAM footprint) -- never shown at the same time as GUIDE, so
-// sharing the one window id is safe. Up to POKEPVP_ACHIEVEMENTS_MAX_
-// ENTRIES (8) badges as real OBJ sprites laid out in a 4-column grid;
-// DPAD moves a blinking cursor between them (no extra cursor graphic --
-// see sPokePvPAchievementBadges_Gfx's own comment) and the selected
-// badge's title+description render live underneath, in the same window.
-// Locked badges use the identical sprite tiles with a dimmed palette
-// slot instead of a second icon.
+// the same class of bug GUIDE's own big-box rewrite fixed). Uses its own
+// MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL window -- originally reused
+// MAIN_MENU_WINDOW_GUIDE_DETAIL's geometry outright, but that sat too high
+// on screen per the owner's own playtest, and GUIDE's own detail screen
+// still needs that exact position, so this screen got its own window
+// instead (one tile/8px lower), same baseBlock, same "never shown at the
+// same time" reuse safety. Up to POKEPVP_ACHIEVEMENTS_MAX_ENTRIES (8)
+// badges as real OBJ sprites laid out in a 4-column grid; DPAD moves a
+// blinking cursor between them (no extra cursor graphic -- see
+// sPokePvPAchievementBadges_Gfx's own comment) and the selected badge's
+// title+description render live underneath, in the same window. Locked
+// badges use the identical sprite tiles with a dimmed palette slot instead
+// of a second icon.
 // ---------------------------------------------------------------------------
 
 #define POKEPVP_BADGE_GRID_COLS 4
@@ -5133,11 +5862,14 @@ static void Task_PokePvPAchievementsMenu(u8 taskId)
 // Screen-absolute top-left of grid cell (0,0); CreateSprite's x/y are the
 // sprite's CENTER (this engine's own convention, confirmed against the
 // sprite picker's own POKEPVP_SPRITE_PICKER_X/Y just below), so +8/+8 to
-// the badge's intended visual top-left.
+// the badge's intended visual top-left. Y0 tracks MAIN_MENU_WINDOW_
+// ACHIEVEMENT_DETAIL's own top (screen y=48, tilemapTop=6) -- same 12px
+// margin below the window's top border the original GUIDE_DETAIL-reusing
+// version had (its top was y=40, grid started at 52).
 #define POKEPVP_BADGE_GRID_X0   40
-#define POKEPVP_BADGE_GRID_Y0   52
-// Window-local (MAIN_MENU_WINDOW_GUIDE_DETAIL's own top-left is screen
-// (24,40) -- see its own WindowTemplate) text rows under the grid.
+#define POKEPVP_BADGE_GRID_Y0   60
+// Window-local (MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL's own top-left is
+// screen (24,48) -- see its own WindowTemplate) text rows under the grid.
 #define POKEPVP_BADGE_TITLE_Y_LOCAL 48
 #define POKEPVP_BADGE_DESC_Y_LOCAL  64
 
@@ -5190,12 +5922,12 @@ static void DrawPokePvPBadgeDetail(const u8 *title, PokePvPAchievementEntry *ent
 
     // Erase just the text rows, not the whole window (the badge sprites
     // above them are OBJs, untouched by a window pixel-buffer fill).
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_GUIDE_DETAIL, PIXEL_FILL(10));
-    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_GUIDE_DETAIL]);
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL, PIXEL_FILL(10));
+    MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL]);
 
     if (count == 0)
     {
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_GUIDE_DETAIL, FONT_NORMAL, 2, POKEPVP_BADGE_TITLE_Y_LOCAL,
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL, FONT_NORMAL, 2, POKEPVP_BADGE_TITLE_Y_LOCAL,
             sTextColor1, -1, sText_AchievementsEmpty);
     }
     else
@@ -5203,14 +5935,14 @@ static void DrawPokePvPBadgeDetail(const u8 *title, PokePvPAchievementEntry *ent
         dst = StringCopy(buf, entry->earned ? sText_AchievementMarkEarned : sText_AchievementMarkLocked);
         dst = StringCopy(dst, entry->title);
         *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_GUIDE_DETAIL, FONT_NORMAL, 2, POKEPVP_BADGE_TITLE_Y_LOCAL,
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL, FONT_NORMAL, 2, POKEPVP_BADGE_TITLE_Y_LOCAL,
             sTextColor1, -1, buf);
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_GUIDE_DETAIL, FONT_NORMAL, 2, POKEPVP_BADGE_DESC_Y_LOCAL,
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL, FONT_NORMAL, 2, POKEPVP_BADGE_DESC_Y_LOCAL,
             sTextColor1, -1, entry->description);
     }
 
-    PutWindowTilemap(MAIN_MENU_WINDOW_GUIDE_DETAIL);
-    CopyWindowToVram(MAIN_MENU_WINDOW_GUIDE_DETAIL, COPYWIN_FULL);
+    PutWindowTilemap(MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL);
+    CopyWindowToVram(MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL, COPYWIN_FULL);
 }
 
 static void CreatePokePvPBadgeGrid(u8 count, bool8 (*get)(u8, PokePvPAchievementEntry *))
@@ -5321,7 +6053,7 @@ static void Task_PokePvPBadgeGrid(u8 taskId, const u8 *title, u8 (*countFn)(void
     {
         PlaySE(SE_SELECT);
         DestroyPokePvPBadgeGrid();
-        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_GUIDE_DETAIL]);
+        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL]);
         backFn(taskId);
         return;
     }
@@ -5504,253 +6236,7 @@ static void DrawSocialItems(u8 selectedIdx)
     CopyWindowToVram(sWindowIds[4], COPYWIN_FULL);
 }
 
-// POKEPVP (ADR-209, reached from the PLAYER submenu's own SPRITE row as
-// of ADR-238 -- no longer chains into the naming screen on confirm, see
-// this task's own A-button branch below): the trainer-sprite picker.
-// Only 4 classes are offered -- see that ADR's own table for why (only
-// Red/Leaf/RS Brendan/RS May have both a real front-pic, for the
-// opponent's own view and this preview, and a real back-pic, for this
-// player's own in-battle view; every other FRLG trainer-class front-pic
-// is opponent-only art).
-static const u16 sPokePvPSpriteFrontPicIds[4] = {
-    TRAINER_PIC_RED, TRAINER_PIC_LEAF, TRAINER_PIC_RS_BRENDAN_1, TRAINER_PIC_RS_MAY_1,
-};
-static const u8 sText_SpriteRed[] = _("RED");
-static const u8 sText_SpriteLeaf[] = _("LEAF");
-static const u8 sText_SpriteBrendan[] = _("BRENDAN");
-static const u8 sText_SpriteMay[] = _("MAY");
-static const u8 *const sPokePvPSpriteLabels[4] = {
-    sText_SpriteRed, sText_SpriteLeaf, sText_SpriteBrendan, sText_SpriteMay,
-};
-static const u8 sText_SpritePickerPrompt[] = _("<>=CHANGE A=OK B=CANCEL");
 
-#define POKEPVP_SPRITE_PICKER_PAL_SLOT 6
-#define POKEPVP_SPRITE_PICKER_X 120
-// POKEPVP (sprite picker preview clipping): CreateSprite treats x/y as the
-// sprite's CENTER (OAM corner is derived from size at commit time), and
-// this pic is a fixed 64x64 OAM shape (sOamData_Normal). The shared panel
-// box (sPokePvPMenuPanelTemplate) this preview sits inside spans tilemap
-// rows 6-15, i.e. screen pixels 48-128. The old Y=60 centered the sprite
-// at pixel rows 28-92 -- 20px of the trainer's head/hat rendered above the
-// box's own top border, invisible/clipped by the border tile in front of
-// it. Y=86 centers the sprite at rows 54-118, a few pixels inside the box
-// on both edges.
-#define POKEPVP_SPRITE_PICKER_Y 86
-
-// POKEPVP (item 41, second real bug found this session): every other
-// PrintMessageOnWindow4 caller in this file passes a static/const string
-// (a literal or a switch-selected `sText_*` constant); this is the only
-// one that builds a dynamic message. AddTextPrinterParameterized3's
-// speed=2 scrolling printer (see RunTextPrinters's own doc comment on
-// this screen's case 1) keeps reading from the pointer it was given
-// across later frames, not just the frame it was called on -- a local
-// stack buffer is invalid by the time those later frames run, so once
-// RunTextPrinters() actually started pumping this screen's printer (the
-// first bug this session, fixed above), the glyphs it read back were
-// whatever now occupied that stack slot, not this string. Static instead
-// of local: only one such message is ever showing on this screen at a
-// time, so there is no aliasing risk in making it live for the screen's
-// whole lifetime instead of one call's stack frame.
-static u8 sPokePvPSpritePickerPreviewBuf[48];
-
-// POKEPVP (item 56, real root cause found): every other PokePvP screen
-// entry leaves MAIN_MENU_WINDOW_POKEPVP_0..3 showing whatever the
-// *previous* screen last drew into them (DrawPlayerMenuItems' own
-// SPRITE/NAME rows when reached from the current PROFILE->PLAYER flow) --
-// every other Task_PokePvP* screen overwrites those same windows itself on
-// entry, but this screen never did, since its own content is the OBJ
-// trainer pic, not a text list. Blanked here, once, so the stale list text
-// doesn't stay on screen behind (and, before the WININ/WINOUT fix just
-// below, in place of) the trainer preview.
-static void ClearSpritePickerContentArea(void)
-{
-    static const u8 sWindowIds[] = {
-        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
-        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
-    };
-    u8 i;
-
-    for (i = 0; i < 4; i++)
-    {
-        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(10));
-        PutWindowTilemap(sWindowIds[i]);
-        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
-    }
-    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
-}
-
-// POKEPVP (item 56, real root cause found): this file's shared WIN0
-// curtain-reveal setup (MoveWindowByMenuTypeAndCursorPos's own callers,
-// e.g. WININ=0x0001/WINOUT=0x0021 at this file's screen-entry points)
-// never includes the OBJ bit (0x10) in either register -- fine for every
-// other PokePvP screen, since none of them ever show a real OBJ sprite,
-// but this is the one screen that does (CreateTrainerPicSprite). With
-// OBJ excluded from *both* "inside window 0" and "outside window 0"
-// visibility, the trainer preview sprite is suppressed everywhere on
-// screen, unconditionally -- not a heap/decompression bug (ADR-237's own
-// leading hypothesis): the sprite is created successfully (a real,
-// valid sprite id, confirmed via ADR-237's own diagnostic) and simply
-// never has a path to be drawn while WIN0 is active. Confirmed live via
-// a headless repro dumping DISPCNT (0x3140 -- WIN0+OBJ both nominally
-// on) and pixel-scanning the captured frame: zero trainer-pic-colored
-// pixels anywhere, not a partial WIN0-band clip, consistent with OBJ
-// being masked out of both WININ and WINOUT rather than just one band.
-// Scoped to this screen only (not a blanket file-wide change) since
-// altering the shared constant risks the vanilla CONTINUE/NEW GAME/
-// MYSTERY GIFT curtain transition, unverified and out of scope here.
-static void EnableSpritePickerObjWindow(void)
-{
-    SetGpuReg(REG_OFFSET_WININ, 0x0011 | WININ_WIN0_BG2);  // BG0 + OBJ + BG2 backdrop inside win0
-    SetGpuReg(REG_OFFSET_WINOUT, 0x0031 | WINOUT_WIN01_BG2); // BG0 + OBJ + color-effect + BG2 backdrop outside win0
-}
-
-static void RestorePokePvPStandardWindow(void)
-{
-    SetGpuReg(REG_OFFSET_WININ, 0x0001 | WININ_WIN0_BG2);
-    SetGpuReg(REG_OFFSET_WINOUT, 0x0021 | WINOUT_WIN01_BG2);
-}
-
-static void DrawSpritePickerPreview(u8 taskId, u8 index)
-{
-    /* ADR-198's own lesson applied up front: sized to the real worst case
-     * (longest label "BRENDAN" = 7 + 2 spaces + the prompt string's own
-     * 24 chars + EOS = 34), not guessed short. */
-    u8 *buf = sPokePvPSpritePickerPreviewBuf;
-    u8 *ptr;
-
-    if (gTasks[taskId].data[4] != -1)
-        FreeAndDestroyTrainerPicSprite(gTasks[taskId].data[4]);
-    gTasks[taskId].data[4] = CreateTrainerPicSprite(sPokePvPSpriteFrontPicIds[index], TRUE,
-        POKEPVP_SPRITE_PICKER_X, POKEPVP_SPRITE_PICKER_Y, POKEPVP_SPRITE_PICKER_PAL_SLOT, TAG_NONE);
-    /* POKEPVP (item 40/41 diagnostic): CreateTrainerPicSprite/CreatePicSprite
-     * already fail safe on a heap allocation miss (returns 0xFFFF, checked
-     * internally -- see trainer_pokemon_sprites.c), so this can't itself be
-     * the reported "PLAYER row does nothing" freeze, but this screen's own
-     * ~8KB decompress-buffer alloc on every keypress, on this project's own
-     * chronically tight heap (ADR-158/ADR-214 item 40 already proved a real
-     * boot burst can exhaust it), was never once logged either way. */
-    if (gTasks[taskId].data[4] == -1)
-        DebugPrintf("POKEPVP: sprite picker preview alloc FAILED for class=%d (heap pressure)", index);
-
-    // POKEPVP (2026-09-25 theme pass): was name + 2 spaces + prompt on one
-    // line, which fit the old 192px-wide box but clips ("B=CAN") in the
-    // new 160px one -- real capture caught this ("BRENDAN" is the longest
-    // label). A newline instead of the wasted double space puts each half
-    // on its own line within this window's existing 4-tile height, with
-    // no risk of a proportional-font pixel-width guess being wrong again.
-    ptr = StringCopy(buf, sPokePvPSpriteLabels[index]);
-    ptr = StringCopy(ptr, sString_Newline);
-    StringCopy(ptr, sText_SpritePickerPrompt);
-    PrintMessageOnWindow4(buf);
-}
-
-static void Task_PokePvPSpritePicker(u8 taskId)
-{
-    if (gPaletteFade.active)
-        return;
-
-    switch (gTasks[taskId].tMGErrorMsgState)
-    {
-    case 0:
-    {
-        PokePvPProfile profile;
-        u8 startIndex = 0;
-
-        /* POKEPVP (item 40/41, ADR-214/215): this screen's own entry was
-         * never logged, which is exactly why the real crash log that
-         * session couldn't say whether Team Builder or this picker was
-         * open when it hit -- same gap item 32's own permanent diagnostic
-         * printf was added to close for a different elusive bug. Left in
-         * place, not a one-shot TEMP hack, until a real playtest's log
-         * confirms this screen is (or isn't) actually being reached on a
-         * PLAYER-row press. `taskId` added (this session) to correlate
-         * against the new dispatch-site log in Task_PokePvPSocial's own
-         * NAME-row branch -- see that log's own doc comment. */
-        DebugPrintf("POKEPVP: sprite picker opened taskId=%d vblank=%d", taskId, gMain.vblankCounter2);
-        ResetAllPicSprites();
-        if (PokePvPProfile_Get(&profile) && profile.spriteId < 4)
-            startIndex = profile.spriteId;
-        gTasks[taskId].tSubCursorPos = startIndex;
-        gTasks[taskId].data[4] = -1; /* no preview sprite yet -- DrawSpritePickerPreview's own free-guard */
-        ClearSpritePickerContentArea();
-        EnableSpritePickerObjWindow();
-        DrawSpritePickerPreview(taskId, startIndex);
-        gTasks[taskId].tMGErrorMsgState = 1;
-        break;
-    }
-    case 1:
-        // POKEPVP (item 41, real root cause found this session): this
-        // screen's own case 0 (and every DPAD_LEFT/RIGHT re-draw below)
-        // calls PrintMessageOnWindow4, which starts a real scrolling
-        // text-printer job (speed=2, not an instant blit) -- exactly the
-        // already-diagnosed ADR-191 bug class ("PrintMessageOnWindow4
-        // starts a real text-printer job... every OTHER caller in this
-        // file follows it with its own case that polls RunTextPrinters()
-        // every frame until IsTextPrinterActive() clears"). This screen
-        // was the one caller that never did, confirmed live this session
-        // via a deterministic headless repro (ADR-236): the window was
-        // never visibly touched at all, because the queued text glyphs
-        // never actually got drawn into its pixel buffer. Same fix shape
-        // as TickReadyCheckPrompt's own identical bug (line ~3009):
-        // called unconditionally every frame this case runs, not split
-        // into a separate waiting sub-state, since this screen (unlike a
-        // one-shot dismiss prompt) needs to keep accepting D-pad input
-        // the whole time regardless of whether the printer has caught up.
-        RunTextPrinters();
-        if (JOY_NEW(DPAD_LEFT))
-        {
-            PlaySE(SE_SELECT);
-            gTasks[taskId].tSubCursorPos = (gTasks[taskId].tSubCursorPos + 3) % 4;
-            DrawSpritePickerPreview(taskId, gTasks[taskId].tSubCursorPos);
-        }
-        else if (JOY_NEW(DPAD_RIGHT))
-        {
-            PlaySE(SE_SELECT);
-            gTasks[taskId].tSubCursorPos = (gTasks[taskId].tSubCursorPos + 1) % 4;
-            DrawSpritePickerPreview(taskId, gTasks[taskId].tSubCursorPos);
-        }
-        else if (JOY_NEW(A_BUTTON))
-        {
-            u8 index = gTasks[taskId].tSubCursorPos;
-
-            PlaySE(SE_SELECT);
-            FreeAndDestroyTrainerPicSprite(gTasks[taskId].data[4]);
-            /* ADR-209: local effect first (own PROFILE render, and for
-             * Red/Leaf -- the only 2 of the 4 with a real vanilla
-             * gender-driven back-pic lookup, see that ADR's own honest
-             * gap note for Brendan/May -- the actual in-battle sprite),
-             * then the real wire send, same "ROM-local first, best-
-             * effort network write second" shape SendLeaveQueue/
-             * SendReadyChoice already use. */
-            PokePvPProfile_SetSpriteId(index);
-            if (index == 0)
-                gSaveBlock2Ptr->playerGender = MALE;
-            else if (index == 1)
-                gSaveBlock2Ptr->playerGender = FEMALE;
-            SendSetSprite(index);
-            // POKEPVP (ADR-238, owner-directed restructure): confirming a
-            // sprite used to chain straight into the naming screen --
-            // the owner's own ask was to make SPRITE and NAME fully
-            // independent actions, so this now just returns to the
-            // PLAYER submenu (same CB2, no DoNamingScreen/teardown
-            // needed) instead.
-            RestorePokePvPStandardWindow();
-            gTasks[taskId].tSubCursorPos = 0;
-            gTasks[taskId].func = Task_PokePvPPlayerMenu;
-            DrawPlayerMenuItems(0);
-        }
-        else if (JOY_NEW(B_BUTTON))
-        {
-            PlaySE(SE_SELECT);
-            FreeAndDestroyTrainerPicSprite(gTasks[taskId].data[4]);
-            RestorePokePvPStandardWindow();
-            gTasks[taskId].tSubCursorPos = 0;
-            gTasks[taskId].func = Task_PokePvPPlayerMenu;
-            DrawPlayerMenuItems(0);
-        }
-        break;
-    }
-}
 
 static void Task_PokePvPSocial(u8 taskId)
 {

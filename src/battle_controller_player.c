@@ -216,6 +216,61 @@ static void CompleteOnBattlerSpritePosX_0(void)
         PlayerBufferExecCompleted();
 }
 
+/* POKEPVP (ADR-322, owner-requested feature, upstream-patch task): a
+ * real PvP match's RUN selection is this project's own forfeit action
+ * (ADR-192) -- BtlController_EmitTwoReturnValues(1, B_ACTION_RUN, 0)
+ * just below is exactly what battle_controller_pokepvp.c's
+ * PokePvP_PollPlayerChoice watches to report a real forfeit to the
+ * gateway, which ends the match for both sides. Before this, an
+ * accidental RUN press (an easy D-pad slip, one column right of
+ * POKéMON) forfeited immediately with zero confirmation.
+ *
+ * Gated behind BATTLE_TYPE_POKEPVP so vanilla's own RUN (wild/NPC-
+ * trainer/safari/link battles) is completely untouched -- same gating
+ * convention as ADR-155's own "Phase 5 hard-gate" edit just below this
+ * function, the established precedent for a narrow, labeled POKEPVP
+ * branch inside this vendored file.
+ *
+ * Deliberately intercepts BEFORE the emit, not after: nothing is
+ * reported to the mailbox/launcher/gateway at all unless the player
+ * confirms, so this never needs its own undo path for an in-flight
+ * forfeit, and the YES case reuses the existing, already-verified
+ * forfeit path completely unchanged (no battle_controller_pokepvp.c,
+ * launcher, or gateway change needed for this feature at all). */
+static void PokePvP_HandleRunConfirm(void)
+{
+    if (JOY_NEW(A_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        BtlController_EmitTwoReturnValues(1, B_ACTION_RUN, 0);
+        PlayerBufferExecCompleted();
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        /* Reuses this file's own real "(re)start action selection from
+         * scratch" entry point -- the same one vanilla itself calls
+         * every time this screen (re)appears (a fresh turn, or
+         * returning from a cancelled FIGHT/BAG/PKMN submenu) -- rather
+         * than hand-rolling a partial redraw of the action-menu window
+         * and its 4 cursors. */
+        PlayerHandleChooseAction();
+    }
+}
+
+static void PokePvP_ShowRunConfirm(void)
+{
+    /* Same {PALETTE 5}{COLOR_HIGHLIGHT_SHADOW 13 14 15} / {CLEAR_TO 56}
+     * two-line grid gText_BattleMenu itself uses in this exact window
+     * (B_WIN_ACTION_MENU) -- same look, same column tab stop, just this
+     * project's own content instead of FIGHT/BAG/POKéMON/RUN. */
+    static const u8 sText_PokePvPForfeitConfirm[] = _(
+        "{PALETTE 5}{COLOR_HIGHLIGHT_SHADOW 13 14 15}FORFEIT BATTLE?\n"
+        "A=YES{CLEAR_TO 56}B=NO");
+    BattlePutTextOnWindow(sText_PokePvPForfeitConfirm, B_WIN_ACTION_MENU);
+    gBattlerControllerFuncs[gActiveBattler] = PokePvP_HandleRunConfirm;
+}
+
 static void HandleInputChooseAction(void)
 {
     u16 itemId = gBattleBufferA[gActiveBattler][2] | (gBattleBufferA[gActiveBattler][3] << 8);
@@ -238,6 +293,11 @@ static void HandleInputChooseAction(void)
             BtlController_EmitTwoReturnValues(1, B_ACTION_SWITCH, 0);
             break;
         case 3:
+            if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+            {
+                PokePvP_ShowRunConfirm();
+                return;
+            }
             BtlController_EmitTwoReturnValues(1, B_ACTION_RUN, 0);
             break;
         }

@@ -12,11 +12,15 @@
  * (gSaveBlock2Ptr->playerName); this buffer adds the permanent NAME#1234
  * tag, the sprite id, the competitive stats (matches/wins/losses/ties,
  * qualifying matches only -- practice/forfeit excluded server-side), the
- * most-used species, and the recent-opponents list. The sprite *picker*
- * (choosing a new sprite id) is deliberately deferred (Build Plan §10
- * item 3's "move existing player-name and sprite settings into Profile"
- * -- name entry already exists via ADR-113; sprite selection is the
- * remaining human-gated piece, tracked in the UI plan).
+ * most-used species, the recent-opponents list, and (ADR-321 follow-up,
+ * 2026-10-03) the cosmetic trainer level/XP system -- see
+ * packages/persistence/src/trainer-level.ts's own doc comment for the
+ * curve; this struct only ever renders the server's own computed level/
+ * progress, never recomputes it. The sprite *picker* (choosing a new
+ * sprite id) is deliberately deferred (Build Plan §10 item 3's "move
+ * existing player-name and sprite settings into Profile" -- name entry
+ * already exists via ADR-113; sprite selection is the remaining
+ * human-gated piece, tracked in the UI plan).
  */
 #ifndef POKEPVP_PROFILE_H
 #define POKEPVP_PROFILE_H
@@ -39,6 +43,11 @@ typedef struct
     u16 ties;
     u8 topCount;
     u16 topSpecies[POKEPVP_PROFILE_MAX_TOP_SPECIES];
+    /* ADR-321 follow-up (2026-10-03): server-computed, never recomputed
+     * here -- see trainer-level.ts. */
+    u16 trainerLevel;
+    u16 xpIntoLevel;
+    u16 xpForNextLevel;
 } PokePvPProfile;
 
 typedef struct
