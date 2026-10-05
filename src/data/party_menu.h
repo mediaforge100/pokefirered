@@ -1049,8 +1049,19 @@ enum
     CURSOR_OPTION_REGISTER,
     CURSOR_OPTION_TRADE1,
     CURSOR_OPTION_TRADE2,
+    // POKEPVP (owner feature, 2026-10-05): VIEW TEAM's own EDIT MOVES
+    // action -- inserted before CURSOR_OPTION_FIELD_MOVES so the
+    // FIELD_MOVE_* offset range right after it (CURSOR_OPTION_FIELD_MOVES
+    // + FIELD_MOVE_FLASH, +FIELD_MOVE_CUT, ...) stays contiguous.
+    CURSOR_OPTION_POKEPVP_EDIT_MOVES,
     CURSOR_OPTION_FIELD_MOVES,
 };
+
+// POKEPVP (owner feature, 2026-10-05): VIEW TEAM's EDIT MOVES label --
+// a plain file-local string, same as everywhere else in this project a
+// new menu row needs one, rather than a new gText_* export nothing else
+// would ever reference.
+static const u8 sText_PokePvPEditMoves[] = _("EDIT MOVES");
 
 static struct
 {
@@ -1059,6 +1070,7 @@ static struct
 } const sCursorOptions[] =
 {
     [CURSOR_OPTION_SUMMARY]                              = {gText_Summary5,               CursorCB_Summary  },
+    [CURSOR_OPTION_POKEPVP_EDIT_MOVES]                   = {sText_PokePvPEditMoves,       CursorCB_PokePvPEditMoves},
     [CURSOR_OPTION_SWITCH]                               = {gText_Switch2,                CursorCB_Switch   },
     [CURSOR_OPTION_CANCEL1]                              = {gFameCheckerText_Cancel,      CursorCB_Cancel1  },
     [CURSOR_OPTION_ITEM]                                 = {gText_Item,                   CursorCB_Item     },
@@ -1102,6 +1114,8 @@ static const u8 sPartyMenuAction_ReadTakeMailCancel[]    = {CURSOR_OPTION_READ, 
 static const u8 sPartyMenuAction_RegisterSummaryCancel[] = {CURSOR_OPTION_REGISTER, CURSOR_OPTION_SUMMARY,   CURSOR_OPTION_CANCEL1};
 static const u8 sPartyMenuAction_TradeSummaryCancel1[]   = {CURSOR_OPTION_TRADE1,   CURSOR_OPTION_SUMMARY,   CURSOR_OPTION_CANCEL1};
 static const u8 sPartyMenuAction_TradeSummaryCancel2[]   = {CURSOR_OPTION_TRADE2,   CURSOR_OPTION_SUMMARY,   CURSOR_OPTION_CANCEL1};
+// POKEPVP (owner feature, 2026-10-05): VIEW TEAM's own row set.
+static const u8 sPartyMenuAction_PokePvPViewTeam[]       = {CURSOR_OPTION_SUMMARY,  CURSOR_OPTION_POKEPVP_EDIT_MOVES, CURSOR_OPTION_CANCEL1};
 
 // IDs for the action lists that appear when a party mon is selected
 enum
@@ -1119,6 +1133,7 @@ enum
     ACTIONS_REGISTER,
     ACTIONS_TRADE,
     ACTIONS_SPIN_TRADE,
+    ACTIONS_POKEPVP_VIEW_TEAM,
 };
 
 static const u8 *const sPartyMenuActions[] =
@@ -1136,6 +1151,7 @@ static const u8 *const sPartyMenuActions[] =
     [ACTIONS_REGISTER]      = sPartyMenuAction_RegisterSummaryCancel,
     [ACTIONS_TRADE]         = sPartyMenuAction_TradeSummaryCancel1,
     [ACTIONS_SPIN_TRADE]    = sPartyMenuAction_TradeSummaryCancel2,
+    [ACTIONS_POKEPVP_VIEW_TEAM] = sPartyMenuAction_PokePvPViewTeam,
 };
 
 static const u8 sPartyMenuActionCounts[] =
@@ -1153,6 +1169,7 @@ static const u8 sPartyMenuActionCounts[] =
     [ACTIONS_REGISTER]      = NELEMS(sPartyMenuAction_RegisterSummaryCancel),
     [ACTIONS_TRADE]         = NELEMS(sPartyMenuAction_TradeSummaryCancel1),
     [ACTIONS_SPIN_TRADE]    = NELEMS(sPartyMenuAction_TradeSummaryCancel2),
+    [ACTIONS_POKEPVP_VIEW_TEAM] = NELEMS(sPartyMenuAction_PokePvPViewTeam),
 };
 
 static const u16 sFieldMoves[] =

@@ -37,6 +37,7 @@
 #include "overworld.h"
 #include "party_menu.h"
 #include "player_pc.h"
+#include "pokepvp_team_builder.h" // POKEPVP (owner feature, 2026-10-05): VIEW TEAM's EDIT MOVES hand-off
 #include "pokedex.h"
 #include "pokemon.h"
 #include "pokemon_icon.h"
@@ -148,6 +149,8 @@ struct PartyMenuBox
 static void BlitBitmapToPartyWindow_LeftColumn(u8 windowId, u8 x, u8 y, u8 width, u8 height, bool8 hideHP);
 static void BlitBitmapToPartyWindow_RightColumn(u8 windowId, u8 x, u8 y, u8 width, u8 height, bool8 hideHP);
 static void CursorCB_Summary(u8 taskId);
+// POKEPVP (owner feature, 2026-10-05): VIEW TEAM's own EDIT MOVES action.
+static void CursorCB_PokePvPEditMoves(u8 taskId);
 static void CursorCB_Switch(u8 taskId);
 static void CursorCB_Cancel1(u8 taskId);
 static void CursorCB_Item(u8 taskId);
@@ -3032,6 +3035,12 @@ static u8 GetPartyMenuActionsType(struct Pokemon *mon)
     case PARTY_MENU_TYPE_SPIN_TRADE:
         actionType = ACTIONS_SPIN_TRADE;
         break;
+    // POKEPVP (owner feature, 2026-10-04/05): VIEW TEAM -- SUMMARY, EDIT
+    // MOVES (added 2026-10-05, CursorCB_PokePvPEditMoves below), CANCEL.
+    // Every real slot here is never an egg in this project.
+    case PARTY_MENU_TYPE_POKEPVP_VIEW:
+        actionType = ACTIONS_POKEPVP_VIEW_TEAM;
+        break;
     // The following have no selection actions (i.e. they exit immediately upon selection)
     // PARTY_MENU_TYPE_CONTEST
     // PARTY_MENU_TYPE_CHOOSE_SINGLE_MON
@@ -3115,6 +3124,25 @@ static void CB2_ReturnToPartyMenuFromSummaryScreen(void)
     gPaletteFade.bufferTransferDisabled = TRUE;
     gPartyMenu.slotId = GetLastViewedMonIndex();
     InitPartyMenu(gPartyMenu.menuType, KEEP_PARTY_LAYOUT, gPartyMenu.action, TRUE, PARTY_MSG_DO_WHAT_WITH_MON, Task_TryCreateSelectionWindow, gPartyMenu.exitCallback);
+}
+
+// POKEPVP (owner feature, 2026-10-05): VIEW TEAM's EDIT MOVES action --
+// only ever reachable on PARTY_MENU_TYPE_POKEPVP_VIEW (ACTIONS_POKEPVP_
+// VIEW_TEAM is the only row set that offers it). Stages a request for
+// main_menu.c's own move editor (PokePvPTeamBuilder_RequestMoveEditorFromView
+// -- see its own doc comment for why this can't just be a direct call)
+// and exits exactly the way a plain B-press/CANCEL already does
+// (HandleChooseMonCancel's own default branch): `gPartyMenuUseExitCallback
+// = FALSE` plus Task_ClosePartyMenu, which routes to `gPartyMenu.
+// exitCallback` -- CB2_InitMainMenu, same as every other VIEW TEAM/Team
+// Builder exit -- since `sPartyMenuInternal->exitCallback` is never set
+// here to anything more specific.
+static void CursorCB_PokePvPEditMoves(u8 taskId)
+{
+    PlaySE(SE_SELECT);
+    PokePvPTeamBuilder_RequestMoveEditorFromView(gPartyMenu.slotId);
+    gPartyMenuUseExitCallback = FALSE;
+    Task_ClosePartyMenu(taskId);
 }
 
 static void CursorCB_Switch(u8 taskId)

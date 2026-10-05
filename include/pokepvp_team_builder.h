@@ -183,21 +183,24 @@ void PokePvPTeamBuilder_SetName(u8 slot, const u8 *name, u8 nameLen);
 void PokePvPTeamBuilder_SetNameString(u8 slot, const u8 *nameStr);
 
 // The account's currently active slot, or POKEPVP_NO_ACTIVE_TEAM_SLOT if
-// none is set yet (a fresh account, or one that has never used SET AS
-// ACTIVE).
+// none is set yet (a fresh account, or one that has never had a battle
+// started with a saved team -- see PokePvPTeamBuilder_SetActiveSlotLocal's
+// own doc comment; the ROM-local SET AS ACTIVE menu action that used to be
+// this marker's other writer was removed, 2026-10-04, since its only real
+// consumers were this value and the inbox-REMATCH fallback below).
 u8 PokePvPTeamBuilder_GetActiveSlot(void);
 
-// Updates the local "which slot is active" marker only -- called both by
-// the host's boot push (POKEPVP_MSG_ACTIVE_TEAM_SLOT) and, for immediate
-// visual feedback, right before the ROM-local SET AS ACTIVE action's own
-// SendActiveTeamSlot (main_menu.c) best-effort-pushes the real change.
-// `slot >= POKEPVP_TEAM_SLOTS` is accepted as an explicit "clear" (stored
-// as POKEPVP_NO_ACTIVE_TEAM_SLOT), matching the wire message's own 0xFF
-// convention -- never partially validated into a wrong slot.
+// Updates the local "which slot is active" marker only -- called by the
+// host's boot push (POKEPVP_MSG_ACTIVE_TEAM_SLOT) and by
+// battle_controller_pokepvp.c when a real battle actually starts with a
+// given slot's team. `slot >= POKEPVP_TEAM_SLOTS` is accepted as an
+// explicit "clear" (stored as POKEPVP_NO_ACTIVE_TEAM_SLOT), matching the
+// wire message's own 0xFF convention -- never partially validated into a
+// wrong slot.
 void PokePvPTeamBuilder_SetActiveSlotLocal(u8 slot);
 
 // Copies `srcSlot`'s roster (and its stored name) into `destSlot` --
-// COPY TO...'s own local mechanism, same in-memory shape
+// DUPLICATE's own local mechanism, same in-memory shape
 // PokePvPTeamBuilder_SendTeam(destSlot) already knows how to push
 // afterwards (this function does not itself send anything; the caller
 // calls PokePvPTeamBuilder_SendTeam(destSlot) once, same as every other
@@ -205,5 +208,52 @@ void PokePvPTeamBuilder_SetActiveSlotLocal(u8 slot);
 // or `srcSlot == destSlot` (copying a slot onto itself is never useful and
 // would otherwise burn a real PUT for nothing).
 void PokePvPTeamBuilder_CopySlot(u8 srcSlot, u8 destSlot);
+
+// POKEPVP (owner feature, 2026-10-04): GENERATE RANDOM's own local
+// mechanism -- fills `slot` with 6 random roster species, one per primary
+// type. A no-op if `slot` is out of range or already holds anything (see
+// the implementation's own doc comment for why this is a UX starting
+// point, not a legality claim). Does not itself send anything; the caller
+// calls PokePvPTeamBuilder_SendTeam(slot) once afterwards, same as every
+// other roster mutation in this file.
+void PokePvPTeamBuilder_GenerateRandomTeam(u8 slot);
+
+// POKEPVP (owner feature, 2026-10-05): DELETE TEAM's own local mechanism
+// -- wipes `slot` back to its fresh-account state (0 members, every
+// record zeroed, name cleared), the same shape PokePvPTeamBuilder_
+// SendTeam already sends for a genuinely empty slot (memberCount 0,
+// species 0 -- team_types.h's own "the player cleared this team" wire
+// shape). A no-op if `slot` is out of range; harmless (not guarded) if
+// `slot` is already empty. Does not itself send anything; the caller
+// calls PokePvPTeamBuilder_SendTeam(slot) once afterwards, same as every
+// other roster mutation in this file.
+void PokePvPTeamBuilder_DeleteSlot(u8 slot);
+
+// POKEPVP (owner feature, 2026-10-05): VIEW TEAM's EDIT MOVES action --
+// three tiny cross-translation-unit hand-off functions. party_menu.c's
+// CursorCB_PokePvPEditMoves (its own new per-mon action, added alongside
+// SUMMARY on PARTY_MENU_TYPE_POKEPVP_VIEW) has no other way to reach
+// main_menu.c's own per-task state once the party screen has destroyed
+// that task's windows, so the request is staged here instead -- the same
+// "stash it in a plain static, consume it on the next pass through
+// Task_UpdateVisualSelection" shape sPokePvPReturnToTeamList (main_menu.c)
+// already uses for every other "skip the top menu, land on a specific
+// screen" hand-off, just reachable from a second translation unit.
+
+// Records which Team Builder slot VIEW TEAM is currently showing -- set
+// right before it opens the read-only party screen, so
+// RequestMoveEditorFromView (below) knows which slot's data to jump into
+// without threading it through party_menu.c's own call chain.
+void PokePvPTeamBuilder_SetViewSlot(u8 slot);
+
+// Called by CursorCB_PokePvPEditMoves when the player picks EDIT MOVES on
+// `memberIndex` (0-5) of the currently-viewed slot. Pairs with
+// PokePvPTeamBuilder_ConsumeMoveEditorRequest on main_menu.c's side.
+void PokePvPTeamBuilder_RequestMoveEditorFromView(u8 memberIndex);
+
+// Consumes a pending request set by RequestMoveEditorFromView: TRUE with
+// `*slot`/`*memberIndex` filled in (and the request cleared) if one is
+// pending, FALSE (both left untouched) otherwise.
+bool8 PokePvPTeamBuilder_ConsumeMoveEditorRequest(u8 *slot, u8 *memberIndex);
 
 #endif // GUARD_POKEPVP_TEAM_BUILDER_H

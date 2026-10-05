@@ -64,6 +64,14 @@
 #define PARTY_MENU_TYPE_UNION_ROOM_TRADE          9  // trading board
 #define PARTY_MENU_TYPE_SPIN_TRADE                10 // Unused beta for Gen IV's Spin Trade
 #define PARTY_MENU_TYPE_MINIGAME                  11
+// POKEPVP (owner feature, 2026-10-04): VIEW TEAM -- a read-only party
+// screen over a Team Builder slot's stored roster (loaded via
+// PokePvPTeamBuilder_LoadTeamForBattle, never the real save-file party).
+// Only SUMMARY/CANCEL are offered per mon (GetPartyMenuActionsType,
+// party_menu.c); no ITEM/SWITCH/MAIL, since those would act on this
+// scratch copy for no real effect and ITEM in particular would contradict
+// D8 (no held items).
+#define PARTY_MENU_TYPE_POKEPVP_VIEW               12
 
 #define PARTY_ACTION_CHOOSE_MON         0
 #define PARTY_ACTION_SEND_OUT           1
