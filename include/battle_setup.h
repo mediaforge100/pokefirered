@@ -61,6 +61,9 @@ bool8 PokePvP_GetOnlineCount(u16 *count);
 // (battle_controller_pokepvp.c) for why.
 bool8 PokePvP_GetQueueCount(u16 *count);
 void PokePvP_ClearQueueCount(void);
+// SELECT QUEUE hover counts (POKEPVP_MSG_QUEUE_POP): idx 0 EARLY 3V3,
+// 1 CUSTOM 6V6. FALSE until the first push arrives.
+bool8 PokePvP_GetQueuePop(u8 queueIdx, u8 *count);
 bool8 PokePvP_IsRealMatchPending(void);
 void PokePvP_ClearRealMatchPending(void);
 // POKEPVP (ADR-207): HANDOFF item 7 -- the wait-task counterpart to

@@ -39,6 +39,7 @@
  * from the project entirely (owner ask: it was never rendered in-game)
  * -- there is nothing left to "deliberately not carry" here anymore. */
 #define POKEPVP_PACKS_MAX_PLAYSTYLE_LEN 24
+#define POKEPVP_PACKS_MAX_SPECIES 6
 
 /* Flags bits for POKEPVP_MSG_LAUNCH_CONFIG (presentation_types.h). */
 #define POKEPVP_FLAG_PRACTICE 0x01
@@ -50,6 +51,8 @@ typedef struct
 {
     u8 title[POKEPVP_PACKS_MAX_TITLE_LEN + 1]; /* charmap, EOS-terminated */
     u8 playstyle[POKEPVP_PACKS_MAX_PLAYSTYLE_LEN + 1]; /* charmap, EOS-terminated; empty if never sent */
+    u8 speciesCount; /* 0 = none sent; else gen3 species ids in species[] (PC icons) */
+    u8 species[POKEPVP_PACKS_MAX_SPECIES];
 } PokePvPPackEntry;
 
 /* Handles a POKEPVP_MSG_PACK_CATALOG_ENTRY record (host -> ROM). A
@@ -75,5 +78,9 @@ u8 PokePvPPacks_Flags(void);
 /* The pack title at (battleClass 0 early /1 elite, index 0-4). Returns
  * FALSE when the slot is empty (no catalog pushed yet). */
 bool8 PokePvPPacks_Get(u8 battleClass, u8 index, PokePvPPackEntry *out);
+
+/* Same lookup without the 50-byte struct copy (this ROM's user stack has
+ * only a few hundred bytes of headroom). NULL when the slot is empty. */
+const PokePvPPackEntry *PokePvPPacks_Peek(u8 battleClass, u8 index);
 
 #endif /* POKEPVP_PACKS_CATALOG_H */

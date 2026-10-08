@@ -24,6 +24,7 @@
 #include "profile.h" // POKEPVP (UI plan slice 5): PROFILE screen buffer
 #include "pokepvp/social.h" // POKEPVP (UI plan slice 6): SOCIAL screen buffer (friends/rivals/blocks)
 #include "history.h" // POKEPVP (ADR-168): MATCH HISTORY buffer
+#include "pokemon_icon.h" // pack picker PC icons
 #include "achievements.h" // POKEPVP (ADR-316): ACHIEVEMENTS/TEAM ACHIEVEMENTS buffers
 // leaderboard.h intentionally NOT included here anymore (ADR-189) -- this
 // file no longer has a LEADERBOARD screen; the buffer module itself is
@@ -132,8 +133,9 @@ enum MainMenuWindow
 // carries these to the host; the submenu now hides rows whose server flag
 // is off (POKEPVP_FLAG_*, packs_catalog.h).
 #define POKEPVP_MATCH_MODE_QUICK_EARLY 11u
-#define POKEPVP_MATCH_MODE_QUICK_ELITE 12u
 #define POKEPVP_MATCH_MODE_CUSTOM_ELITE 13u
+// FIND OPPONENT submenu row (never sent on the wire; opens SELECT QUEUE).
+#define POKEPVP_MATCH_MODE_FIND 20u
 // Picker tree stages (tPickerStage): 0 = START MATCH submenu, 2 = pack
 // picker, 3 = team selector. tPickerStage is write-only bookkeeping (never
 // branched on), so this is documentation, not control flow. Stage 1 (the
@@ -387,8 +389,17 @@ static u8 StartMatchModeForRow(u8 row);
 // to have is gone (ADR-192): QUICK EARLY/QUICK ELITE now go straight to
 // their own pack list.
 static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass);
+static void DestroyPackIcons(void);
+static void EnableSpritePickerObjWindow(void);
+static void RestorePokePvPStandardWindow(void);
+static void ShowPackIcons(const PokePvPPackEntry *pack);
+static void ShowTeamIconsBand(u8 slot);
 static void Task_PokePvPPackPicker(u8 taskId);
 static void Task_PokePvPStartMatchSubmenu(u8 taskId);
+static void DrawSelectQueueItems(u8 selectedIdx);
+static void Task_PokePvPSelectQueue(u8 taskId);
+static u8 SelectQueueRowCount(void);
+static u8 SelectQueueModeForRow(u8 row);
 // POKEPVP (ADR-193, Gap 2, extended HANDOFF item 23 follow-up): INVITE
 // MATCH's real target picker -- a friends/rivals-list reuse of the SOCIAL
 // screen's own list rendering (DrawSocialListItems, forward-declared below
@@ -703,10 +714,18 @@ static const u8 sText_AutoMatch[] = _("AUTO-MATCH");
 // the Build Plan §8 mode tree -- QUICK EARLY / QUICK ELITE (battle class
 // picker -> 5 packs + RANDOM), CUSTOM ELITE (saved team), INVITE
 // MATCH, PRACTICE. Rows whose server feature flag is off stay hidden.
-static const u8 sText_QuickEarly[] = _("QUICK EARLY");
-static const u8 sText_QuickElite[] = _("QUICK ELITE");
-static const u8 sText_CustomElite[] = _("CUSTOM ELITE");
-static const u8 sText_InviteMatch[] = _("INVITE MATCH");
+static const u8 sText_QuickEarly[] = _("EARLY 3V3");
+static const u8 sText_CustomElite[] = _("CUSTOM 6V6");
+// FIND OPPONENT -> SELECT QUEUE (2026-10-08): START MATCH's queue modes now
+// live one level down, on a screen with its own header + hover counts.
+static const u8 sText_FindOpponent[] = _("FIND OPPONENT");
+static const u8 sText_SelectQueue[] = _("- SELECT QUEUE -");
+static const u8 sText_QueueUnknown[] = _("0"); /* no push yet == nobody known to be waiting */
+static const u8 sText_ModeDescFind[] = _("Join a public queue");
+static const u8 sText_QueueDescEarly[] = _("Lvl 20 Packs");
+static const u8 sText_QueueDescCustom[] = _("Lvl 100 Player Teams");
+static const u8 sText_InQueueSuffix[] = _(" IN QUEUE");
+static const u8 sText_InviteMatch[] = _("INVITE PLAYER");
 static const u8 sText_PracticeMatch[] = _("AI PRACTICE");
 // POKEPVP (owner ask, 2026-09-13, item 6): the START MATCH submenu never
 // told the player what each row actually means before committing to it
@@ -714,9 +733,6 @@ static const u8 sText_PracticeMatch[] = _("AI PRACTICE");
 // mode, shown in the ERROR band below the row list -- same window/spot
 // the pack picker's own rules line already uses, just for this screen's
 // own five rows instead of a hovered pack.
-static const u8 sText_ModeDescQuickEarly[] = _("3v3, Level 20, Premade");
-static const u8 sText_ModeDescQuickElite[] = _("6v6, Level 100, Premade");
-static const u8 sText_ModeDescCustomElite[] = _("6v6, Level 100, Custom");
 static const u8 sText_ModeDescInvite[] = _("6v6, Level 100, Custom");
 static const u8 sText_ModeDescPractice[] = _("6v6, Level 100, Practice");
 // POKEPVP (UI plan slice 3): the pack-picker rows. (ADR-192: the separate
@@ -768,8 +784,8 @@ static const u8 sText_ReadyForBattle[] = _("READY FOR BATTLE!");
 // the ROM shows the requester and the matching type line.
 static const u8 sText_ChallengeFrom[] = _("CHALLENGE FROM");
 static const u8 sText_RematchLabel[] = _("REMATCH");
-static const u8 sText_EarlyLabel[] = _("QUICK EARLY");
-static const u8 sText_EliteLabel[] = _("QUICK ELITE");
+static const u8 sText_EarlyLabel[] = _("EARLY 3V3");
+static const u8 sText_EliteLabel[] = _("CUSTOM 6V6");
 static const u8 sText_Accept[] = _("ACCEPT");
 static const u8 sText_Decline[] = _("DECLINE");
 static const u8 sText_BlockPlayer[] = _("BLOCK");
@@ -778,6 +794,9 @@ static const u8 sText_ChallengeBlocked[] = _("Player blocked.");
 // display name, stats, most-used Pokemon, recent opponents). The sprite
 // picker is deferred; the sprite id is shown as a number.
 static const u8 sText_ProfileHeader[] = _("PROFILE");
+static const u8 sText_MatchesLabel[] = _("MATCHES: ");
+static const u8 sText_WinLabel[] = _("WIN: ");
+static const u8 sText_LoseLabel[] = _("LOSE: ");
 static const u8 sText_ProfileW[] = _("W:");
 static const u8 sText_ProfileL[] = _("L:");
 static const u8 sText_ProfileT[] = _("T:");
@@ -2413,105 +2432,32 @@ static void Task_PokePvPMatchHistory(u8 taskId)
         recentCount = PokePvPProfile_RecentCount();
 
 
-        // 2026-10-01, owner-directed rework ("mainly display statistics:
-        // number of matches, wins, losses"): M/W/L/T now leads in window
-        // 0, the panel's first/most prominent slot -- the tag (still
-        // real, useful content, just not the headline) moves to window 1.
-        // Window 0: M/W/L/T on one line (qualifying matches only, per
-        // ADR-175's counts_for_stats).
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_0, PIXEL_FILL(10));
-        dst = buf;
-        if (haveProfile)
+        // 2026-10-08, owner-directed: the stats block is just MATCHES / WIN /
+        // LOSE in full text, one per row (qualifying matches only, per
+        // ADR-175's counts_for_stats). No tag, level, top species or recent
+        // opponent any more; the paged per-match HISTORY list below stays.
         {
-            dst = StringCopy(dst, sText_ProfileM);
-            dst = ConvertIntToDecimalStringN(dst, profile.matches, STR_CONV_MODE_LEFT_ALIGN, 4);
-            dst = StringCopy(dst, sText_ProfileStatSep);
-            dst = StringCopy(dst, sText_ProfileW);
-            dst = ConvertIntToDecimalStringN(dst, profile.wins, STR_CONV_MODE_LEFT_ALIGN, 4);
-            dst = StringCopy(dst, sText_ProfileStatSep);
-            dst = StringCopy(dst, sText_ProfileL);
-            dst = ConvertIntToDecimalStringN(dst, profile.losses, STR_CONV_MODE_LEFT_ALIGN, 4);
-            dst = StringCopy(dst, sText_ProfileStatSep);
-            dst = StringCopy(dst, sText_ProfileT);
-            dst = ConvertIntToDecimalStringN(dst, profile.ties, STR_CONV_MODE_LEFT_ALIGN, 4);
-        }
-        else
-        {
-            dst = StringCopy(dst, sText_ProfileEmpty);
-        }
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_0, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
-        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_0);
-        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_FULL);
+            static const u8 sWindowIds[3] = {
+                MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1, MAIN_MENU_WINDOW_POKEPVP_2,
+            };
+            const u8 *const labels[3] = { sText_MatchesLabel, sText_WinLabel, sText_LoseLabel };
+            u16 values[3];
 
-        // Window 1: the permanent NAME#1234 tag (moved from window 0 --
-        // see this block's own doc comment above), plus (owner-directed
-        // feature, 2026-10-03) the cosmetic trainer level -- this window
-        // already has spare width (tag maxes out at 16 chars; "  LV.999"
-        // adds at most 8 more, comfortably under this panel's ~26-char
-        // line budget), so it's appended here rather than claiming
-        // window 4 the way a second ERROR-band line would have to (window
-        // 4 can't take a line of its own on this screen -- see that
-        // window's own "erase, don't occlude" comment just below for the
-        // row-15 overlap this already fought once).
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_1, PIXEL_FILL(10));
-        dst = buf;
-        if (haveProfile && profile.tag[0] != EOS)
-            dst = StringCopy(dst, profile.tag);
-        else
-            dst = StringCopy(dst, sText_ProfileNoTag);
-        if (haveProfile)
-        {
-            dst = StringCopy(dst, sText_ProfileLevelPrefix);
-            dst = ConvertIntToDecimalStringN(dst, profile.trainerLevel, STR_CONV_MODE_LEFT_ALIGN, 3);
-        }
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_1, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
-        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_1);
-        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_FULL);
-
-        // Window 2: up to 3 most-used species (ADR-175's mostUsedSpecies).
-        FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_2, PIXEL_FILL(10));
-        dst = buf;
-        dst = StringCopy(dst, sText_ProfileTop);
-        if (haveProfile && profile.topCount > 0)
-        {
-            for (i = 0; i < profile.topCount && i < POKEPVP_PROFILE_MAX_TOP_SPECIES; i++)
+            values[0] = haveProfile ? profile.matches : 0;
+            values[1] = haveProfile ? profile.wins : 0;
+            values[2] = haveProfile ? profile.losses : 0;
+            for (i = 0; i < 3; i++)
             {
-                if (i > 0)
-                    dst = StringCopy(dst, sText_ProfileSpeciesSep);
-                dst = StringCopy(dst, gSpeciesNames[profile.topSpecies[i]]);
+                FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(10));
+                dst = StringCopy(buf, labels[i]);
+                dst = ConvertIntToDecimalStringN(dst, values[i], STR_CONV_MODE_LEFT_ALIGN, 4);
+                *dst = EOS;
+                AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+                PutWindowTilemap(sWindowIds[i]);
+                CopyWindowToVram(sWindowIds[i], COPYWIN_FULL);
             }
         }
-        else
-        {
-            dst = StringCopy(dst, sText_ProfileNoSpecies);
-        }
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_2, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
-        PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_2);
-        CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_FULL);
-
-        // Window 3: the most recent opponent.
         FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_3, PIXEL_FILL(10));
-        dst = buf;
-        dst = StringCopy(dst, sText_ProfileRecent);
-        if (recentCount > 0)
-        {
-            PokePvPRecentOpponent opp;
-            if (PokePvPProfile_GetRecent(0, &opp))
-            {
-                dst = StringCopy(dst, opp.name);
-                dst = StringCopy(dst, sText_PostMatchVs);
-                dst = StringCopy(dst, opp.tag);
-            }
-        }
-        else
-        {
-            dst = StringCopy(dst, sText_ProfileNoOpponent);
-        }
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_3, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
         PutWindowTilemap(MAIN_MENU_WINDOW_POKEPVP_3);
         CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_FULL);
 
@@ -2649,15 +2595,15 @@ static const u8 sText_GuideBodyReadyCheck[] = _(
     "match was ever started.");
 static const u8 sText_GuideBodyBattlePacks[] = _(
     "A battle pack is a ready-made team "
-    "for QUICK EARLY/QUICK ELITE. Pick "
+    "for EARLY 3V3. Pick "
     "a pack instead of building your own "
     "team first. "
-    "CUSTOM ELITE uses a team you built "
+    "CUSTOM 6V6 uses a team you built "
     "yourself in TEAM BUILDER instead.");
 static const u8 sText_GuideBodyMatchTypes[] = _(
-    "AUTO-MATCH pairs you with anyone "
+    "FIND OPPONENT pairs you with anyone "
     "waiting in the same queue. "
-    "INVITE MATCH challenges one real "
+    "INVITE PLAYER challenges one real "
     "friend or rival by name instead of "
     "matching with a stranger. "
     "AI PRACTICE battles a local AI "
@@ -3125,7 +3071,7 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
      * flags==0 -> 0x0F rule keeps an offline build (no LAUNCH_CONFIG
      * ever pushed) at the legacy dense five. */
     static const u8 *const sAllLabels[] = {
-        sText_QuickEarly, sText_QuickElite, sText_CustomElite, sText_InviteMatch, sText_PracticeMatch,
+        sText_FindOpponent, sText_InviteMatch, sText_PracticeMatch,
     };
     u8 flags = PokePvPPacks_Flags();
     const u8 *visible[5];
@@ -3134,17 +3080,12 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
 
     if (flags == 0)
         flags = 0x0F;
-    if (flags & POKEPVP_FLAG_QUICK)
-    {
+    if (flags & (POKEPVP_FLAG_QUICK | POKEPVP_FLAG_CUSTOM))
         visible[n++] = sAllLabels[0];
-        visible[n++] = sAllLabels[1];
-    }
-    if (flags & POKEPVP_FLAG_CUSTOM)
-        visible[n++] = sAllLabels[2];
     if (flags & POKEPVP_FLAG_INVITE)
-        visible[n++] = sAllLabels[3];
+        visible[n++] = sAllLabels[1];
     if (flags & POKEPVP_FLAG_PRACTICE)
-        visible[n++] = sAllLabels[4];
+        visible[n++] = sAllLabels[2];
 
     for (i = 0; i < 5; i++)
     {
@@ -3204,14 +3145,8 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
 
         switch (StartMatchModeForRow(selectedIdx))
         {
-        case POKEPVP_MATCH_MODE_QUICK_EARLY:
-            desc = sText_ModeDescQuickEarly;
-            break;
-        case POKEPVP_MATCH_MODE_QUICK_ELITE:
-            desc = sText_ModeDescQuickElite;
-            break;
-        case POKEPVP_MATCH_MODE_CUSTOM_ELITE:
-            desc = sText_ModeDescCustomElite;
+        case POKEPVP_MATCH_MODE_FIND:
+            desc = sText_ModeDescFind;
             break;
         case POKEPVP_MATCH_MODE_INVITE:
             desc = sText_ModeDescInvite;
@@ -3241,7 +3176,7 @@ static void DrawStartMatchSubmenuItems(u8 selectedIdx)
 }
 
 /* POKEPVP (UI plan slice 3): the START MATCH mode tree (Build Plan §2.2
- * categories, §8 item 2). Five fixed rows -- QUICK EARLY / QUICK ELITE /
+ * categories, §8 item 2). Four fixed rows -- QUICK EARLY /
  * CUSTOM ELITE / INVITE MATCH / PRACTICE -- with rows hidden by the
  * server's feature flags (PacksCatalog_Flags, pushed via LAUNCH_CONFIG).
  * flags == 0 means "no configuration received at all" (offline build,
@@ -3257,9 +3192,7 @@ static u8 StartMatchRowCount(void)
 
     if (flags == 0)
         flags = 0x0F; /* unconfigured -> all modes visible (legacy dense) */
-    if (flags & POKEPVP_FLAG_QUICK)
-        n += 2;
-    if (flags & POKEPVP_FLAG_CUSTOM)
+    if (flags & (POKEPVP_FLAG_QUICK | POKEPVP_FLAG_CUSTOM))
         n++;
     if (flags & POKEPVP_FLAG_INVITE)
         n++;
@@ -3269,26 +3202,18 @@ static u8 StartMatchRowCount(void)
 }
 
 /* Row index -> submenu mode (POKEPVP_MATCH_MODE_*), walking the same
- * order and visibility as StartMatchRowCount. Returns POKEPVP_MATCH_MODE_
- * AUTO (0) for an out-of-range row -- the caller never passes one. */
+ * order and visibility as StartMatchRowCount. Returns PRACTICE for an
+ * out-of-range row -- the caller never passes one. */
 static u8 StartMatchModeForRow(u8 row)
 {
     u8 flags = PokePvPPacks_Flags();
 
     if (flags == 0)
         flags = 0x0F;
-    if (flags & POKEPVP_FLAG_QUICK)
+    if (flags & (POKEPVP_FLAG_QUICK | POKEPVP_FLAG_CUSTOM))
     {
         if (row == 0)
-            return POKEPVP_MATCH_MODE_QUICK_EARLY;
-        if (row == 1)
-            return POKEPVP_MATCH_MODE_QUICK_ELITE;
-        row -= 2;
-    }
-    if (flags & POKEPVP_FLAG_CUSTOM)
-    {
-        if (row == 0)
-            return POKEPVP_MATCH_MODE_CUSTOM_ELITE;
+            return POKEPVP_MATCH_MODE_FIND;
         row--;
     }
     if (flags & POKEPVP_FLAG_INVITE)
@@ -3300,6 +3225,117 @@ static u8 StartMatchModeForRow(u8 row)
     return POKEPVP_MATCH_MODE_PRACTICE;
 }
 
+/* SELECT QUEUE (FIND OPPONENT's submenu): header row + the visible queue
+ * rows (EARLY 3V3 / CUSTOM 6V6, hidden by the same server flags as
+ * before), with the hovered queue's live player count in the band below.
+ * Cursor rows (0..n-1) sit under the header, i.e. in windows 1..n. */
+static u8 SelectQueueRowCount(void)
+{
+    u8 flags = PokePvPPacks_Flags();
+    u8 n = 0;
+
+    if (flags == 0)
+        flags = 0x0F;
+    if (flags & POKEPVP_FLAG_QUICK)
+        n++;
+    if (flags & POKEPVP_FLAG_CUSTOM)
+        n++;
+    return n;
+}
+
+static u8 SelectQueueModeForRow(u8 row)
+{
+    u8 flags = PokePvPPacks_Flags();
+
+    if (flags == 0)
+        flags = 0x0F;
+    if (flags & POKEPVP_FLAG_CUSTOM)
+    {
+        if (row == 0)
+            return POKEPVP_MATCH_MODE_CUSTOM_ELITE;
+        row--;
+    }
+    return POKEPVP_MATCH_MODE_QUICK_EARLY;
+}
+
+// Last counts SELECT QUEUE drew, so the task redraws only on a change
+// (0xFFFF = nothing drawn yet / unknown).
+static EWRAM_DATA u16 sSelectQueueDrawnSig = 0;
+
+static u16 SelectQueueSig(u8 mode)
+{
+    u8 c;
+
+    if (!PokePvP_GetQueuePop(mode == POKEPVP_MATCH_MODE_QUICK_EARLY ? 0 : 1, &c))
+        return 0xFFFF;
+    return c;
+}
+
+static void DrawSelectQueueItems(u8 selectedIdx)
+{
+    static const u8 sWindowIds[] = {
+        MAIN_MENU_WINDOW_POKEPVP_0, MAIN_MENU_WINDOW_POKEPVP_1,
+        MAIN_MENU_WINDOW_POKEPVP_2, MAIN_MENU_WINDOW_POKEPVP_3,
+        MAIN_MENU_WINDOW_POKEPVP_4,
+    };
+    u8 n = SelectQueueRowCount();
+    u8 i;
+
+    /* Row 0: non-selectable header, dark text on the plain fill. */
+    FillWindowPixelBuffer(sWindowIds[0], PIXEL_FILL(10));
+    AddTextPrinterParameterized3(sWindowIds[0], FONT_NORMAL, 2, 2, sTextColor2, -1, sText_SelectQueue);
+    for (i = 1; i < 5; i++)
+    {
+        bool8 selected = (i - 1 == selectedIdx) && (i - 1 < n);
+        FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
+        if (i - 1 < n)
+        {
+            AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 10, 2,
+                selected ? sTextColorSelected : sTextColor1, -1,
+                SelectQueueModeForRow(i - 1) == POKEPVP_MATCH_MODE_QUICK_EARLY ? sText_QuickEarly : sText_CustomElite);
+        }
+    }
+    /* Window 4: hovered queue's live player count, in blue. */
+    if (selectedIdx < n)
+    {
+        u8 cbuf[16];
+        u8 *cdst;
+        u8 ccount;
+
+        if (PokePvP_GetQueuePop(SelectQueueModeForRow(selectedIdx) == POKEPVP_MATCH_MODE_QUICK_EARLY ? 0 : 1, &ccount))
+            cdst = ConvertIntToDecimalStringN(cbuf, ccount, STR_CONV_MODE_LEFT_ALIGN, 3);
+        else
+            cdst = StringCopy(cbuf, sText_QueueUnknown);
+        cdst = StringCopy(cdst, sText_InQueueSuffix);
+        *cdst = EOS;
+        AddTextPrinterParameterized3(sWindowIds[4], FONT_NORMAL, 2, 2, sTextColor2, -1, cbuf);
+    }
+
+    /* Same band-first / panel-last / one-commit ordering as
+     * DrawStartMatchSubmenuItems (ADR-302). Band: "N IN QUEUE". */
+    MainMenu_EraseWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    if (selectedIdx < n)
+    {
+        u8 mode = SelectQueueModeForRow(selectedIdx);
+
+        FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 18, sTextColor1, -1,
+            mode == POKEPVP_MATCH_MODE_QUICK_EARLY ? sText_QueueDescEarly : sText_QueueDescCustom);
+        PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+        CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
+        sSelectQueueDrawnSig = SelectQueueSig(mode);
+    }
+
+    MainMenu_DrawWindowNoCommit(&sPokePvPMenuPanelTemplate);
+    for (i = 0; i < 5; i++)
+        PutWindowTilemap(sWindowIds[i]);
+    for (i = 0; i < 5; i++)
+        CopyWindowToVram(sWindowIds[i], COPYWIN_GFX);
+    if (selectedIdx < n)
+        MainMenu_DrawWindowNoCommit(&sPokePvPSubmenuDescBorderTemplate);
+    CopyBgTilemapBufferToVram(0);
+}
+
 /* POKEPVP (UI plan slice 3): the pack picker (Build Plan §8 items 3-4:
  * five Battle Packs + RANDOM + a rules/overview line). A 4-row scroll
  * window over a 6-row list (5 packs, then RANDOM) -- see ADR-192 for why
@@ -3309,6 +3345,86 @@ static u8 StartMatchModeForRow(u8 row)
  * format line -- draws in the ERROR band below the panel (the "pack
  * overview" of §8 item 3, lean: title + rules; the full description stays
  * a server-side summary the catalog could later carry). */
+// Pack picker PC-box icons (2026-10-08 owner ask): the hovered pack's team,
+// drawn as the same mon icons the PC uses, right-aligned in the description
+// band (x 40-200, y 120-152; the "3v3 LVL20" rules line owns the left ~64px,
+// so at most 3 fit). OBJ priority 0 = over BG0's opaque band fill. All state
+// in EWRAM (IWRAM's tail is the user stack -- ADR-318).
+#define POKEPVP_PACK_ICONS_MAX 3
+#define POKEPVP_ICONS_CAP 6
+static EWRAM_DATA u8 sPackIconSprites[POKEPVP_ICONS_CAP] = {0};
+static EWRAM_DATA u8 sPackIconCount = 0;
+static EWRAM_DATA bool8 sPackIconsPalLoaded = FALSE;
+
+static void DestroyPackIcons(void)
+{
+    u8 i;
+
+    for (i = 0; i < sPackIconCount; i++)
+        DestroyMonIcon(&gSprites[sPackIconSprites[i]]);
+    sPackIconCount = 0;
+    if (sPackIconsPalLoaded)
+    {
+        FreeMonIconPalettes();
+        sPackIconsPalLoaded = FALSE;
+    }
+}
+
+// n icons (<= POKEPVP_ICONS_CAP) of gen3 species[], centers at firstX + i*stepX, y.
+static void ShowMonIcons(const u16 *species, u8 n, s16 firstX, s16 stepX, s16 y)
+{
+    u8 i;
+
+    DestroyPackIcons();
+    if (n == 0 || n > POKEPVP_ICONS_CAP)
+        return;
+    EnableSpritePickerObjWindow();
+    LoadMonIconPalettes();
+    sPackIconsPalLoaded = TRUE;
+    for (i = 0; i < n; i++)
+    {
+        u8 id = CreateMonIcon(species[i], SpriteCB_MonIcon, firstX + i * stepX, y, 0, 0, FALSE);
+
+        if (id == MAX_SPRITES)
+            break;
+        gSprites[id].oam.priority = 0;
+        sPackIconSprites[sPackIconCount++] = id;
+    }
+}
+
+static void ShowPackIcons(const PokePvPPackEntry *pack)
+{
+    u16 species[POKEPVP_PACK_ICONS_MAX];
+    u8 i;
+
+    DestroyPackIcons();
+    if (pack == NULL || pack->speciesCount < 1 || pack->speciesCount > POKEPVP_PACK_ICONS_MAX)
+        return;
+    for (i = 0; i < pack->speciesCount; i++)
+        species[i] = pack->species[i];
+    ShowMonIcons(species, pack->speciesCount, 198 - 16 - (pack->speciesCount - 1) * 32, 32, 136);
+}
+
+// CUSTOM 6V6 team selector: clears the band, then shows the hovered saved
+// team's members (up to 6, 25px apart so six fit the 160px band).
+static void ShowTeamIconsBand(u8 slot)
+{
+    u16 species[POKEPVP_ICONS_CAP];
+    u8 n = PokePvPTeamBuilder_MemberCount(slot);
+    u8 i;
+
+    /* Gfx only, no PutWindowTilemap: the panel (drawn just before this)
+     * owns band rows 15-16 -- re-putting the band's tilemap would cover
+     * the TEAM 5 row. */
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
+    CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
+    if (n > POKEPVP_ICONS_CAP)
+        n = POKEPVP_ICONS_CAP;
+    for (i = 0; i < n; i++)
+        species[i] = PokePvPTeamBuilder_MemberSpecies(slot, i);
+    ShowMonIcons(species, n, 56, 25, 143);
+}
+
 static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
 {
     static const u8 sWindowIds[] = {
@@ -3318,7 +3434,7 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
     };
     u8 start;
     u8 i;
-    u8 buf2[32];
+    const PokePvPPackEntry *hovered = NULL;
 
     // POKEPVP (owner playtest round 4, ADR-192): this screen used to fill
     // all 5 shared POKEPVP_0..4 row slots (a 5-row window sliding over the
@@ -3346,12 +3462,12 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
         FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
         if (row < POKEPVP_PACKS_PER_CLASS)
         {
-            PokePvPPackEntry pack;
+            const PokePvPPackEntry *pack = PokePvPPacks_Peek(battleClass, row);
 
-            if (PokePvPPacks_Get(battleClass, row, &pack))
+            if (pack != NULL)
             {
                 AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
-                    selected ? sTextColorSelected : sTextColor1, -1, pack.title);
+                    selected ? sTextColorSelected : sTextColor1, -1, pack->title);
             }
             else
             {
@@ -3392,8 +3508,6 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
      * to describe, so it keeps the rules line as its only line, same as
      * before this ADR. */
     {
-        u8 *dst;
-
         // ADR-297: see DrawStartMatchSubmenuItems's identical comment --
         // erase any stale ERROR-band border explicitly now that window 5
         // (ADR-296) no longer masks it incidentally.
@@ -3411,21 +3525,16 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
         // "broken and borderless."
         MainMenu_DrawWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
         FillWindowPixelBuffer(MAIN_MENU_WINDOW_ERROR, PIXEL_FILL(10));
-        dst = StringCopy(buf2, (battleClass == 0) ? sText_QuickRulesLineEarly : sText_QuickRulesLineElite);
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 2, sTextColor1, -1, buf2);
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 2, sTextColor1, -1,
+            (battleClass == 0) ? sText_QuickRulesLineEarly : sText_QuickRulesLineElite);
         if (selectedIdx < POKEPVP_PACKS_PER_CLASS)
+            hovered = PokePvPPacks_Peek(battleClass, selectedIdx);
+        // The hovered pack's team: PC-box icons (ShowPackIcons below) when
+        // the server sent 1-3 species, else the abbreviated-name text.
+        if (hovered != NULL && hovered->playstyle[0] != EOS
+         && (hovered->speciesCount < 1 || hovered->speciesCount > POKEPVP_PACK_ICONS_MAX))
         {
-            PokePvPPackEntry pack;
-
-            if (PokePvPPacks_Get(battleClass, selectedIdx, &pack) && pack.playstyle[0] != EOS)
-            {
-                u8 buf3[POKEPVP_PACKS_MAX_PLAYSTYLE_LEN + 1];
-
-                dst = StringCopy(buf3, pack.playstyle);
-                *dst = EOS;
-                AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 18, sTextColor1, -1, buf3);
-            }
+            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ERROR, FONT_NORMAL, 1, 18, sTextColor1, -1, hovered->playstyle);
         }
         PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
         CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_GFX);
@@ -3435,6 +3544,7 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
     // The one real hardware write for this whole redraw -- see this
     // function's own "scroll-flash fix" comment above.
     CopyBgTilemapBufferToVram(0);
+    ShowPackIcons(hovered);
 }
 
 /* POKEPVP (UI plan slice 3, simplified ADR-192): pack picker task -- A on
@@ -3477,6 +3587,9 @@ static void Task_PokePvPPackPicker(u8 taskId)
         u8 slot;
         u8 autoSlot = POKEPVP_TEAM_SLOTS; /* sentinel: none found yet */
 
+        DestroyPackIcons();
+        RestorePokePvPStandardWindow();
+
         for (slot = 0; slot < POKEPVP_TEAM_SLOTS; slot++)
         {
             if (PokePvPTeamBuilder_MemberCount(slot) != 0)
@@ -3496,9 +3609,7 @@ static void Task_PokePvPPackPicker(u8 taskId)
 
         gTasks[taskId].tTeamSlot = (row < POKEPVP_PACKS_PER_CLASS) ? row : POKEPVP_PICKER_ROW_RANDOM;
         gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_TEAM;
-        gTasks[taskId].tSubMode = (gTasks[taskId].tPickerClass == 0)
-            ? POKEPVP_MATCH_MODE_QUICK_EARLY
-            : POKEPVP_MATCH_MODE_QUICK_ELITE;
+        gTasks[taskId].tSubMode = POKEPVP_MATCH_MODE_QUICK_EARLY;
         StartPokePvPMatchWithTeam(taskId, autoSlot);
     }
     else if (JOY_NEW(B_BUTTON))
@@ -3506,12 +3617,14 @@ static void Task_PokePvPPackPicker(u8 taskId)
         // POKEPVP (ADR-192): the class picker this used to return to is
         // gone from this path (see Task_PokePvPStartMatchSubmenu's own
         // comment) -- back up straight to the submenu, landing the cursor
-        // on whichever of QUICK EARLY/QUICK ELITE got here.
+        // on QUICK EARLY.
         PlaySE(SE_SELECT);
+        DestroyPackIcons();
+        RestorePokePvPStandardWindow();
         gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_MENU;
-        gTasks[taskId].tSubCursorPos = gTasks[taskId].tPickerClass;
-        DrawStartMatchSubmenuItems(gTasks[taskId].tSubCursorPos);
-        gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+        gTasks[taskId].tSubCursorPos = SelectQueueRowCount() > 1 ? 1 : 0; /* EARLY 3V3 is last */
+        DrawSelectQueueItems(gTasks[taskId].tSubCursorPos);
+        gTasks[taskId].func = Task_PokePvPSelectQueue;
     }
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
     {
@@ -3552,26 +3665,11 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
         u8 mode = StartMatchModeForRow(gTasks[taskId].tSubCursorPos);
 
         PlaySE(SE_SELECT);
-        if (mode == POKEPVP_MATCH_MODE_QUICK_EARLY || mode == POKEPVP_MATCH_MODE_QUICK_ELITE)
+        if (mode == POKEPVP_MATCH_MODE_FIND)
         {
-            // POKEPVP (owner playtest round 4, ADR-192): QUICK EARLY and
-            // QUICK ELITE are two distinct, differently-labeled top-menu
-            // rows specifically so the player picks a class *here*. This
-            // used to route through a separate, freely-navigable two-row
-            // EARLY/ELITE class picker (Task_PokePvPClassPicker) that only
-            // ever started its cursor on the row matching the label just
-            // pressed -- nothing stopped the player from moving the D-pad
-            // and picking the *other* class from either entry point, so
-            // "QUICK EARLY" could open the elite pack list and vice versa
-            // (the exact owner report). The class is already fully decided
-            // by which of these two rows was pressed; go straight to that
-            // class's own pack list instead of re-asking the same question
-            // on a screen that silently accepts a different answer.
-            gTasks[taskId].tPickerClass = (mode == POKEPVP_MATCH_MODE_QUICK_EARLY) ? 0 : 1;
-            gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_PACK;
             gTasks[taskId].tSubCursorPos = 0;
-            DrawPackPickerItems(0, gTasks[taskId].tPickerClass);
-            gTasks[taskId].func = Task_PokePvPPackPicker;
+            DrawSelectQueueItems(0);
+            gTasks[taskId].func = Task_PokePvPSelectQueue;
         }
         else if (mode == POKEPVP_MATCH_MODE_INVITE)
         {
@@ -3611,6 +3709,67 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
     {
         gTasks[taskId].tSubCursorPos++;
         DrawStartMatchSubmenuItems(gTasks[taskId].tSubCursorPos);
+    }
+}
+
+// SELECT QUEUE: A joins the hovered queue (EARLY 3V3 -> pack picker,
+// CUSTOM 6V6 -> saved-team selector, exactly what those START MATCH rows
+// used to do); B returns to START MATCH with FIND OPPONENT hovered. The
+// band's player count redraws whenever a fresh QUEUE_POP changes it.
+static void Task_PokePvPSelectQueue(u8 taskId)
+{
+    u8 rowCount;
+
+    if (gPaletteFade.active)
+        return;
+
+    rowCount = SelectQueueRowCount();
+    if (rowCount == 0)
+        rowCount = 1;
+
+    if (JOY_NEW(A_BUTTON))
+    {
+        u8 mode = SelectQueueModeForRow(gTasks[taskId].tSubCursorPos);
+
+        PlaySE(SE_SELECT);
+        if (mode == POKEPVP_MATCH_MODE_QUICK_EARLY)
+        {
+            gTasks[taskId].tPickerClass = 0; /* QUICK ELITE removed 2026-10-07 */
+            gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_PACK;
+            gTasks[taskId].tSubCursorPos = 0;
+            DrawPackPickerItems(0, gTasks[taskId].tPickerClass);
+            gTasks[taskId].func = Task_PokePvPPackPicker;
+        }
+        else
+        {
+            gTasks[taskId].tSubMode = mode;
+            gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_TEAM;
+            gTasks[taskId].tSubCursorPos = 0;
+            DrawTeamSelectorItems(0);
+            gTasks[taskId].func = Task_PokePvPTeamSelector;
+        }
+    }
+    else if (JOY_NEW(B_BUTTON))
+    {
+        PlaySE(SE_SELECT);
+        gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_MENU;
+        gTasks[taskId].tSubCursorPos = 0;
+        DrawStartMatchSubmenuItems(0);
+        gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+    }
+    else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
+    {
+        gTasks[taskId].tSubCursorPos--;
+        DrawSelectQueueItems(gTasks[taskId].tSubCursorPos);
+    }
+    else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < rowCount - 1)
+    {
+        gTasks[taskId].tSubCursorPos++;
+        DrawSelectQueueItems(gTasks[taskId].tSubCursorPos);
+    }
+    else if (SelectQueueSig(SelectQueueModeForRow(gTasks[taskId].tSubCursorPos)) != sSelectQueueDrawnSig)
+    {
+        DrawSelectQueueItems(gTasks[taskId].tSubCursorPos);
     }
 }
 
@@ -3884,17 +4043,27 @@ static void DrawOneSelectorRow(u8 windowId, u8 slot, bool8 selected)
  * the selector a real, redraw-on-move selection bar. */
 static void DrawTeamSelectorItems(u8 selectedIdx)
 {
+    // Every mode reaching this screen (CUSTOM 6V6, INVITE PLAYER, AI PRACTICE,
+    // challenges) shows the hovered team's icons in a band below the list.
+    // The band is (re)drawn first so the panel below paints over its top rows.
+    // Scroll-flash fix (same as DrawStartMatchSubmenuItems): *NoCommit
+    // variants + ONE CopyBgTilemapBufferToVram at the end, instead of a
+    // hardware tilemap write per window draw on every D-pad press.
+    MainMenu_DrawWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
     DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_0, 0, selectedIdx == 0);
     DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_1, 1, selectedIdx == 1);
     DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_2, 2, selectedIdx == 2);
     DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_3, 3, selectedIdx == 3);
     DrawOneSelectorRow(MAIN_MENU_WINDOW_POKEPVP_4, 4, selectedIdx == 4);
-    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    MainMenu_DrawWindowNoCommit(&sPokePvPMenuPanelTemplate);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_GFX);
+    ShowTeamIconsBand(selectedIdx);
+    CopyBgTilemapBufferToVram(0);
 }
 
 // POKEPVP (ADR-095): drives the team-selector list. Same D-pad/32px-slot
@@ -5401,8 +5570,10 @@ static void RestorePokePvPStandardWindow(void)
 extern const u32 gSummaryScreen_ExpBar_Gfx[];
 extern const u16 gSummaryScreen_HpExpBar_Pal[];
 
-static const u8 sText_PlayerCardToggleSprite[] = _("< SPRITE >");
-static const u8 sText_PlayerCardToggleAchievements[] = _("< ACHIEVEMENTS >");
+static const u8 sText_ToggleSprite[] = _("SPRITE");
+static const u8 sText_ToggleAchievements[] = _("ACHIEVEMENTS");
+static const u8 sText_ToggleArrowL[] = _("<");
+static const u8 sText_ToggleArrowR[] = _(">");
 static const u8 sText_PlayerCardToggleRed[] = _("< RED >");
 static const u8 sText_PlayerCardToggleLeaf[] = _("< LEAF >");
 static const u8 sText_PlayerCardToggleBrendan[] = _("< BRENDAN >");
@@ -5685,8 +5856,28 @@ static void DrawPlayerCardToggle(u8 taskId)
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_POKEPVP_4, PIXEL_FILL(10));
     if (gTasks[taskId].tMGErrorMsgState == 0)
     {
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, 2, 2, sTextColor1, -1,
-            gTasks[taskId].tSubCursorPos == 0 ? sText_PlayerCardToggleSprite : sText_PlayerCardToggleAchievements);
+        // Both options side by side (SPRITE left, ACHIEVEMENTS right-
+        // aligned in the 160px box); only the hovered one wears < >.
+        // Positions are measured, not hardcoded, so the two always fit.
+        u8 hovered = gTasks[taskId].tSubCursorPos;
+        s32 aw = GetStringWidth(FONT_NORMAL, sText_ToggleArrowL, 0);
+        s32 wS = GetStringWidth(FONT_NORMAL, sText_ToggleSprite, 0);
+        s32 wA = GetStringWidth(FONT_NORMAL, sText_ToggleAchievements, 0);
+        s32 sX = 2 + aw + 2;
+        s32 aX = 160 - 2 - aw - 2 - wA;
+
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, sX, 2, sTextColor1, -1, sText_ToggleSprite);
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, aX, 2, sTextColor1, -1, sText_ToggleAchievements);
+        if (hovered == 0)
+        {
+            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, 2, 2, sTextColor1, -1, sText_ToggleArrowL);
+            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, sX + wS + 2, 2, sTextColor1, -1, sText_ToggleArrowR);
+        }
+        else
+        {
+            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, aX - aw - 2, 2, sTextColor1, -1, sText_ToggleArrowL);
+            AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POKEPVP_4, FONT_NORMAL, aX + wA + 2, 2, sTextColor1, -1, sText_ToggleArrowR);
+        }
     }
     else
     {
@@ -7230,11 +7421,6 @@ static void StartPokePvPMatchWithTeam(u8 taskId, u8 slot)
             cls = 0;
             packRow = gTasks[taskId].tTeamSlot;
             break;
-        case POKEPVP_MATCH_MODE_QUICK_ELITE:
-            mode = 2;
-            cls = 1;
-            packRow = gTasks[taskId].tTeamSlot;
-            break;
         case POKEPVP_MATCH_MODE_CUSTOM_ELITE:
             mode = 3;
             break;
@@ -7342,20 +7528,34 @@ static void Task_PokePvPTeamSelector(u8 taskId)
             return;
         }
 
+        DestroyPackIcons();
+        RestorePokePvPStandardWindow();
         StartPokePvPMatchWithTeam(taskId, gTasks[taskId].tSubCursorPos);
     }
     else if (JOY_NEW(B_BUTTON))
     {
         PlaySE(SE_SELECT);
+        DestroyPackIcons();
+        RestorePokePvPStandardWindow();
         // POKEPVP (owner playtest, 2026-09-10): erase the "team is empty"
         // message (above) before leaving -- otherwise it bleeds through
         // onto the START MATCH submenu, which never touches this window
         // itself (the same "erase, don't occlude" discipline every other
         // screen's B-handler already follows for this window).
         MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
-        DrawStartMatchSubmenuItems(0);
-        gTasks[taskId].tSubCursorPos = 0;
-        gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+        if (gTasks[taskId].tSubMode == POKEPVP_MATCH_MODE_CUSTOM_ELITE)
+        {
+            // Came from SELECT QUEUE -- go back there, CUSTOM 6V6 hovered.
+            gTasks[taskId].tSubCursorPos = 0; /* CUSTOM 6V6 is row 0 */
+            DrawSelectQueueItems(gTasks[taskId].tSubCursorPos);
+            gTasks[taskId].func = Task_PokePvPSelectQueue;
+        }
+        else
+        {
+            DrawStartMatchSubmenuItems(0);
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPStartMatchSubmenu;
+        }
     }
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
     {
