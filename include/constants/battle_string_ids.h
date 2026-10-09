@@ -394,8 +394,11 @@
 #define STRINGID_POKEPVP_RAIN 386
 #define STRINGID_POKEPVP_SUNNY 387
 #define STRINGID_POKEPVP_WEATHER_CLEARED 388
+/* ADR-330: BAG item narration. {B_BUFF1} = item name (TEXT 4-byte item form). */
+#define STRINGID_POKEPVP_USED_ITEM_SELF 389
+#define STRINGID_POKEPVP_USED_ITEM_FOE 390
 
-#define BATTLESTRINGS_COUNT     389
+#define BATTLESTRINGS_COUNT     391
 
 // This is the string id that gBattleStringsTable starts with.
 // String ids before this (e.g. STRINGID_INTROMSG) are not in the table,

@@ -338,7 +338,6 @@ static void Task_PokePvPSocialRowMenuDismiss(u8 taskId);
 static void Task_PokePvPAddFriendResultDismiss(u8 taskId);
 static void Task_PokePvPAddFriendPrompt(u8 taskId);
 static void ShowAddFriendResultIfPending(u8 taskId);
-static void CB2_PokePvPAddFriendNameEntered(void);
 static void DrawSocialItems(u8 selectedIdx);
 static void DrawSocialListItems(u8 list, u8 selectedIdx, bool8 addFriendFirst);
 static void DrawSocialRowMenuItems(u8 list, u8 selectedIdx);
@@ -4127,18 +4126,6 @@ static u8 sPokePvPRenameSlot;
 static u8 sPokePvPTeamNameBuffer[POKEPVP_TEAM_NAME_LENGTH + 1];
 static u8 sPokePvPCopySourceSlot;
 
-// POKEPVP (ADR-217, redesigned ADR-226): SOCIAL FRIENDS' "ADD FRIEND"
-// round trip through DoNamingScreen -- same "plain static, not task
-// data" reason as sPokePvPTeamNameBuffer above. Reuses NAMING_SCREEN_BOX
-// (BOX_NAME_LENGTH == 8) rather than a dedicated template: adding one
-// would mean editing naming_screen.c itself, vendored upstream code
-// (prohibition #16). ADR-226 dropped the numeric-only requirement this
-// buffer used to serve -- the naming screen's own ordinary default
-// (letters-first) keyboard is exactly what's wanted now, no vendored
-// edit needed at all -- so this is now a plain up-to-8-character
-// username buffer; CB2_PokePvPAddFriendNameEntered converts and bounds
-// it instead of validating exactly 4 digits.
-static u8 sPokePvPAddFriendTagBuffer[BOX_NAME_LENGTH + 1];
 
 static void Task_PokePvPWaitForRealOpponent(u8 taskId)
 {
@@ -4584,77 +4571,25 @@ static void CB2_PokePvPTeamRenamed(void)
     CB2_InitMainMenu();
 }
 
-// POKEPVP (ADR-217, redesigned ADR-226): fire-and-forget, same shape as
-// SendTeamRename above (a single attempt, no retry-until-MB_OK --
-// accepted risk, matching this screen's own existing precedent for a
-// one-off player-initiated social action rather than a boot-critical
-// burst). Payload is now [nameLen][ascii bytes], mirroring
-// SendTeamRename's own [slot][nameLen][bytes] shape (minus the slot byte
-// this message never needed). `asciiName`/`nameLen` must already be
-// validated ASCII, 1..POKEPVP_ADD_FRIEND_NAME_MAX bytes --
-// CB2_PokePvPAddFriendNameEntered below is the only caller.
-static void SendAddFriendTag(const u8 *asciiName, u8 nameLen)
+// POKEPVP (2026-10-09, owner request): ADD FRIEND no longer uses the
+// native naming screen. An empty ADD_FRIEND_TAG ([nameLen = 0]) asks the
+// launcher to open its own free-text username prompt (the same one the
+// login screen uses); the launcher resolves the name against the API and
+// answers with a normal ADD_FRIEND_RESULT (or CANCELLED on ESC).
+// Fire-and-forget, same as SendTeamRename above.
+static void SendAddFriendPromptRequest(void)
 {
-    u8 payload[1 + POKEPVP_ADD_FRIEND_NAME_MAX];
-    u8 i;
+    u8 payload[1];
 
-    payload[0] = nameLen;
-    for (i = 0; i < nameLen; i++)
-        payload[1 + i] = asciiName[i];
+    payload[0] = 0;
     PokePvPMailboxRing_TryWrite(&gPokePvPMailbox.romToHost,
                                 POKEPVP_MAILBOX_ROM_TO_HOST_MAGIC,
                                 POKEPVP_MSG_ADD_FRIEND_TAG,
                                 0,
                                 0,
                                 payload,
-                                1 + nameLen);
-    DebugPrintf("POKEPVP: add friend username sent (len=%d)", nameLen);
-}
-
-// POKEPVP (ADR-226): DoNamingScreen's own return callback for SOCIAL
-// FRIENDS' "ADD FRIEND" row (Task_PokePvPSocialList's ADD FRIEND branch
-// below). Same "round trip through a non-task screen, callback into
-// CB2_InitMainMenu directly" shape as CB2_PokePvPTeamRenamed above.
-// Reuses NAMING_SCREEN_BOX (BOX_NAME_LENGTH == 8, its own ordinary
-// default letters-first keyboard -- no vendored-code edit needed, unlike
-// ADR-216's own rejected numeral-default idea, since a username is
-// exactly what that default keyboard is for) -- converts every typed
-// charmap byte up to the first EOS via TeamNameCharmapToAscii (the same
-// conversion TEAM_RENAME's own send path already uses), same
-// "drop unconvertible bytes rather than corrupt/reject the whole buffer"
-// discipline ADR-215/218 settled on for this class of field. An
-// all-unconvertible or empty result is the one real invalid-input case
-// (nothing legible was typed) -- PokePvPSocial_NoteInvalidAddFriendInput
-// sets the same pending-result flag a real wire ADD_FRIEND_RESULT would,
-// so Task_PokePvPAddFriendResultDismiss's display path is uniform for
-// both.
-static void CB2_PokePvPAddFriendNameEntered(void)
-{
-    u8 ascii[BOX_NAME_LENGTH];
-    u8 asciiLen = 0;
-    u8 i;
-
-    for (i = 0; i < BOX_NAME_LENGTH && sPokePvPAddFriendTagBuffer[i] != EOS; i++)
-    {
-        u8 c = TeamNameCharmapToAscii(sPokePvPAddFriendTagBuffer[i]);
-        if (c != 0)
-            ascii[asciiLen++] = c;
-    }
-
-    if (asciiLen > 0)
-        SendAddFriendTag(ascii, asciiLen);
-    else
-        PokePvPSocial_NoteInvalidAddFriendInput();
-
-    // POKEPVP (ADR-233, owner-reported live: the result only ever showed
-    // after re-entering FRIENDS manually, not right after submitting):
-    // CB2_InitMainMenu always lands on the top menu, never directly back
-    // on this screen -- sPokePvPReturnToSocialFriends (same shape as
-    // sPokePvPReturnToTeamList) tells Task_UpdateVisualSelection, the one
-    // place every re-init passes through, to skip straight to FRIENDS
-    // with the result already showing instead.
-    sPokePvPReturnToSocialFriends = TRUE;
-    CB2_InitMainMenu();
+                                1);
+    DebugPrintf("POKEPVP: add friend username prompt requested");
 }
 
 /* POKEPVP (UI plan slice 3): the ready-check prompt (Build Plan §8 item
@@ -4914,6 +4849,15 @@ static void DrawPostMatchMeta(void)
     CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
 }
 
+/* An AI opponent is not a player, so ADD RIVAL is hidden (blank row, cursor
+ * skips it) after a practice match. */
+static bool8 PostMatchRivalHidden(void)
+{
+    PokePvPPostMatch pm;
+
+    return PokePvPPostMatch_Get(&pm) && pm.vsAi;
+}
+
 static void DrawPostMatchItems(u8 selectedIdx)
 {
     static const u8 sWindowIds[] = {
@@ -4952,7 +4896,8 @@ static void DrawPostMatchItems(u8 selectedIdx)
         bool8 selected = ((i - 1) == selectedIdx);
         FillWindowPixelBuffer(sWindowIds[i], PIXEL_FILL(selected ? 13 : 10));
         AddTextPrinterParameterized3(sWindowIds[i], FONT_NORMAL, 2, 2,
-            selected ? sTextColorSelected : sTextColor1, -1, sLabels[i - 1]);
+            selected ? sTextColorSelected : sTextColor1, -1,
+            (i - 1 == POKEPVP_POST_MATCH_ACTION_ADD_RIVAL && PostMatchRivalHidden()) ? sString_Dummy : sLabels[i - 1]);
     }
     MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
     for (i = 0; i < 5; i++)
@@ -4964,6 +4909,13 @@ static void DrawPostMatchItems(u8 selectedIdx)
 
 static void ReturnToPostMatchScreen(u8 taskId)
 {
+    // Drop any host result that arrived while no wait task was listening;
+    // the next PLAY AGAIN/REMATCH would otherwise consume it instantly and
+    // show "opponent unavailable" for a join that actually succeeded.
+    {
+        u8 staleResult;
+        PokePvPPostMatch_ConsumeResult(&staleResult);
+    }
     ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
     MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
     // Playtest fallout (2026-09-26): same reordering as Task_PokePvPPostMatch's
@@ -5051,6 +5003,12 @@ static void Task_PokePvPPostMatch(u8 taskId)
     case 1:
         if (gPaletteFade.active)
             return;
+        // Nothing waits on a host result while idle on this screen, so
+        // anything pending here is stale (see ReturnToPostMatchScreen).
+        {
+            u8 staleResult;
+            PokePvPPostMatch_ConsumeResult(&staleResult);
+        }
         // POKEPVP (playtest fallout, 2026-09-26, owner design ask): a
         // REMATCH challenge arriving while sitting right here on the
         // post-match screen used to be invisible until the player left
@@ -5121,11 +5079,15 @@ static void Task_PokePvPPostMatch(u8 taskId)
         else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tSubCursorPos > 0)
         {
             gTasks[taskId].tSubCursorPos--;
+            if (gTasks[taskId].tSubCursorPos == POKEPVP_POST_MATCH_ACTION_ADD_RIVAL && PostMatchRivalHidden())
+                gTasks[taskId].tSubCursorPos--;
             DrawPostMatchItems(gTasks[taskId].tSubCursorPos);
         }
         else if (JOY_NEW(DPAD_DOWN) && gTasks[taskId].tSubCursorPos < 3)
         {
             gTasks[taskId].tSubCursorPos++;
+            if (gTasks[taskId].tSubCursorPos == POKEPVP_POST_MATCH_ACTION_ADD_RIVAL && PostMatchRivalHidden())
+                gTasks[taskId].tSubCursorPos++;
             DrawPostMatchItems(gTasks[taskId].tSubCursorPos);
         }
         break;
@@ -5323,6 +5285,13 @@ static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId)
 {
     if (gPaletteFade.active)
         return;
+    {
+        // This path skips Task_PrintMainMenuText, which is what loads the
+        // blue text color (palette 15 slot 1) used by sTextColor2 ("IN QUEUE"
+        // lines, SELECT QUEUE header); without it they render white.
+        u16 pal = (gSaveBlock2Ptr->playerGender == MALE) ? RGB(4, 16, 31) : RGB(31, 3, 21);
+        LoadPalette(&pal, BG_PLTT_ID(15) + 1, PLTT_SIZEOF(1));
+    }
     DrawPokePvPMenuItems(0);
     BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, 0xFFFF);
     gTasks[taskId].tCursorPos = 0;
@@ -6952,22 +6921,11 @@ static void Task_PokePvPAddFriendPrompt(u8 taskId)
         if (JOY_NEW(A_BUTTON))
         {
             PlaySE(SE_SELECT);
-            sPokePvPAddFriendTagBuffer[0] = EOS;
-            // POKEPVP: a real, pre-existing gap found while building this
-            // lead-in -- DoNamingScreen tears down every task itself
-            // (EnterPokeStorage-style, same as RENAME/PLAYER SETTINGS just
-            // above/below), so this screen's own window buffers/task must
-            // be freed first. The original ADD FRIEND handoff (ADR-217)
-            // called DoNamingScreen directly from Task_PokePvPSocialList
-            // with neither -- the one DoNamingScreen call site in this
-            // file that skipped it. ADR-226's own HANDOFF entry already
-            // flagged this exact round trip as "not live-verified through
-            // the real emulator", so it was never actually exercised
-            // against a live ROM. Fixed here rather than left for whoever
-            // next reaches this line.
-            FreeAllWindowBuffers();
-            DestroyTask(taskId);
-            DoNamingScreen(NAMING_SCREEN_BOX, sPokePvPAddFriendTagBuffer, 0, 0, 0, CB2_PokePvPAddFriendNameEntered);
+            // Drop any leftover result so only this request's answer is shown.
+            if (PokePvPSocial_IsAddFriendResultPending())
+                PokePvPSocial_ConsumeAddFriendResult();
+            SendAddFriendPromptRequest();
+            gTasks[taskId].tMGErrorMsgState = 2;
         }
         else if (JOY_NEW(B_BUTTON))
         {
@@ -6977,6 +6935,24 @@ static void Task_PokePvPAddFriendPrompt(u8 taskId)
             // POKEPVP (ADR-224 follow-up): row 0, not
             // POKEPVP_SOCIAL_MAX_ENTRIES -- ADD FRIEND now lives at the
             // top of the list.
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPSocialList;
+            DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos, TRUE);
+        }
+        break;
+    case 2:
+        /* The launcher is showing its username prompt (this frame loop is
+         * paused meanwhile) and answers with ADD_FRIEND_RESULT. B backs out
+         * if no launcher ever answers. */
+        if (PokePvPSocial_IsAddFriendResultPending())
+        {
+            ShowAddFriendResultIfPending(taskId);
+        }
+        else if (JOY_NEW(B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
             gTasks[taskId].tSubCursorPos = 0;
             gTasks[taskId].func = Task_PokePvPSocialList;
             DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos, TRUE);
@@ -7005,6 +6981,16 @@ static void ShowAddFriendResultIfPending(u8 taskId)
         u8 result = PokePvPSocial_ConsumeAddFriendResult();
         const u8 *msg;
 
+        if (result == POKEPVP_ADD_FRIEND_RESULT_CANCELLED)
+        {
+            // Prompt dismissed in the launcher: back to the list, no message.
+            ClearWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+            MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+            gTasks[taskId].tSubCursorPos = 0;
+            gTasks[taskId].func = Task_PokePvPSocialList;
+            DrawSocialListItems(gTasks[taskId].tSocialList, gTasks[taskId].tSubCursorPos, TRUE);
+            return;
+        }
         switch (result)
         {
         case POKEPVP_ADD_FRIEND_RESULT_SUCCESS:

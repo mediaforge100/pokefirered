@@ -58,6 +58,8 @@ static const u8 sText_Trainer1RecallBoth[] = _("{B_TRAINER1_NAME}: {B_OPPONENT_M
 static const u8 sText_PokePvPRain[] = _("It started raining!");
 static const u8 sText_PokePvPSunny[] = _("The sunlight turned harsh!");
 static const u8 sText_PokePvPWeatherCleared[] = _("The weather cleared up.");
+static const u8 sText_PokePvPUsedItemSelf[] = _("{B_PLAYER_NAME} used\n{B_BUFF1}!");
+static const u8 sText_PokePvPUsedItemFoe[] = _("{B_TRAINER1_CLASS} {B_TRAINER1_NAME}\nused {B_BUFF1}!");
 static const u8 sText_Trainer2WinText[] = _("{B_TRAINER2_WIN_TEXT}");
 static const u8 sText_PkmnGainedEXP[] = _("{B_BUFF1} gained{B_BUFF2}\n{B_BUFF3} EXP. Points!\p");
 static const u8 sText_EmptyString4[] = _("");
@@ -901,6 +903,8 @@ const u8 *const gBattleStringsTable[BATTLESTRINGS_COUNT - BATTLESTRINGS_TABLE_ST
     [STRINGID_POKEPVP_RAIN - BATTLESTRINGS_TABLE_START]                  = sText_PokePvPRain,
     [STRINGID_POKEPVP_SUNNY - BATTLESTRINGS_TABLE_START]                 = sText_PokePvPSunny,
     [STRINGID_POKEPVP_WEATHER_CLEARED - BATTLESTRINGS_TABLE_START]       = sText_PokePvPWeatherCleared,
+    [STRINGID_POKEPVP_USED_ITEM_SELF - BATTLESTRINGS_TABLE_START]        = sText_PokePvPUsedItemSelf,
+    [STRINGID_POKEPVP_USED_ITEM_FOE - BATTLESTRINGS_TABLE_START]         = sText_PokePvPUsedItemFoe,
 };
 
 const u16 gMissStringIds[] =

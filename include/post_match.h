@@ -73,6 +73,7 @@ typedef struct
     u8 oppRemaining;        /* opponent's remaining Pokemon at the end */
     u8 oppName[POKEPVP_POST_MATCH_MAX_OPP_NAME + 1]; /* charmap, EOS-terminated */
     u8 oppTag[POKEPVP_POST_MATCH_MAX_OPP_TAG + 1];   /* charmap, EOS-terminated */
+    u8 vsAi;                /* opponent was the practice AI: ADD RIVAL is hidden */
 } PokePvPPostMatch;
 
 /* Handles a POKEPVP_MSG_POST_MATCH record (host -> ROM). A zero-length
