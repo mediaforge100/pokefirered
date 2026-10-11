@@ -76,6 +76,30 @@ typedef struct
     u8 vsAi;                /* opponent was the practice AI: ADD RIVAL is hidden */
 } PokePvPPostMatch;
 
+/* Optional trainer-level progress for the XP animation (wire: 12 optional
+ * bytes after the flags byte -- 6 x u16 LE: level/xpInto/xpForNext before,
+ * then after). Absent (older host, practice, forfeit, no XP gained) means
+ * "no animation". Kept apart from PokePvPPostMatch so the many draw
+ * functions that copy that struct onto the small user stack don't grow. */
+typedef struct
+{
+    u16 levelBefore;
+    u16 xpIntoBefore;
+    u16 xpForNextBefore; /* 0 = level cap */
+    u16 levelAfter;
+    u16 xpIntoAfter;
+    u16 xpForNextAfter;  /* 0 = level cap */
+} PokePvPPostMatchXp;
+
+/* Copies the session's XP progress into `out`. FALSE if none pending or
+ * the host sent no XP block. */
+bool8 PokePvPPostMatch_GetXp(PokePvPPostMatchXp *out);
+
+/* TRUE exactly once per session (and only if XP data exists): the screen
+ * plays the fill animation on that first entry and shows the final state
+ * statically on later returns (e.g. after the REMATCH inbox round trip). */
+bool8 PokePvPPostMatch_TakeXpAnimation(void);
+
 /* Handles a POKEPVP_MSG_POST_MATCH record (host -> ROM). A zero-length
  * payload clears any pending session; otherwise the new session replaces
  * the old. Bounds-checks everything; returns FALSE for a rejected record.

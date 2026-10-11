@@ -22,15 +22,15 @@
 
 #include "global.h"
 
-#define POKEPVP_PACKS_PER_CLASS 4
+#define POKEPVP_PACKS_PER_CLASS 5
 #define POKEPVP_PACKS_MAX_TITLE_LEN 16
 /* Pack overview (owner ask, 2026-09-13 revision): `difficulty` is gone
  * entirely (removed from the schema/YAML/wire -- it's no longer a real
  * field anywhere), and `playstyleLabel` is no longer a hand-authored
  * style label -- it's the server's own abbreviated species list for the
  * pack's team (`abbreviateTeamForPlaystyle`, packages/battle-packs), e.g.
- * "Sno/Tau/Gen/Ala/Sta/Rhy" for a 6-mon ELITE team or "Charman/Squirtl/
- * Bulbasa" for a 3-mon EARLY team -- sized so any team size 1-6 fits in
+ * "Sno/Tau/Gen/Ala/Sta/Rhy" for a 6-mon ELITE team or "Charm/Squir/
+ * Bulba/Eevee" for a 4-mon EARLY team -- sized so any team size 1-6 fits in
  * one line. Widened from 16 -> 24 to fit that; affordable because
  * deleting `difficulty` (9 bytes/entry) frees more than this costs (8
  * bytes/entry) -- net EWRAM effect is a small savings, confirmed by a

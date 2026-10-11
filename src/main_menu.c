@@ -1,4 +1,5 @@
 #include "global.h"
+#include "m4a.h"
 #include "gflib.h"
 #include "scanline_effect.h"
 #include "task.h"
@@ -107,6 +108,10 @@ enum MainMenuWindow
     // (own geometry, same baseBlock -- see its own template comment) was
     // needed rather than moving the shared one.
     MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL,
+    // Post-match trainer LV + XP bar row, above the option panel (rows 2-3,
+    // framed by rows 1-4 -- clear of the panel's own top border at row 5).
+    // Only ever drawn on the post-match screen.
+    MAIN_MENU_WINDOW_POSTMATCH_XP,
     MAIN_MENU_WINDOW_COUNT
 };
 
@@ -156,7 +161,8 @@ enum MainMenuWindow
 // Kept as its own literal (not `POKEPVP_PACKS_PER_CLASS`) because the two
 // happen to move together only by content coincidence -- see
 // packs_catalog.h's own count; update both together if that count changes.
-#define POKEPVP_PICKER_ROW_RANDOM 4u
+#define POKEPVP_PICKER_ROW_RANDOM 5u
+// Owner request (2026-10-11): RANDOM row removed from the pack picker.
 #define POKEPVP_PICKER_ROW_COUNT 5u
 
 // POKEPVP (ADR-093): move-editor state. data[3..7] are unused by every
@@ -352,6 +358,10 @@ static void Task_PokePvPPostMatch(u8 taskId);
 static void Task_PokePvPPostMatchWait(u8 taskId);
 static void Task_PokePvPPostMatchRivalWait(u8 taskId);
 static void ReturnToPostMatchScreen(u8 taskId);
+static u32 PokePvPLevelBarEighths(u16 xpIntoLevel, u16 xpForNextLevel);
+static void PokePvPSetLevelBarFill(u32 totalEighths);
+static void PokePvPCreateLevelBarObjsAt(s16 barX, s16 barY, u32 initialEighths);
+static void PokePvPDestroyLevelBarObjs(void);
 static void Task_PokePvPReturnToTopMenuFromPostMatch(u8 taskId);
 static void SendLeaveQueue(void);
 static void SendSetSprite(u8 spriteId);
@@ -705,15 +715,16 @@ static const u8 sText_MoveInfoPower[] = _("POWER");
 static const u8 sText_MoveInfoAcc[] = _("ACC.");
 static const u8 sText_MoveInfoPP[] = _("PP");
 // POKEPVP (ADR-099): the panel's header stripe.
-static const u8 sText_MoveInfoHeader[] = _("MOVE INFO");
+static const u8 sText_MoveInfoHeader[] = _("MOVE");
 static const u8 sText_MoveInfoPage1[] = _("1/2"); // POKEPVP (ADR-217)
 static const u8 sText_MoveInfoPage2[] = _("2/2"); // POKEPVP (ADR-217)
+static const u8 sText_MoveInfoScrollHint[] = _("UP/DOWN");
 static const u8 sText_AutoMatch[] = _("AUTO-MATCH");
 // POKEPVP (UI plan slot 3, Phase C): the START MATCH submenu now serves
 // the Build Plan §8 mode tree -- QUICK EARLY / QUICK ELITE (battle class
 // picker -> 5 packs + RANDOM), CUSTOM ELITE (saved team), INVITE
 // MATCH, PRACTICE. Rows whose server feature flag is off stay hidden.
-static const u8 sText_QuickEarly[] = _("EARLY 3V3");
+static const u8 sText_QuickEarly[] = _("EARLY 4V4");
 static const u8 sText_CustomElite[] = _("CUSTOM 6V6");
 // FIND OPPONENT -> SELECT QUEUE (2026-10-08): START MATCH's queue modes now
 // live one level down, on a screen with its own header + hover counts.
@@ -721,7 +732,7 @@ static const u8 sText_FindOpponent[] = _("FIND OPPONENT");
 static const u8 sText_SelectQueue[] = _("- SELECT QUEUE -");
 static const u8 sText_QueueUnknown[] = _("0"); /* no push yet == nobody known to be waiting */
 static const u8 sText_ModeDescFind[] = _("Join a public queue");
-static const u8 sText_QueueDescEarly[] = _("Lvl 20 Packs");
+static const u8 sText_QueueDescEarly[] = _("Lvl 25 Packs");
 static const u8 sText_QueueDescCustom[] = _("Lvl 100 Player Teams");
 static const u8 sText_InQueueSuffix[] = _(" IN QUEUE");
 static const u8 sText_InviteMatch[] = _("INVITE PLAYER");
@@ -749,11 +760,11 @@ static const u8 sText_RandomPack[] = _("RANDOM");
 // POKEPVP (owner ask, 2026-09-13): dropped "FROZEN" (a leftover from an
 // earlier draft, never a real ROM/protocol guarantee this text needs to
 // assert) and fixed EARLY's own level -- ADR-219 moved
-// pokepvp-frlg-kanto-early to level 20 (`defaultLevel`/`levelRange`
+// pokepvp-frlg-kanto-early to level 20 (then 25 via ADR-331; `defaultLevel`/`levelRange`
 // 100 -> 20) but this literal string was never updated to match, so it
 // was quietly showing the wrong level ever since. ELITE is genuinely
 // still level 100 -- only the FROZEN suffix drops there.
-static const u8 sText_QuickRulesLineEarly[] = _("3v3 LVL20");
+static const u8 sText_QuickRulesLineEarly[] = _("4v4 LVL25");
 static const u8 sText_QuickRulesLineElite[] = _("6v6 LVL100");
 // Playtest fallout (2026-09-26, owner design ask): the bottom-left
 // online-count window's own label, its own line above the number --
@@ -783,7 +794,7 @@ static const u8 sText_ReadyForBattle[] = _("READY FOR BATTLE!");
 // the ROM shows the requester and the matching type line.
 static const u8 sText_ChallengeFrom[] = _("CHALLENGE FROM");
 static const u8 sText_RematchLabel[] = _("REMATCH");
-static const u8 sText_EarlyLabel[] = _("EARLY 3V3");
+static const u8 sText_EarlyLabel[] = _("EARLY 4V4");
 static const u8 sText_EliteLabel[] = _("CUSTOM 6V6");
 static const u8 sText_Accept[] = _("ACCEPT");
 static const u8 sText_Decline[] = _("DECLINE");
@@ -876,10 +887,6 @@ static const u8 sText_AddFriendInvalid[] = _("Enter a\nusername.");
 // naming_screen.c (prohibition #16) -- so the explanation is printed here,
 // on SOCIAL's own screen, immediately before the handoff instead.
 static const u8 sText_AddFriendLeadIn[] = _("Enter the exact\nusername to add.");
-static const u8 sText_PresenceOnline[] = _("O");
-static const u8 sText_PresenceSearching[] = _("S");
-static const u8 sText_PresenceBattle[] = _("B");
-static const u8 sText_PresenceBusy[] = _("Y");
 
 static const struct WindowTemplate sWindowTemplate[] = {
     [MAIN_MENU_WINDOW_NEWGAME_ONLY] = {
@@ -1030,6 +1037,14 @@ static const struct WindowTemplate sWindowTemplate[] = {
     [MAIN_MENU_WINDOW_ACHIEVEMENT_DETAIL] = {
         .bg = 0, .tilemapLeft = 3, .tilemapTop = 6, .width = 24, .height = 10,
         .paletteNum = 15, .baseBlock = 0x001
+    },
+    // baseBlock 0x256 = just past MAIN_MENU_WINDOW_ONLINE_COUNT's tiles
+    // (0x241 + 10*2); 20*2 = 40 tiles. The move editor's on-demand window
+    // overlaps this range, but it and the post-match screen are never up
+    // together.
+    [MAIN_MENU_WINDOW_POSTMATCH_XP] = {
+        .bg = 0, .tilemapLeft = 5, .tilemapTop = 2, .width = 20, .height = 2,
+        .paletteNum = 15, .baseBlock = 0x256
     },
     [MAIN_MENU_WINDOW_COUNT] = DUMMY_WIN_TEMPLATE
 };
@@ -2594,7 +2609,7 @@ static const u8 sText_GuideBodyReadyCheck[] = _(
     "match was ever started.");
 static const u8 sText_GuideBodyBattlePacks[] = _(
     "A battle pack is a ready-made team "
-    "for EARLY 3V3. Pick "
+    "for EARLY 4V4. Pick "
     "a pack instead of building your own "
     "team first. "
     "CUSTOM 6V6 uses a team you built "
@@ -3225,7 +3240,7 @@ static u8 StartMatchModeForRow(u8 row)
 }
 
 /* SELECT QUEUE (FIND OPPONENT's submenu): header row + the visible queue
- * rows (EARLY 3V3 / CUSTOM 6V6, hidden by the same server flags as
+ * rows (EARLY 4V4 / CUSTOM 6V6, hidden by the same server flags as
  * before), with the hovered queue's live player count in the band below.
  * Cursor rows (0..n-1) sit under the header, i.e. in windows 1..n. */
 static u8 SelectQueueRowCount(void)
@@ -3346,10 +3361,10 @@ static void DrawSelectQueueItems(u8 selectedIdx)
  * a server-side summary the catalog could later carry). */
 // Pack picker PC-box icons (2026-10-08 owner ask): the hovered pack's team,
 // drawn as the same mon icons the PC uses, right-aligned in the description
-// band (x 40-200, y 120-152; the "3v3 LVL20" rules line owns the left ~64px,
-// so at most 3 fit). OBJ priority 0 = over BG0's opaque band fill. All state
+// band (x 40-200, y 120-152; the "4v4 LVL25" rules line owns the left ~64px,
+// so 4 icons are packed at a tighter 25px step -- see ShowPackIcons). OBJ priority 0 = over BG0's opaque band fill. All state
 // in EWRAM (IWRAM's tail is the user stack -- ADR-318).
-#define POKEPVP_PACK_ICONS_MAX 3
+#define POKEPVP_PACK_ICONS_MAX 4
 #define POKEPVP_ICONS_CAP 6
 static EWRAM_DATA u8 sPackIconSprites[POKEPVP_ICONS_CAP] = {0};
 static EWRAM_DATA u8 sPackIconCount = 0;
@@ -3401,7 +3416,14 @@ static void ShowPackIcons(const PokePvPPackEntry *pack)
         return;
     for (i = 0; i < pack->speciesCount; i++)
         species[i] = pack->species[i];
-    ShowMonIcons(species, pack->speciesCount, 198 - 16 - (pack->speciesCount - 1) * 32, 32, 136);
+    {
+        // 4v4 packs: 4 x 32px icons would run into the rules line at the
+        // band's left edge, so 4 icons pack at 25px (the team selector's
+        // own 6-icon step); 1-3 keep the original 32px spacing.
+        s16 step = (pack->speciesCount >= 4) ? 25 : 32;
+
+        ShowMonIcons(species, pack->speciesCount, 198 - 16 - (pack->speciesCount - 1) * step, step, 136);
+    }
 }
 
 // CUSTOM 6V6 team selector: clears the band, then shows the hovered saved
@@ -3452,7 +3474,7 @@ static void DrawPackPickerItems(u8 selectedIdx, u8 battleClass)
     // this file), so nothing this screen draws ever reaches row 15 at all.
     start = 0;
     if (selectedIdx > 3)
-        start = (u8)(selectedIdx - 3); /* selectedIdx max 4 (RANDOM) -> start max 1 */
+        start = (u8)(selectedIdx - 3); /* selectedIdx max 5 (RANDOM) -> start max 2 */
     for (i = 0; i < 4; i++)
     {
         u8 row = (u8)(start + i);
@@ -3621,7 +3643,7 @@ static void Task_PokePvPPackPicker(u8 taskId)
         DestroyPackIcons();
         RestorePokePvPStandardWindow();
         gTasks[taskId].tPickerStage = POKEPVP_PICKER_STAGE_MENU;
-        gTasks[taskId].tSubCursorPos = SelectQueueRowCount() > 1 ? 1 : 0; /* EARLY 3V3 is last */
+        gTasks[taskId].tSubCursorPos = SelectQueueRowCount() > 1 ? 1 : 0; /* EARLY 4V4 is last */
         DrawSelectQueueItems(gTasks[taskId].tSubCursorPos);
         gTasks[taskId].func = Task_PokePvPSelectQueue;
     }
@@ -3711,7 +3733,7 @@ static void Task_PokePvPStartMatchSubmenu(u8 taskId)
     }
 }
 
-// SELECT QUEUE: A joins the hovered queue (EARLY 3V3 -> pack picker,
+// SELECT QUEUE: A joins the hovered queue (EARLY 4V4 -> pack picker,
 // CUSTOM 6V6 -> saved-team selector, exactly what those START MATCH rows
 // used to do); B returns to START MATCH with FIND OPPONENT hovered. The
 // band's player count redraws whenever a fresh QUEUE_POP changes it.
@@ -4849,6 +4871,184 @@ static void DrawPostMatchMeta(void)
     CopyWindowToVram(MAIN_MENU_WINDOW_ERROR, COPYWIN_FULL);
 }
 
+/* Post-match trainer LV + XP bar (top of the screen, above the options).
+ * Reuses the PLAYER card's level bar -- the Summary Screen's native exp
+ * bar art -- and the native fill sound (SE_EXP loop) / level-up fanfare
+ * (MUS_LEVEL_UP). Animation state is EWRAM (IWRAM is nearly full); the
+ * bar sprites are heap-allocated by PokePvPCreateLevelBarObjsAt. */
+#define POSTMATCH_XP_BAR_X 130
+#define POSTMATCH_XP_BAR_Y 25
+#define POSTMATCH_XP_FILL_MAX 40 // POKEPVP_LEVEL_BAR_FILL_COUNT (5) * 8; that define is further down
+#define POSTMATCH_XP_START_DELAY 30
+#define POSTMATCH_XP_FRAMES_PER_STEP 2
+
+enum { POSTMATCH_XP_IDLE, POSTMATCH_XP_DELAY, POSTMATCH_XP_FILL, POSTMATCH_XP_FANFARE };
+
+static const u8 sText_PostMatchLvPrefix[] = _("LV.");
+static const struct WindowTemplate sPokePvPPostMatchXpFrameTemplate = {
+    .bg = 0, .tilemapLeft = 5, .tilemapTop = 2, .width = 20, .height = 2
+};
+
+static EWRAM_DATA struct
+{
+    u8 phase;
+    u8 timer;
+    u8 soundOn;
+    u16 level;
+    u16 targetLevel;
+    u32 fill;
+    u32 targetFill;
+} sPostMatchXp = {0};
+
+static void PostMatchXpPrintLevel(u16 level)
+{
+    u8 buf[12];
+    u8 *dst;
+
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_POSTMATCH_XP, PIXEL_FILL(10));
+    dst = StringCopy(buf, sText_PostMatchLvPrefix);
+    ConvertIntToDecimalStringN(dst, level, STR_CONV_MODE_LEFT_ALIGN, 3);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_POSTMATCH_XP, FONT_NORMAL, 2, 2, sTextColor1, -1, buf);
+    PutWindowTilemap(MAIN_MENU_WINDOW_POSTMATCH_XP);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POSTMATCH_XP, COPYWIN_FULL);
+}
+
+static void PostMatchXpStopSound(void)
+{
+    if (sPostMatchXp.soundOn)
+    {
+        m4aSongNumStop(SE_EXP);
+        sPostMatchXp.soundOn = FALSE;
+    }
+}
+
+/* Removes the XP row (sprites, text window, frame). Safe when not drawn. */
+static void HidePostMatchXp(void)
+{
+    PostMatchXpStopSound();
+    sPostMatchXp.phase = POSTMATCH_XP_IDLE;
+    PokePvPDestroyLevelBarObjs();
+    // Back to the screen's usual window masks (OBJ hidden) -- see
+    // DrawPostMatchXp.
+    SetGpuReg(REG_OFFSET_WININ, 0x0001 | WININ_WIN0_BG2);
+    SetGpuReg(REG_OFFSET_WINOUT, 0x0021 | WINOUT_WIN01_BG2);
+    ClearWindowTilemap(MAIN_MENU_WINDOW_POSTMATCH_XP);
+    MainMenu_EraseWindow(&sPokePvPPostMatchXpFrameTemplate);
+}
+
+/* Draws the XP row. First call per session (TakeXpAnimation) starts from
+ * the before-state and queues the fill animation; later calls (returning
+ * from the REMATCH inbox) show the final state. Draws nothing when the
+ * host sent no XP block (practice, forfeit, older launcher). */
+static void DrawPostMatchXp(void)
+{
+    PokePvPPostMatchXp xp;
+    bool8 animate;
+    u16 level;
+    u32 fill;
+
+    if (!PokePvPPostMatch_GetXp(&xp))
+        return;
+    animate = PokePvPPostMatch_TakeXpAnimation();
+    // The post-match screen's window masks hide OBJ; the bar is sprites, so
+    // let OBJ through (same masks the PLAYER card sets for its own bar).
+    SetGpuReg(REG_OFFSET_WININ, 0x0011 | WININ_WIN0_BG2);
+    SetGpuReg(REG_OFFSET_WINOUT, 0x0031 | WINOUT_WIN01_BG2);
+    MainMenu_DrawWindow(&sPokePvPPostMatchXpFrameTemplate);
+    sPostMatchXp.phase = POSTMATCH_XP_IDLE;
+    sPostMatchXp.soundOn = FALSE;
+    if (animate)
+    {
+        level = xp.levelBefore;
+        fill = PokePvPLevelBarEighths(xp.xpIntoBefore, xp.xpForNextBefore);
+        sPostMatchXp.level = level;
+        sPostMatchXp.fill = fill;
+        sPostMatchXp.targetLevel = xp.levelAfter;
+        sPostMatchXp.targetFill = PokePvPLevelBarEighths(xp.xpIntoAfter, xp.xpForNextAfter);
+        sPostMatchXp.timer = POSTMATCH_XP_START_DELAY;
+        sPostMatchXp.phase = POSTMATCH_XP_DELAY;
+    }
+    else
+    {
+        level = xp.levelAfter;
+        fill = PokePvPLevelBarEighths(xp.xpIntoAfter, xp.xpForNextAfter);
+    }
+    PostMatchXpPrintLevel(level);
+    PokePvPCreateLevelBarObjsAt(POSTMATCH_XP_BAR_X, POSTMATCH_XP_BAR_Y, fill);
+}
+
+static void FinishPostMatchXp(void)
+{
+    PostMatchXpStopSound();
+    PostMatchXpPrintLevel(sPostMatchXp.targetLevel);
+    PokePvPSetLevelBarFill(sPostMatchXp.targetFill);
+    sPostMatchXp.phase = POSTMATCH_XP_IDLE;
+}
+
+/* One frame of the animation. TRUE while it is still running (the screen
+ * ignores input then, except A/B which skips to the final state). */
+static bool8 TickPostMatchXp(void)
+{
+    if (sPostMatchXp.phase == POSTMATCH_XP_IDLE)
+        return FALSE;
+    if (JOY_NEW(A_BUTTON | B_BUTTON))
+    {
+        FinishPostMatchXp();
+        return TRUE; // swallow this press
+    }
+    switch (sPostMatchXp.phase)
+    {
+    case POSTMATCH_XP_DELAY:
+        if (sPostMatchXp.timer-- == 0)
+            sPostMatchXp.phase = POSTMATCH_XP_FILL;
+        break;
+    case POSTMATCH_XP_FILL:
+    {
+        u32 goal = (sPostMatchXp.level < sPostMatchXp.targetLevel) ? POSTMATCH_XP_FILL_MAX : sPostMatchXp.targetFill;
+
+        if (!sPostMatchXp.soundOn && sPostMatchXp.fill < goal)
+        {
+            PlaySE(SE_EXP);
+            sPostMatchXp.soundOn = TRUE;
+        }
+        if (sPostMatchXp.timer++ % POSTMATCH_XP_FRAMES_PER_STEP == 0 && sPostMatchXp.fill < goal)
+        {
+            sPostMatchXp.fill++;
+            PokePvPSetLevelBarFill(sPostMatchXp.fill);
+        }
+        if (sPostMatchXp.fill >= goal)
+        {
+            PostMatchXpStopSound();
+            if (sPostMatchXp.level < sPostMatchXp.targetLevel)
+            {
+                sPostMatchXp.level++;
+                PostMatchXpPrintLevel(sPostMatchXp.level);
+                PlayFanfare(MUS_LEVEL_UP);
+                sPostMatchXp.phase = POSTMATCH_XP_FANFARE;
+                sPostMatchXp.timer = 0;
+            }
+            else
+            {
+                sPostMatchXp.phase = POSTMATCH_XP_IDLE;
+            }
+        }
+        break;
+    }
+    case POSTMATCH_XP_FANFARE:
+        if (sPostMatchXp.timer < 255)
+            sPostMatchXp.timer++;
+        if (sPostMatchXp.timer > 10 && IsFanfareTaskInactive())
+        {
+            sPostMatchXp.fill = 0;
+            PokePvPSetLevelBarFill(0);
+            sPostMatchXp.timer = 0;
+            sPostMatchXp.phase = POSTMATCH_XP_FILL;
+        }
+        break;
+    }
+    return sPostMatchXp.phase != POSTMATCH_XP_IDLE;
+}
+
 /* An AI opponent is not a player, so ADD RIVAL is hidden (blank row, cursor
  * skips it) after a practice match. */
 static bool8 PostMatchRivalHidden(void)
@@ -4924,6 +5124,7 @@ static void ReturnToPostMatchScreen(u8 taskId)
     // panel + EXIT fresh, nothing erases them again afterward).
     DrawPostMatchMeta();
     DrawPostMatchItems(gTasks[taskId].tSubCursorPos);
+    DrawPostMatchXp();
     gTasks[taskId].tMGErrorMsgState = 1;
     gTasks[taskId].func = Task_PokePvPPostMatch;
 }
@@ -4991,6 +5192,7 @@ static void Task_PokePvPPostMatch(u8 taskId)
          * afterward. */
         DrawPostMatchMeta();
         DrawPostMatchItems(0);
+        DrawPostMatchXp();
         FreeTempTileDataBuffersIfPossible();
         ResetTempTileDataBuffers();
         gTasks[taskId].tSubCursorPos = 0;
@@ -5002,6 +5204,8 @@ static void Task_PokePvPPostMatch(u8 taskId)
         break;
     case 1:
         if (gPaletteFade.active)
+            return;
+        if (TickPostMatchXp())
             return;
         // Nothing waits on a host result while idle on this screen, so
         // anything pending here is stale (see ReturnToPostMatchScreen).
@@ -5034,6 +5238,7 @@ static void Task_PokePvPPostMatch(u8 taskId)
 
                 if (PokePvPInbox_Get(i, &entry) && (entry.flags & POKEPVP_INBOX_FLAG_REMATCH))
                 {
+                    HidePostMatchXp();
                     sPokePvPPostMatchSavedCursor = gTasks[taskId].tSubCursorPos;
                     sPokePvPReturnToPostMatch = TRUE;
                     gTasks[taskId].tInboxSlot = i;
@@ -5052,6 +5257,7 @@ static void Task_PokePvPPostMatch(u8 taskId)
             SendPostMatchAction((u8)gTasks[taskId].tSubCursorPos);
             if (gTasks[taskId].tSubCursorPos == POKEPVP_POST_MATCH_ACTION_EXIT)
             {
+                HidePostMatchXp();
                 PokePvPPostMatch_Clear();
                 BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
                 gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromPostMatch;
@@ -5072,6 +5278,7 @@ static void Task_PokePvPPostMatch(u8 taskId)
             /* B = EXIT, same as the menu item (Build Plan §14's "Exit"). */
             PlaySE(SE_SELECT);
             SendPostMatchAction(POKEPVP_POST_MATCH_ACTION_EXIT);
+            HidePostMatchXp();
             PokePvPPostMatch_Clear();
             BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
             gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromPostMatch;
@@ -5605,9 +5812,57 @@ static const union AnimCmd * const sPokePvPLevelBarAnimTable[] = {
 // text bar relied on.
 static void PokePvPCreateLevelBarObjs(u16 xpIntoLevel, u16 xpForNextLevel)
 {
+    // The profile's xpForNextLevel is XP *remaining* (0 at the cap), not the
+    // level's span -- the bar fraction is into / (into + remaining). Dividing
+    // by the remaining overfilled the bar (e.g. 10 into, 5 left -> 200%).
+    PokePvPCreateLevelBarObjsAt(POKEPVP_LEVEL_BAR_X, POKEPVP_LEVEL_BAR_Y,
+        PokePvPLevelBarEighths(xpIntoLevel, xpForNextLevel == 0 ? 0 : (u16)(xpIntoLevel + xpForNextLevel)));
+}
+
+// Bar fill in eighths of a segment (0..POKEPVP_LEVEL_BAR_FILL_COUNT*8).
+// `xpForNextLevel == 0` (the level cap) is a full bar, never a divide.
+static u32 PokePvPLevelBarEighths(u16 xpIntoLevel, u16 xpForNextLevel)
+{
+    if (xpForNextLevel == 0)
+        return (u32)POKEPVP_LEVEL_BAR_FILL_COUNT * 8;
+    return ((u32)xpIntoLevel * POKEPVP_LEVEL_BAR_FILL_COUNT * 8) / xpForNextLevel;
+}
+
+// Distributes `totalEighths` over the real fill track, 8 (one full segment)
+// at a time -- the remainder lands as one partial-fill frame on the
+// boundary segment, same shape the vanilla exp bar uses.
+static void PokePvPSetLevelBarFill(u32 totalEighths)
+{
     u8 i;
-    u32 totalEighths;
+
+    if (sPokePvPLevelBarObjs == NULL)
+        return;
+    for (i = 0; i < POKEPVP_LEVEL_BAR_FILL_COUNT; i++)
+    {
+        u8 frame;
+
+        if (totalEighths >= 8)
+        {
+            frame = 8;
+            totalEighths -= 8;
+        }
+        else
+        {
+            frame = (u8)totalEighths;
+            totalEighths = 0;
+        }
+        if (sPokePvPLevelBarObjs->sprites[POKEPVP_LEVEL_BAR_FILL_FIRST + i] != NULL)
+            StartSpriteAnim(sPokePvPLevelBarObjs->sprites[POKEPVP_LEVEL_BAR_FILL_FIRST + i], frame);
+    }
+}
+
+static void PokePvPCreateLevelBarObjsAt(s16 barX, s16 barY, u32 initialEighths)
+{
+    u8 i;
     void *gfxBufferPtr;
+
+    if (sPokePvPLevelBarObjs != NULL)
+        PokePvPDestroyLevelBarObjs();
 
     sPokePvPLevelBarObjs = AllocZeroed(sizeof(struct PokePvPLevelBarObjs));
     if (sPokePvPLevelBarObjs == NULL)
@@ -5652,7 +5907,7 @@ static void PokePvPCreateLevelBarObjs(u16 xpIntoLevel, u16 xpForNextLevel)
             .affineAnims = gDummySpriteAffineAnimTable,
             .callback = SpriteCallbackDummy,
         };
-        u8 spriteId = CreateSprite(&template, POKEPVP_LEVEL_BAR_X + i * 8, POKEPVP_LEVEL_BAR_Y, 0);
+        u8 spriteId = CreateSprite(&template, barX + i * 8, barY, 0);
 
         // POKEPVP (real bug, found via live screenshot + pixel scan):
         // priority=2 (the Summary Screen's own value, copied verbatim
@@ -5676,31 +5931,7 @@ static void PokePvPCreateLevelBarObjs(u16 xpIntoLevel, u16 xpForNextLevel)
     if (sPokePvPLevelBarObjs->sprites[POKEPVP_LEVEL_BAR_SEGMENTS - 1] != NULL)
         StartSpriteAnim(sPokePvPLevelBarObjs->sprites[POKEPVP_LEVEL_BAR_SEGMENTS - 1], 11);
 
-    // Total eighths of a segment filled across the real fill track (max
-    // POKEPVP_LEVEL_BAR_FILL_COUNT*8), then distributed 8 (one full
-    // segment) at a time -- the remainder, if any, lands as a single
-    // partial-fill frame on the boundary segment, same shape the vanilla
-    // exp bar uses.
-    totalEighths = (xpForNextLevel == 0)
-        ? (u32)POKEPVP_LEVEL_BAR_FILL_COUNT * 8
-        : ((u32)xpIntoLevel * POKEPVP_LEVEL_BAR_FILL_COUNT * 8) / xpForNextLevel;
-    for (i = 0; i < POKEPVP_LEVEL_BAR_FILL_COUNT; i++)
-    {
-        u8 frame;
-
-        if (totalEighths >= 8)
-        {
-            frame = 8;
-            totalEighths -= 8;
-        }
-        else
-        {
-            frame = (u8)totalEighths;
-            totalEighths = 0;
-        }
-        if (sPokePvPLevelBarObjs->sprites[POKEPVP_LEVEL_BAR_FILL_FIRST + i] != NULL)
-            StartSpriteAnim(sPokePvPLevelBarObjs->sprites[POKEPVP_LEVEL_BAR_FILL_FIRST + i], frame);
-    }
+    PokePvPSetLevelBarFill(initialEighths);
 }
 
 static void PokePvPDestroyLevelBarObjs(void)
@@ -6619,6 +6850,7 @@ static void DrawSocialListRow(u8 windowId, u8 list, u8 index, bool8 selected)
      * existing size (ADR-226 only shrank what's written, not the bound). */
     u8 buf[40];
     u8 *dst;
+    u8 nameX;
 
     FillWindowPixelBuffer(windowId, PIXEL_FILL(selected ? 13 : 10));
     if (!PokePvPSocial_Get(list, index, &entry))
@@ -6629,52 +6861,34 @@ static void DrawSocialListRow(u8 windowId, u8 list, u8 index, bool8 selected)
         return;
     }
     dst = StringCopy(buf, entry.name);
+    nameX = 2;
     if (list == 0 || list == 1) /* ADR-200: friends and rivals both get presence */
     {
-        *dst++ = CHAR_SPACE;
-        switch (entry.presence)
-        {
-        case POKEPVP_PRESENCE_ONLINE:
-            dst = StringCopy(dst, sText_PresenceOnline);
-            break;
-        case POKEPVP_PRESENCE_SEARCHING:
-            dst = StringCopy(dst, sText_PresenceSearching);
-            break;
-        case POKEPVP_PRESENCE_IN_BATTLE:
-            dst = StringCopy(dst, sText_PresenceBattle);
-            break;
-        case POKEPVP_PRESENCE_BUSY:
-            dst = StringCopy(dst, sText_PresenceBusy);
-            break;
-        default:
-            // POKEPVP (item: RIVALS row shows blank/garbled text, found
-            // this session): every other branch of this switch
-            // null-terminates buf via StringCopy's own return value;
-            // this is the one branch that doesn't -- and it's the
-            // *common* case, since a friend/rival starts and usually
-            // stays POKEPVP_PRESENCE_OFFLINE (0) until a real PRESENCE
-            // push arrives (ADR-200), which lands here every time. With
-            // no EOS written after '-', AddTextPrinterParameterized3
-            // read past the end of this stack buffer into whatever
-            // garbage happened to follow it -- explaining both reported
-            // symptoms: blank on the first draw (leftover near-zero
-            // stack content from a shallow call depth) and garbled
-            // glyphs on a later redraw (different, non-zero stack
-            // content from the calls made in between).
-            //
-            // Also a second, smaller bug fixed alongside (found live in
-            // this same screenshot): a raw ASCII '-' (0x2D) isn't this
-            // ROM's own hyphen glyph in its custom charmap -- CHAR_HYPHEN
-            // (0xAE, characters.h) is. Confirmed live: the OFFLINE dash
-            // rendered as '&' before this fix.
-            *dst++ = CHAR_HYPHEN;
-            *dst = EOS;
-            break;
-        }
+        // Owner request (2026-10-11): presence is a colored round "button"
+        // left of the name -- green = online (any non-offline state),
+        // red = offline -- instead of a trailing letter. Palette bank 15
+        // indices 7/8 are unused elsewhere in this file (see
+        // SetPokePvPMoveEditorTypeColor's doc comment for the 2-9 range).
+        static const u8 sDotOuter[][3] = {
+            {4, 2, 4}, {5, 1, 6}, {6, 0, 8}, {7, 0, 8}, {8, 0, 8}, {9, 0, 8}, {10, 1, 6}, {11, 2, 4}
+        };
+        static const u8 sDotInner[][3] = {
+            {5, 3, 2}, {6, 2, 4}, {7, 1, 6}, {8, 1, 6}, {9, 2, 4}, {10, 3, 2}
+        };
+        u8 k, fill = (entry.presence != POKEPVP_PRESENCE_OFFLINE) ? 7 : 8;
+        u16 rgb = (fill == 7) ? RGB(4, 24, 6) : RGB(28, 4, 4);
+
+        gPlttBufferUnfaded[BG_PLTT_ID(15) + fill] = rgb;
+        gPlttBufferFaded[BG_PLTT_ID(15) + fill] = rgb;
+        for (k = 0; k < 8; k++)
+            FillWindowPixelRect(windowId, PIXEL_FILL(12), 3 + sDotOuter[k][1], sDotOuter[k][0], sDotOuter[k][2], 1);
+        for (k = 0; k < 6; k++)
+            FillWindowPixelRect(windowId, PIXEL_FILL(fill), 3 + sDotInner[k][1], sDotInner[k][0], sDotInner[k][2], 1);
+        nameX = 15;
     }
     if ((u32)(dst - buf) > 23u)
         buf[23] = EOS;
-    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2,
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, nameX, 2,
         selected ? sTextColorSelected : sTextColor1, -1, buf);
     PutWindowTilemap(windowId);
 }
@@ -8161,32 +8375,40 @@ static void ClosePokePvPList(u8 taskId)
 // its own hand-baked \n's) -- these are stack-temporary (WrapMoveDescription
 // is called from DrawPokePvPMoveInfo only, never stored), not EWRAM/IWRAM
 // cost.
-#define POKEPVP_MOVE_DESC_MAX_LINES 4
-#define POKEPVP_MOVE_DESC_LINE_BUF  40
-// 72px window (owner playtest, 2026-10-05: narrowed from 80px/10 tiles to
-// 9 tiles -- see sPokePvPMoveInfoWindowTemplate's own doc comment), 2px
-// margin each side (matches every other value on this panel's own x=2
-// left margin) -- 68px of usable width for the measured candidate line.
-#define POKEPVP_MOVE_DESC_LINE_WIDTH_PX 68
+#define POKEPVP_MOVE_DESC_LINE_BUF  48
+// Owner request (2026-10-11): page 2 now opens in a wide overlay window
+// (sPokePvPMoveDescWindowTemplate, 27 tiles) covering the list + info
+// panel area, so lines wrap at that width and the text is unlimited in
+// length -- lines beyond POKEPVP_MOVE_DESC_VISIBLE_LINES scroll with
+// UP/DOWN.
+#define POKEPVP_MOVE_DESC_LINE_WIDTH_PX 184
+#define POKEPVP_MOVE_DESC_VISIBLE_LINES 4
 
-// POKEPVP (ADR-217): real runtime word-wrap for gMoveDescriptionPointers'
-// verbatim text (reused, not re-authored -- see the ADR for why this is
-// the owner-approved reading of that line). Vanilla's own hand-baked
-// '\n's are sized for pokemon_summary_screen.c's 120px-wide window
-// (confirmed in ADR-216), not this panel's 80px one, so they are treated
-// as ordinary word breaks here (CHAR_NEWLINE folds into CHAR_SPACE) and
-// the layout is rebuilt from scratch for this panel's real width --
-// greedy word-wrap, extending the candidate line one whole word at a
-// time and measuring it with GetStringWidth, the same measurement
-// approach DrawPokePvPMoveInfo's own typeValueX/statValueX calc already
-// uses just below. Never splits a word mid-way. A description whose
-// wrapped length exceeds POKEPVP_MOVE_DESC_MAX_LINES (the panel's real,
-// fixed vertical budget below the header -- 64px / 16px-per-line, the
-// same 16px line pitch ADR-097 already established as this window's real
-// constraint) is truncated at the last whole word that still fits rather
-// than overflowing past the window; a real, deliberate limit of this
-// panel's fixed footprint, not a bug -- see ADR-217.
-static u8 WrapMoveDescription(const u8 *src, u8 outLines[][POKEPVP_MOVE_DESC_LINE_BUF])
+// Wide page-2 window. 24x10 = 240 tiles at 0x2F5..0x3E4 (same rows 6-15
+// as the list window, so its frame lines up with the panel): the list window
+// ends at 0x2F4 and the info window (0x385..0x3E8) is hidden while this
+// is up, so the span between is free. Only one of {list+info, this} is
+// ever on screen; ShowPokePvPMoveDescOverlay/HidePokePvPMoveDescOverlay
+// swap them (CopyWindowToVram COPYWIN_FULL re-uploads the tile data).
+static const struct WindowTemplate sPokePvPMoveDescWindowTemplate = {
+    .bg = 0, .tilemapLeft = 3, .tilemapTop = 6, .width = 24, .height = 10,
+    .paletteNum = 15, .baseBlock = 0x2F5
+};
+static EWRAM_DATA u8 sPokePvPMoveDescWindowId;
+static EWRAM_DATA u8 sPokePvPMoveDescScroll = 0;
+
+// Greedy word-wrap of a move description (CHAR_NEWLINE folds into a
+// space -- vanilla's hand-baked breaks are sized for other windows).
+// Draws lines [skip, skip + VISIBLE_LINES) into windowId as they are
+// produced (no per-line storage: IWRAM stack is tight), and returns the
+// total line count. windowId == WINDOW_NONE only counts.
+static void DrawMoveDescLine(u8 windowId, u8 idx, u8 skip, const u8 *line)
+{
+    if (windowId != WINDOW_NONE && idx >= skip && idx < skip + POKEPVP_MOVE_DESC_VISIBLE_LINES)
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 16 + ((idx - skip) * 16), sTextColor1, -1, line);
+}
+
+static u8 WrapMoveDescription(const u8 *src, u8 windowId, u8 skip)
 {
     u8 word[POKEPVP_MOVE_DESC_LINE_BUF];
     u8 line[POKEPVP_MOVE_DESC_LINE_BUF];
@@ -8197,7 +8419,7 @@ static u8 WrapMoveDescription(const u8 *src, u8 outLines[][POKEPVP_MOVE_DESC_LIN
 
     line[0] = EOS;
 
-    while (*s != EOS && lineCount < POKEPVP_MOVE_DESC_MAX_LINES)
+    while (*s != EOS)
     {
         while (*s == CHAR_SPACE || *s == CHAR_NEWLINE)
             s++;
@@ -8224,14 +8446,12 @@ static u8 WrapMoveDescription(const u8 *src, u8 outLines[][POKEPVP_MOVE_DESC_LIN
             StringAppend(candidate, word);
         }
 
-        if (lineLen != 0 && GetStringWidth(FONT_NORMAL, candidate, 0) > POKEPVP_MOVE_DESC_LINE_WIDTH_PX)
+        if (lineLen != 0
+            && (lineLen + 1 + wordLen >= POKEPVP_MOVE_DESC_LINE_BUF - 1
+                || GetStringWidth(FONT_NORMAL, candidate, 0) > POKEPVP_MOVE_DESC_LINE_WIDTH_PX))
         {
-            // Candidate overflows -- commit the line as it stood before
-            // this word, start a fresh line with the word that didn't fit.
-            StringCopy(outLines[lineCount], line);
+            DrawMoveDescLine(windowId, lineCount, skip, line);
             lineCount++;
-            if (lineCount >= POKEPVP_MOVE_DESC_MAX_LINES)
-                break;
             StringCopy(line, word);
             lineLen = StringLength(line);
         }
@@ -8242,34 +8462,41 @@ static u8 WrapMoveDescription(const u8 *src, u8 outLines[][POKEPVP_MOVE_DESC_LIN
         }
     }
 
-    if (lineLen != 0 && lineCount < POKEPVP_MOVE_DESC_MAX_LINES)
+    if (lineLen != 0)
     {
-        StringCopy(outLines[lineCount], line);
+        DrawMoveDescLine(windowId, lineCount, skip, line);
         lineCount++;
     }
 
     return lineCount;
 }
 
-// POKEPVP (ADR-217): page 2's body. MOVE_NONE (an empty move slot, or the
-// movepool list's own "clear this slot" row) gets the same three-hyphen
-// placeholder page 1 already uses for it, matching
-// DrawPokePvPMoveInfo's own existing move == MOVE_NONE discipline rather
-// than indexing gMoveDescriptionPointers[-1].
+// Page 2's contents at the current sPokePvPMoveDescScroll (clamped).
 static void DrawPokePvPMoveDescription(u8 windowId, u16 move)
 {
-    u8 lines[POKEPVP_MOVE_DESC_MAX_LINES][POKEPVP_MOVE_DESC_LINE_BUF];
-    u8 lineCount, i;
+    u8 total = 0, maxScroll;
+    const u8 *pageText = sText_MoveInfoPage2;
+
+    FillWindowPixelBuffer(windowId, PIXEL_FILL(10));
+    FillWindowPixelRect(windowId, PIXEL_FILL(13), 0, 0, 192, 16);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 2, sTextColorSelected, -1, sText_MoveInfoHeader);
+    AddTextPrinterParameterized3(windowId, FONT_NORMAL, 190 - GetStringWidth(FONT_NORMAL, pageText, 0), 2, sTextColorSelected, -1, pageText);
 
     if (move == MOVE_NONE)
     {
-        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 18, sTextColor1, -1, gText_ThreeHyphens);
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 16, sTextColor1, -1, gText_ThreeHyphens);
+        CopyWindowToVram(windowId, COPYWIN_GFX);
         return;
     }
 
-    lineCount = WrapMoveDescription(gMoveDescriptionPointers[move - 1], lines);
-    for (i = 0; i < lineCount; i++)
-        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 2, 18 + (i * 16), sTextColor1, -1, lines[i]);
+    total = WrapMoveDescription(gMoveDescriptionPointers[move - 1], WINDOW_NONE, 0);
+    maxScroll = (total > POKEPVP_MOVE_DESC_VISIBLE_LINES) ? total - POKEPVP_MOVE_DESC_VISIBLE_LINES : 0;
+    if (sPokePvPMoveDescScroll > maxScroll)
+        sPokePvPMoveDescScroll = maxScroll;
+    if (maxScroll != 0)
+        AddTextPrinterParameterized3(windowId, FONT_NORMAL, 84, 2, sTextColorSelected, -1, sText_MoveInfoScrollHint);
+    WrapMoveDescription(gMoveDescriptionPointers[move - 1], windowId, sPokePvPMoveDescScroll);
+    CopyWindowToVram(windowId, COPYWIN_GFX);
 }
 
 // POKEPVP (owner feature, 2026-10-05): reactivates the per-type ink color
@@ -8356,13 +8583,6 @@ static void DrawPokePvPMoveInfo(u8 windowId, u16 move, u8 page)
     pageText = (page == 0) ? sText_MoveInfoPage1 : sText_MoveInfoPage2;
     pageX = 70 - GetStringWidth(FONT_NORMAL, pageText, 0);
     AddTextPrinterParameterized3(windowId, FONT_NORMAL, pageX, 2, sTextColorSelected, -1, pageText);
-
-    if (page == 1)
-    {
-        DrawPokePvPMoveDescription(windowId, move);
-        CopyWindowToVram(windowId, COPYWIN_GFX);
-        return;
-    }
 
     // POKEPVP (ADR-097, fixes a real bug in ADR-096): FONT_NORMAL's real
     // line height is 16px (two tiles), the same "two tiles per row" the
@@ -8583,18 +8803,79 @@ static u16 BuildLegalMoveList(u8 taskId)
 // was handled this frame (caller returns immediately after, same "don't
 // also run ListMenu_ProcessInput's own redraw path this frame" discipline
 // UpdatePokePvPMoveInfo's own LIST_NOTHING_CHOSEN branch uses).
+static void ShowPokePvPMoveDescOverlay(u8 taskId, u16 move)
+{
+    // NoCommit variants + the scheduled COPYWIN_FULL flush(es) below: one
+    // vblank-synced update instead of several immediate mid-frame VRAM
+    // writes (those showed as a screen flash).
+    ClearWindowTilemap(gTasks[taskId].tListWindowId);
+    ClearWindowTilemap(gTasks[taskId].tMoveInfoWindowId);
+    MainMenu_EraseWindowNoCommit(&sPokePvPListWindowTemplate);
+    MainMenu_EraseWindowNoCommit(&sPokePvPMoveInfoWindowTemplate);
+
+    sPokePvPMoveDescScroll = 0;
+    sPokePvPMoveDescWindowId = AddWindow(&sPokePvPMoveDescWindowTemplate);
+    MainMenu_DrawWindowNoCommit(&sPokePvPMoveDescWindowTemplate);
+    PutWindowTilemap(sPokePvPMoveDescWindowId);
+    DrawPokePvPMoveDescription(sPokePvPMoveDescWindowId, move);
+    CopyWindowToVram(sPokePvPMoveDescWindowId, COPYWIN_FULL);
+}
+
+static void HidePokePvPMoveDescOverlay(u8 taskId, u16 move)
+{
+    ClearWindowTilemap(sPokePvPMoveDescWindowId);
+    MainMenu_EraseWindowNoCommit(&sPokePvPMoveDescWindowTemplate);
+    RemoveWindow(sPokePvPMoveDescWindowId);
+    sPokePvPMoveDescWindowId = WINDOW_NONE;
+
+    // Same order as OpenPokePvPList: the info frame's left border (col 19)
+    // overlaps the list's last column, so the info frame/tilemap must be
+    // laid down AFTER the list's, not before.
+    MainMenu_DrawWindowNoCommit(&sPokePvPListWindowTemplate);
+    PutWindowTilemap(gTasks[taskId].tListWindowId);
+    CopyWindowToVram(gTasks[taskId].tListWindowId, COPYWIN_FULL);
+    MainMenu_DrawWindowNoCommit(&sPokePvPMoveInfoWindowTemplate);
+    PutWindowTilemap(gTasks[taskId].tMoveInfoWindowId);
+    CopyWindowToVram(gTasks[taskId].tMoveInfoWindowId, COPYWIN_FULL);
+    DrawPokePvPMoveInfo(gTasks[taskId].tMoveInfoWindowId, move, 0);
+    CopyWindowToVram(gTasks[taskId].tMoveInfoWindowId, COPYWIN_FULL);
+}
+
 static bool8 TryFlipPokePvPMoveInfoPage(u8 taskId, bool8 isMoveSlotList)
 {
+    u16 move;
+
     if (gTasks[taskId].tMoveInfoWindowId == WINDOW_NONE)
         return FALSE;
+    move = GetHoveredMoveId(taskId, isMoveSlotList);
+
+    if (gTasks[taskId].tMoveInfoPage == 1)
+    {
+        // Description overlay is up: it owns input until dismissed.
+        if (JOY_NEW(DPAD_UP) && sPokePvPMoveDescScroll > 0)
+            sPokePvPMoveDescScroll--;
+        else if (JOY_NEW(DPAD_DOWN))
+            sPokePvPMoveDescScroll++; // clamped in the draw
+        else if (JOY_NEW(SELECT_BUTTON) || JOY_NEW(DPAD_LEFT) || JOY_NEW(DPAD_RIGHT)
+                 || JOY_NEW(A_BUTTON) || JOY_NEW(B_BUTTON))
+        {
+            PlaySE(SE_SELECT);
+            gTasks[taskId].tMoveInfoPage = 0;
+            HidePokePvPMoveDescOverlay(taskId, move);
+            return TRUE;
+        }
+        else
+            return TRUE;
+        DrawPokePvPMoveDescription(sPokePvPMoveDescWindowId, move);
+        return TRUE;
+    }
+
     if (!JOY_NEW(SELECT_BUTTON) && !JOY_NEW(DPAD_LEFT) && !JOY_NEW(DPAD_RIGHT))
         return FALSE;
 
     PlaySE(SE_SELECT);
-    gTasks[taskId].tMoveInfoPage ^= 1;
-    DrawPokePvPMoveInfo(gTasks[taskId].tMoveInfoWindowId,
-                         GetHoveredMoveId(taskId, isMoveSlotList),
-                         gTasks[taskId].tMoveInfoPage);
+    gTasks[taskId].tMoveInfoPage = 1;
+    ShowPokePvPMoveDescOverlay(taskId, move);
     return TRUE;
 }
 
