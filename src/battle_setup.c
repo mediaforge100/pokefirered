@@ -75,6 +75,25 @@ static void CB2_EndPokePvPBattle(void); // POKEPVP (ADR-094)
 static u8 GetWildBattleTransition(void);
 static u8 GetTrainerBattleTransition(void);
 static u8 GetPokePvPBattleTransition(void); // POKEPVP (ADR-124)
+
+// Gateway-chosen battle music (apps/realtime-gateway/src/battle-music.ts);
+// indices must match. 0 / out of range -> 0 = map default music.
+static const u16 sPokePvPBattleMusic[] = {
+    0,
+    MUS_VS_TRAINER,
+    MUS_VS_GYM_LEADER,
+    MUS_VS_WILD,
+    MUS_VS_MEWTWO,
+    MUS_VS_LEGEND,
+    MUS_VS_DEOXYS,
+};
+
+static u16 GetPokePvPBattleMusic(void)
+{
+    u8 idx = PokePvP_GetBattleMusicIndex();
+
+    return idx < ARRAY_COUNT(sPokePvPBattleMusic) ? sPokePvPBattleMusic[idx] : 0;
+}
 static void CB2_EndScriptedWildBattle(void);
 static void CB2_EndMarowakBattle(void);
 static bool32 IsPlayerDefeated(u32 battleOutcome);
@@ -683,7 +702,8 @@ void StartPokePvPRealMatch(void)
     gTrainerBattleOpponent_A = TRAINER_NONE;
     gBattleTypeFlags = BATTLE_TYPE_POKEPVP | BATTLE_TYPE_TRAINER;
     DebugPrintf("POKEPVP: calling CreateBattleStartTask, gBattleTypeFlags=0x%x", gBattleTypeFlags);
-    CreateBattleStartTask(GetPokePvPBattleTransition(), 0);
+    PokePvP_MenuMusicInterrupted();
+    CreateBattleStartTask(GetPokePvPBattleTransition(), GetPokePvPBattleMusic());
 }
 
 // POKEPVP (ADR-091, D7 refinement: START MATCH -> AUTO-MATCH/INVITE MATCH):

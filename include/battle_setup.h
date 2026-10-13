@@ -114,6 +114,7 @@ const u8 *PokePvP_GetOpponentTrainerName(void);
 // Owner-directed feature (2026-10-03): the opponent's trainer level, for
 // main_menu.c's pre-match wait screen (Task_PokePvPWaitForRealOpponent).
 u16 PokePvP_GetOpponentTrainerLevel(void);
+u8 PokePvP_GetBattleMusicIndex(void);
 void StartOldManTutorialBattle(void);
 void StartScriptedWildBattle(void);
 void StartMarowakBattle(void);

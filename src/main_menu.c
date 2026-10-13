@@ -1386,9 +1386,25 @@ static void LoadPokePvPMenuBackdrop(void)
     DecompressAndCopyTileDataToVram(2, sPokePvPBackdrop_Map, 0, 0, 1);
 }
 
+// Menu music (Gym theme). Started once on first menu entry (fading out the
+// title theme) and left running across sub-screen re-inits; cleared by
+// PokePvP_MenuMusicInterrupted() when a battle takes over the BGM channel.
+static bool8 sPokePvPMenuMusicOn;
+
+void PokePvP_MenuMusicInterrupted(void)
+{
+    sPokePvPMenuMusicOn = FALSE;
+}
+
 static bool32 MainMenuGpuInit(u8 a0)
 {
     u8 taskId;
+
+    if (!sPokePvPMenuMusicOn)
+    {
+        sPokePvPMenuMusicOn = TRUE;
+        FadeInNewBGM(MUS_GYM, 4);
+    }
 
     PokePvP_SanitizePlayerName(); /* POKEPVP (ADR-159) */
     PokePvP_DefaultTextSpeedIfUnset(); /* Playtest fallout (2026-09-26) */
