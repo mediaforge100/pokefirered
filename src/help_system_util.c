@@ -1,6 +1,7 @@
 #include "global.h"
 #include "gflib.h"
 #include "decompress.h"
+#include "malloc.h"
 #include "m4a.h"
 #include "event_data.h"
 #include "help_system.h"
@@ -25,7 +26,9 @@ struct HelpSystemVideoState
     /*0x15*/ u8 state;
 };
 
-static EWRAM_DATA u8 sMapTilesBackup[BG_CHAR_SIZE] = {0};
+// POKEPVP: heap-allocated only while the Help System / save-failed screen is up
+// (was a permanent 16 KB EWRAM_DATA array). NULL when no backup is held.
+static EWRAM_DATA u8 *sMapTilesBackup = NULL;
 EWRAM_DATA u8 gDisableHelpSystemVolumeReduce = 0;
 EWRAM_DATA bool8 gHelpSystemToggleWithRButtonDisabled = FALSE;
 static EWRAM_DATA u8 sDelayTimer = 0;
@@ -165,7 +168,12 @@ void SaveMapGPURegs(void)
 
 void SaveMapTiles(void)
 {
-    RequestDma3Copy((void *)BG_CHAR_ADDR(3), sMapTilesBackup, BG_CHAR_SIZE, DMA3_16BIT);
+    // Synchronous copies: DISPCNT is off here and the buffer is freed in RestoreMapTiles,
+    // so a queued DMA could outlive it. If the heap is exhausted the backup is skipped.
+    if (sMapTilesBackup == NULL)
+        sMapTilesBackup = Alloc(BG_CHAR_SIZE);
+    if (sMapTilesBackup != NULL)
+        CpuCopy16((void *)BG_CHAR_ADDR(3), sMapTilesBackup, BG_CHAR_SIZE);
 }
 
 void SaveMapTextColors(void)
@@ -194,7 +202,12 @@ void RestoreGPURegs(void)
 
 void RestoreMapTiles(void)
 {
-    RequestDma3Copy(sMapTilesBackup, (void *)BG_CHAR_ADDR(3), BG_CHAR_SIZE, DMA3_16BIT);
+    if (sMapTilesBackup != NULL)
+    {
+        CpuCopy16(sMapTilesBackup, (void *)BG_CHAR_ADDR(3), BG_CHAR_SIZE);
+        Free(sMapTilesBackup);
+        sMapTilesBackup = NULL;
+    }
 }
 
 void RestoreMapTextColors(void)

@@ -781,7 +781,11 @@ static const u8 sText_OnlineCountLabel[] = _("ONLINE:");
 // (the START MATCH submenu), the same shape as every other cancel in this
 // file. "CANCEL" says what actually happens; "NO" implied the prompt
 // would just reappear or continue waiting, which it doesn't.
-static const u8 sText_ReadyPrompt[] = _("READY?  A=YES B=CANCEL");
+static const u8 sText_ReadyPrompt[] = _("READY?  A=YES B=SKIP");
+// ADR-334: B no longer cancels matchmaking -- it declines THIS opponent and
+// the gateway re-queues the decliner; shown briefly, then the ordinary
+// "Waiting for opponent..." returns.
+static const u8 sText_FindingNewOpponent[] = _("Finding new opponent…");
 // HANDOFF item 37 (owner UX ask, deferred at ADR-199 pending a way to
 // live-verify a timing change without recreating a real match -- the
 // firered-real-match-slice recalibration this same session did (see
@@ -4114,7 +4118,13 @@ static void DrawTeamSelectorItems(u8 selectedIdx)
 // 1800 frames is 30 real seconds, and the timeout is no longer a silent
 // fallback into a fake battle (see this task's own timeout branch), so a
 // bound that is generous rather than tight costs nothing.
-#define POKEPVP_AUTO_MATCH_WAIT_FRAMES 1800
+// ADR-334: raised from 1800 (30s) to 18000 (5 min, still < s16 max for
+// tWaitFrames). The gateway now holds a just-played / just-declined opponent
+// apart for minutes (queue-manager.ts PLAYED_HOLD_MS / DECLINE_HOLD_MS), so a
+// 30s client cap would abandon players mid-cooldown. The timeout branches
+// below also send LEAVE_QUEUE now, so the cap can't leave a phantom
+// queued session behind.
+#define POKEPVP_AUTO_MATCH_WAIT_FRAMES 18000
 
 // POKEPVP (ADR-121): shown between AUTO-MATCH's team pick and the actual
 // battle start, giving a real gateway-paired opponent a bounded chance to
@@ -4310,6 +4320,7 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
             // reached in online mode at all, so this branch never affects
             // the offline debug path every golden-frame suite uses.
             DebugPrintf("POKEPVP: AUTO-MATCH found no real opponent in %d frames", gTasks[taskId].tWaitFrames);
+            SendLeaveQueue();
             PokePvP_ClearRealMatchPending();
             gTasks[taskId].tMGErrorMsgState = 0;
             gTasks[taskId].func = Task_PokePvPNoOpponentFound;
@@ -4740,17 +4751,26 @@ static bool8 TickReadyCheckPrompt(u8 taskId)
     if (JOY_NEW(B_BUTTON))
     {
         PlaySE(SE_SELECT);
-        sReadyCheckCancelled = TRUE;
+        /* ADR-334: B declines THIS opponent only. The gateway re-queues
+         * the decliner and holds the pair apart, so stay on the waiting
+         * screen (not cancelled) with a fresh wait budget. */
+        sReadyCheckCancelled = FALSE;
         PokePvPReadyCheck_Clear();
         SendReadyChoice(0);
-        return TRUE; /* caller returns to its previous screen */
+        sReadyPromptShown = FALSE;
+        gTasks[taskId].tWaitFrames = 0;
+        PrintMessageOnWindow4(sText_FindingNewOpponent);
+        sReadyConfirmFramesRemaining = POKEPVP_READY_CONFIRM_FLASH_FRAMES;
+        return TRUE;
     }
     if (!PokePvPReadyCheck_Tick())
     {
-        /* Window lapsed: treat as declined, same as B. */
+        /* Window lapsed (AFK): ADR-334 -- NOT a decline (no re-queue, no
+         * hold). Leave the queue and return to the previous screen; the
+         * gateway's own expiry drops the silent side the same way. */
         sReadyCheckCancelled = TRUE;
         PokePvPReadyCheck_Clear();
-        SendReadyChoice(0);
+        SendLeaveQueue();
         return TRUE;
     }
     /* Prompt on screen; keep it. */
@@ -5416,6 +5436,7 @@ static void Task_PokePvPPostMatchWait(u8 taskId)
         else if (gTasks[taskId].tWaitFrames >= POKEPVP_AUTO_MATCH_WAIT_FRAMES)
         {
             DebugPrintf("POKEPVP: post-match wait found no opponent in %d frames", gTasks[taskId].tWaitFrames);
+            SendLeaveQueue();
             PokePvP_ClearRealMatchPending();
             ReturnToPostMatchScreen(taskId);
         }

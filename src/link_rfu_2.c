@@ -79,7 +79,8 @@ static EWRAM_DATA struct RfuDebug sRfuDebug = {};
 
 #if REVISION >= 0xA
 #else
-static u32 sRfuAPIBuffer[RFU_API_BUFF_SIZE_RAM / 4];
+// POKEPVP: EWRAM, not IWRAM (wireless adapter unused; frees ~3.6 KB of stack-shared IWRAM)
+static EWRAM_DATA u32 sRfuAPIBuffer[RFU_API_BUFF_SIZE_RAM / 4] = {0};
 #endif
 static u8 sResendBlock8[CMD_LENGTH * 2];
 static u16 sResendBlock16[CMD_LENGTH];
@@ -88,7 +89,8 @@ static u16 sResendBlock16[CMD_LENGTH];
 COMMON_DATA u32 sRfuAPIBuffer[RFU_API_BUFF_SIZE_RAM / 4] = {0};
 #endif
 COMMON_DATA struct RfuGameData gHostRfuGameData = {0};
-COMMON_DATA struct RfuManager gRfu = {0};
+// POKEPVP: EWRAM, not IWRAM (see sRfuAPIBuffer)
+EWRAM_DATA struct RfuManager gRfu = {0};
 COMMON_DATA u8 gHostRfuUsername[PLAYER_NAME_LENGTH + 1] = {0};
 
 #if REVISION >= 0xA
