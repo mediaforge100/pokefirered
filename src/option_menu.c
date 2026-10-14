@@ -22,7 +22,7 @@ enum
     MENUITEM_BATTLESTYLE,
     MENUITEM_SOUND,
     MENUITEM_BUTTONMODE,
-    MENUITEM_FRAMETYPE,
+    MENUITEM_MUSIC, // POKEPVP: replaces FRAME (window frame stays at the saved value); stored in the unused regionMapZoom bit, 1 = OFF
     MENUITEM_CANCEL,
     MENUITEM_COUNT
 };
@@ -132,7 +132,9 @@ static const struct BgTemplate sOptionMenuBgTemplates[] =
 
 static const u16 sOptionMenuPalette[] = INCBIN_U16("graphics/misc/option_menu.gbapal");
 // POKEPVP: BUTTONMODE count dropped 3->2 (HELP removed, see sButtonTypeOptions).
-static const u16 sOptionMenuItemCounts[MENUITEM_COUNT] = {3, 2, 2, 2, 2, 10, 0};
+static const u16 sOptionMenuItemCounts[MENUITEM_COUNT] = {3, 2, 2, 2, 2, 2, 0};
+
+static const u8 sText_Music[] = _("MUSIC");
 
 static const u8 *const sOptionMenuItemsNames[MENUITEM_COUNT] =
 {
@@ -141,7 +143,7 @@ static const u8 *const sOptionMenuItemsNames[MENUITEM_COUNT] =
     [MENUITEM_BATTLESTYLE] = gText_BattleStyle,
     [MENUITEM_SOUND]       = gText_Sound,
     [MENUITEM_BUTTONMODE]  = gText_ButtonMode,
-    [MENUITEM_FRAMETYPE]   = gText_Frame,
+    [MENUITEM_MUSIC]       = sText_Music,
     [MENUITEM_CANCEL]      = gText_OptionMenuCancel,
 };
 
@@ -186,6 +188,8 @@ static const u8 *const sButtonTypeOptions[] =
 static const u8 sOptionMenuPickSwitchCancelTextColor[] = {TEXT_DYNAMIC_COLOR_6, TEXT_COLOR_WHITE, TEXT_COLOR_DARK_GRAY};
 static const u8 sOptionMenuTextColor[] = {TEXT_COLOR_TRANSPARENT, TEXT_COLOR_LIGHT_RED, TEXT_COLOR_RED};
 
+extern bool8 gDisableMusic;
+
 // Functions
 static void CB2_InitOptionMenu(void)
 {
@@ -222,7 +226,7 @@ void CB2_OptionsMenuFromStartMenu(void)
     if (gSaveBlock2Ptr->optionsButtonMode == OPTIONS_BUTTON_MODE_HELP)
         gSaveBlock2Ptr->optionsButtonMode = OPTIONS_BUTTON_MODE_LR;
     sOptionMenuPtr->option[MENUITEM_BUTTONMODE] = gSaveBlock2Ptr->optionsButtonMode - 1;
-    sOptionMenuPtr->option[MENUITEM_FRAMETYPE] = gSaveBlock2Ptr->optionsWindowFrameType;
+    sOptionMenuPtr->option[MENUITEM_MUSIC] = gSaveBlock2Ptr->regionMapZoom;
     
     for (i = 0; i < MENUITEM_COUNT - 1; i++)
     {
@@ -348,10 +352,10 @@ static bool8 LoadOptionMenuPalette(void)
     switch (sOptionMenuPtr->loadPaletteState)
     {
     case 0:
-        LoadBgTiles(1, GetUserWindowGraphics(sOptionMenuPtr->option[MENUITEM_FRAMETYPE])->tiles, 0x120, 0x1AA);
+        LoadBgTiles(1, GetUserWindowGraphics(gSaveBlock2Ptr->optionsWindowFrameType)->tiles, 0x120, 0x1AA);
         break;
     case 1:
-        LoadPalette(GetUserWindowGraphics(sOptionMenuPtr->option[MENUITEM_FRAMETYPE])->palette, BG_PLTT_ID(2), PLTT_SIZE_4BPP);
+        LoadPalette(GetUserWindowGraphics(gSaveBlock2Ptr->optionsWindowFrameType)->palette, BG_PLTT_ID(2), PLTT_SIZE_4BPP);
         break;
     case 2:
         LoadPalette(sOptionMenuPalette, BG_PLTT_ID(1), sizeof(sOptionMenuPalette));
@@ -392,8 +396,8 @@ static void Task_OptionMenu(u8 taskId)
             sOptionMenuPtr->loadState++;
             break;
         case 2:
-            LoadBgTiles(1, GetUserWindowGraphics(sOptionMenuPtr->option[MENUITEM_FRAMETYPE])->tiles, 0x120, 0x1AA);
-            LoadPalette(GetUserWindowGraphics(sOptionMenuPtr->option[MENUITEM_FRAMETYPE])->palette, BG_PLTT_ID(2), PLTT_SIZE_4BPP);
+            LoadBgTiles(1, GetUserWindowGraphics(gSaveBlock2Ptr->optionsWindowFrameType)->tiles, 0x120, 0x1AA);
+            LoadPalette(GetUserWindowGraphics(gSaveBlock2Ptr->optionsWindowFrameType)->palette, BG_PLTT_ID(2), PLTT_SIZE_4BPP);
             BufferOptionMenuString(sOptionMenuPtr->cursorPos);
             break;
         case 3:
@@ -430,10 +434,7 @@ static u8 OptionMenu_ProcessInput(void)
             sOptionMenuPtr->option[sOptionMenuPtr->cursorPos] = 0;
         else
             sOptionMenuPtr->option[sOptionMenuPtr->cursorPos] = current + 1;
-        if (sOptionMenuPtr->cursorPos == MENUITEM_FRAMETYPE)
-            return 2;
-        else
-            return 4;
+        return 4;
     }
     else if (JOY_REPT(DPAD_LEFT))
     {
@@ -443,10 +444,7 @@ static u8 OptionMenu_ProcessInput(void)
         else
             --*curr;
         
-        if (sOptionMenuPtr->cursorPos == MENUITEM_FRAMETYPE)
-            return 2;
-        else
-            return 4;
+        return 4;
     }
     else if (JOY_REPT(DPAD_UP))
     {
@@ -476,8 +474,6 @@ static u8 OptionMenu_ProcessInput(void)
 
 static void BufferOptionMenuString(u8 selection)
 {
-    u8 str[20];
-    u8 buf[12];
     u8 dst[3];
     u8 x, y;
     
@@ -503,11 +499,8 @@ static void BufferOptionMenuString(u8 selection)
     case MENUITEM_BUTTONMODE:
         AddTextPrinterParameterized3(1, FONT_NORMAL, x, y, dst, -1, sButtonTypeOptions[sOptionMenuPtr->option[selection]]);
         break;
-    case MENUITEM_FRAMETYPE:
-        StringCopy(str, gText_FrameType);
-        ConvertIntToDecimalStringN(buf, sOptionMenuPtr->option[selection] + 1, 1, 2);
-        StringAppendN(str, buf, 3);
-        AddTextPrinterParameterized3(1, FONT_NORMAL, x, y, dst, -1, str);
+    case MENUITEM_MUSIC:
+        AddTextPrinterParameterized3(1, FONT_NORMAL, x, y, dst, -1, sBattleSceneOptions[sOptionMenuPtr->option[selection]]);
         break;
     default:
         break;
@@ -527,7 +520,8 @@ static void CloseAndSaveOptionMenu(u8 taskId)
     gSaveBlock2Ptr->optionsSound = sOptionMenuPtr->option[MENUITEM_SOUND];
     // POKEPVP: convert back from the 0-based 2-entry (LR/L=A) representation.
     gSaveBlock2Ptr->optionsButtonMode = sOptionMenuPtr->option[MENUITEM_BUTTONMODE] + 1;
-    gSaveBlock2Ptr->optionsWindowFrameType = sOptionMenuPtr->option[MENUITEM_FRAMETYPE];
+    gSaveBlock2Ptr->regionMapZoom = sOptionMenuPtr->option[MENUITEM_MUSIC];
+    gDisableMusic = gSaveBlock2Ptr->regionMapZoom;
     SetPokemonCryStereo(gSaveBlock2Ptr->optionsSound);
     FREE_AND_SET_NULL(sOptionMenuPtr);
     DestroyTask(taskId);

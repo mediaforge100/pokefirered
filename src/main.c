@@ -224,6 +224,7 @@ void AgbMain()
 
         PlayTimeCounter_Update();
         MapMusicMain();
+        PokePvP_MenuMusicTick();
         // POKEPVP (ADR-062): pumps at most one mailbox record per real
         // frame, unconditionally -- this is the actual "host-side pump
         // driven at defined frame boundaries" (Phase 3.5) live-wiring;

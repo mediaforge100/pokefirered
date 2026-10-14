@@ -270,6 +270,8 @@ enum MainMenuWindow
 // POKEPVP_POST_MATCH_ARRIVAL_WAIT_FRAMES check below).
 #define tPostMatchWaitFrames data[13]
 
+extern bool8 gDisableMusic;
+
 static bool32 MainMenuGpuInit(u8 a0);
 static void Task_SetWin0BldRegsAndCheckSaveFile(u8 taskId);
 static void PrintSaveErrorStatus(u8 taskId, const u8 *str);
@@ -771,7 +773,7 @@ static const u8 sText_QuickRulesLineElite[] = _("6v6 LVL100");
 // MAIN_MENU_WINDOW_ONLINE_COUNT is only 5 tiles/40px wide (the free
 // margin left of the panel, ADR-295), too narrow for "ONLINE: 42" on one
 // line, so it wraps to two.
-static const u8 sText_OnlineCountLabel[] = _("ONLINE:");
+static const u8 sText_OnlineCountLabel[] = _("ONLINE");
 // POKEPVP (UI plan slice 3): the ready-check prompt (Build Plan §8 item
 // 2 -- both players must confirm within the window; the gateway's
 // timeout frame budget is held ROM-side by ready_check.c).
@@ -1013,7 +1015,7 @@ static const struct WindowTemplate sWindowTemplate[] = {
     // for real text.
     [MAIN_MENU_WINDOW_ONLINE_COUNT] = {
         .bg = 0, .tilemapLeft = 0, .tilemapTop = 17, .width = 10, .height = 2,
-        .paletteNum = 15, .baseBlock = 0x241
+        .paletteNum = 14, .baseBlock = 0x241
     },
     // Owner-directed feature (2026-10-02): same size and baseBlock as
     // MAIN_MENU_WINDOW_CONTINUE (24x10 tiles, 0x001 -- see MAIN_MENU_
@@ -1248,7 +1250,6 @@ static const u8 sTextColorSelected[] = { 13, 14, 15 };
 // itself uses for every text layer drawn over a scene -- e.g.
 // option_menu.c's own sOptionMenuTextColor). Only this one window uses
 // it; every other menu row keeps its opaque cream box.
-static const u8 sTextColorOnlineCount[] = { TEXT_COLOR_TRANSPARENT, 11, 12 };
 
 static const u8 sTextColor2[] = { 10,  1, 12 };
 
@@ -1295,7 +1296,7 @@ static const struct BgTemplate sBgTemplate[] = {
     {
         .bg = 2,
         .charBaseIndex = 2,
-        .mapBaseIndex = 29,
+        .mapBaseIndex = 31, // 0xF800: the 2026-10-14 full-scene backdrop is 439 tiles (ends 0xEDC0), past block 29/0xE800; block 30 is BG0's map
         .paletteMode = 1, // 8bpp -- the backdrop's real color count (32) doesn't need this, but 8bpp sidesteps the 16-colors-per-4bpp-tile juggling entirely, and VRAM headroom is ample (see LoadPokePvPMenuBackdrop's own budget comment)
         .priority = 3
     }
@@ -1391,19 +1392,65 @@ static void LoadPokePvPMenuBackdrop(void)
 // PokePvP_MenuMusicInterrupted() when a battle takes over the BGM channel.
 static bool8 sPokePvPMenuMusicOn;
 
+// Playlist: Gym -> Victory Road -> Route 11 -> Oak tutorial -> Gym ... Songs loop
+// forever, so a frame timer (ticked from AgbMain, which runs under every
+// menu sub-screen's callback) crossfades to the next. EWRAM: IWRAM is full.
+#define MENU_PLAYLIST_LEN 4
+#define MENU_TRACK_FRAMES (60 * 90)
+static const u16 sMenuPlaylist[MENU_PLAYLIST_LEN] = { MUS_GYM, MUS_VICTORY_ROAD, MUS_ROUTE11, MUS_NEW_GAME_INSTRUCT };
+EWRAM_DATA static u8 sMenuTrack = 0;
+EWRAM_DATA static u8 sMenuFadingOut = FALSE;
+EWRAM_DATA static u32 sMenuTrackTimer = 0;
+
 void PokePvP_MenuMusicInterrupted(void)
 {
     sPokePvPMenuMusicOn = FALSE;
+    sMenuTrack = 0; // exiting a battle restarts from the Gym theme
+    sMenuFadingOut = FALSE;
+    sMenuTrackTimer = 0;
+}
+
+void PokePvP_MenuMusicTick(void)
+{
+    if (!sPokePvPMenuMusicOn)
+        return;
+    if (sMenuFadingOut)
+    {
+        if (IsBGMStopped())
+        {
+            sMenuFadingOut = FALSE;
+            sMenuTrackTimer = 0;
+            sMenuTrack = (sMenuTrack + 1) % MENU_PLAYLIST_LEN;
+            FadeInNewBGM(sMenuPlaylist[sMenuTrack], 4);
+        }
+    }
+    else if (++sMenuTrackTimer >= MENU_TRACK_FRAMES)
+    {
+        sMenuFadingOut = TRUE;
+        FadeOutBGM(4);
+    }
 }
 
 static bool32 MainMenuGpuInit(u8 a0)
 {
     u8 taskId;
 
+    // OPTIONS > MUSIC (regionMapZoom bit, 1 = OFF): gDisableMusic silences
+    // every BGM start (menu playlist and battle music alike).
+    gDisableMusic = gSaveBlock2Ptr->regionMapZoom;
     if (!sPokePvPMenuMusicOn)
     {
         sPokePvPMenuMusicOn = TRUE;
         FadeInNewBGM(MUS_GYM, 4);
+    }
+    else if (gDisableMusic)
+    {
+        FadeOutBGM(4);
+    }
+    else if (IsBGMStopped() && !sMenuFadingOut)
+    {
+        sMenuTrackTimer = 0;
+        FadeInNewBGM(sMenuPlaylist[sMenuTrack], 4);
     }
 
     PokePvP_SanitizePlayerName(); /* POKEPVP (ADR-159) */
@@ -1706,26 +1753,55 @@ static void Task_PrintMainMenuText(u8 taskId)
 // established. Draws nothing (leaves the window's last content alone)
 // until the first real push arrives (PokePvP_GetOnlineCount returns
 // FALSE before then) -- never shows a misleading "0".
+// Owner-directed redesign (2026-10-14): a small navy "pill" badge with a
+// green live dot and cream FONT_SMALL text ("42 ONLINE"), drawn straight
+// onto the backdrop (transparent window background). Own palette in bank
+// 14 (free: the backdrop uses banks 3-8, bank 15 is the list text).
+static const u16 sOnlineBadgePal[] = {
+    RGB(0, 0, 0),      // 0 transparent
+    RGB(4, 9, 17),     // 1 badge fill (navy)
+    RGB(31, 29, 23),   // 2 text (cream)
+    RGB(1, 3, 7),      // 3 text shadow
+    RGB(10, 27, 12),   // 4 live dot
+    RGB(21, 31, 20),   // 5 dot highlight
+    RGB(12, 20, 29),   // 6 badge rim (steel blue)
+};
+// bg = 0 (transparent): the glyph cell must not repaint over the badge rim
+static const u8 sTextColorOnlineBadge[] = { 0, 2, 3 };
+
+// Rounded rect: 1px-trimmed corners.
+static void FillOnlinePill(u8 color, u16 x, u16 y, u16 w, u16 h)
+{
+    FillWindowPixelRect(MAIN_MENU_WINDOW_ONLINE_COUNT, color, x + 1, y, w - 2, h);
+    FillWindowPixelRect(MAIN_MENU_WINDOW_ONLINE_COUNT, color, x, y + 1, w, h - 2);
+}
+
 static void DrawOnlineCountItem(void)
 {
     u16 count;
-    u8 buf[16];
+    u8 buf[24];
     u8 *dst;
+    u16 textW, badgeW, bx = 2, by = 2, bh = 12;
 
     if (!PokePvP_GetOnlineCount(&count))
         return;
-    // Owner-directed feature (2026-10-03): PIXEL_FILL(TEXT_COLOR_
-    // TRANSPARENT) instead of PIXEL_FILL(10) -- see sTextColorOnlineCount's
-    // own doc comment for why this is the one window on this screen drawn
-    // without an opaque backing box.
-    FillWindowPixelBuffer(MAIN_MENU_WINDOW_ONLINE_COUNT, PIXEL_FILL(TEXT_COLOR_TRANSPARENT));
-    dst = StringCopy(buf, sText_OnlineCountLabel);
+    LoadPalette(sOnlineBadgePal, BG_PLTT_ID(14), sizeof(sOnlineBadgePal));
+    FillWindowPixelBuffer(MAIN_MENU_WINDOW_ONLINE_COUNT, PIXEL_FILL(0));
+    dst = ConvertIntToDecimalStringN(buf, count, STR_CONV_MODE_LEFT_ALIGN, 5);
     *dst++ = CHAR_SPACE;
-    dst = ConvertIntToDecimalStringN(dst, count, STR_CONV_MODE_LEFT_ALIGN, 5);
+    dst = StringCopy(dst, sText_OnlineCountLabel);
     *dst = EOS;
-    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ONLINE_COUNT, FONT_NORMAL, 1, 2, sTextColorOnlineCount, -1, buf);
+    textW = GetStringWidth(FONT_SMALL, buf, 0);
+    badgeW = textW + 18;
+    FillOnlinePill(6, bx, by, badgeW, bh);
+    FillOnlinePill(1, bx + 1, by + 1, badgeW - 2, bh - 2);
+    // live dot (5x5 disc) with a highlight pixel
+    FillWindowPixelRect(MAIN_MENU_WINDOW_ONLINE_COUNT, 4, bx + 6, by + 4, 3, 5);
+    FillWindowPixelRect(MAIN_MENU_WINDOW_ONLINE_COUNT, 4, bx + 5, by + 5, 5, 3);
+    FillWindowPixelRect(MAIN_MENU_WINDOW_ONLINE_COUNT, 5, bx + 6, by + 5, 1, 1);
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ONLINE_COUNT, FONT_SMALL, bx + 13, by - 1, sTextColorOnlineBadge, -1, buf);
     PutWindowTilemap(MAIN_MENU_WINDOW_ONLINE_COUNT);
-    CopyWindowToVram(MAIN_MENU_WINDOW_ONLINE_COUNT, COPYWIN_GFX);
+    CopyWindowToVram(MAIN_MENU_WINDOW_ONLINE_COUNT, COPYWIN_FULL);
 }
 
 // See this function's own forward-declaration comment: unmaps the

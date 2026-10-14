@@ -3,5 +3,6 @@
 
 void CB2_InitMainMenu(void);
 void PokePvP_MenuMusicInterrupted(void);
+void PokePvP_MenuMusicTick(void);
 
 #endif //GUARD_MAIN_MENU_H
