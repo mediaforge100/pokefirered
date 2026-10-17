@@ -77,6 +77,7 @@ void PokePvP_ClearRealMatchPending(void);
 // invariant.
 bool8 PokePvP_IsChallengeDeclined(void);
 void PokePvP_ClearChallengeDeclined(void);
+u8 PokePvP_GetDeclineReason(void);
 // ADR-242: same shape as the pair above, for POKEPVP_MSG_OPPONENT_BUSY.
 bool8 PokePvP_IsOpponentBusy(void);
 void PokePvP_ClearOpponentBusy(void);

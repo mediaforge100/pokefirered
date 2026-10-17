@@ -665,6 +665,23 @@ static const u8 sText_NoOpponentFound[] = _("No opponent found.");
 // decline message -- distinct text from sText_NoOpponentFound just above
 // so a real, immediate decline never reads as an indistinguishable timeout.
 static const u8 sText_ChallengeDeclined[] = _("Challenge declined.");
+// Queue-join rejections, indexed by the launcher's queue_reject_reason()
+// byte (client/launcher/src/main.rs). Index 0 is unused (plain decline).
+static const u8 sText_QueueRejectTeam[] = _("Illegal team.\nEdit your moves.");
+static const u8 sText_QueueRejectFormat[] = _("Team doesn't fit\nthis queue.");
+static const u8 sText_QueueRejectMaint[] = _("Server maintenance.\nTry again later.");
+static const u8 sText_QueueRejectBanned[] = _("Account can't queue\nright now.");
+static const u8 sText_QueueRejectDisabled[] = _("This queue is off\nfor now.");
+static const u8 sText_QueueRejectBusy[] = _("Already in a queue\nor match.");
+static const u8 sText_QueueRejectSignIn[] = _("Sign in to queue.");
+static const u8 sText_QueueRejectRate[] = _("Too many requests.\nWait a moment.");
+static const u8 sText_QueueRejectOther[] = _("Couldn't join queue.");
+static const u8 *const sQueueRejectTexts[] = {
+    NULL,
+    sText_QueueRejectTeam, sText_QueueRejectFormat, sText_QueueRejectMaint,
+    sText_QueueRejectBanned, sText_QueueRejectDisabled, sText_QueueRejectBusy,
+    sText_QueueRejectSignIn, sText_QueueRejectRate, sText_QueueRejectOther,
+};
 // ADR-242: distinct text for the gateway's own opponent_busy rejection --
 // the target is already in another match/queue right now, not a real
 // decline and not unreachable.
@@ -4253,6 +4270,7 @@ static void DrawTeamSelectorItems(u8 selectedIdx)
 // genuine timeout), so that shared screen's own case 0 knows which of the
 // two distinct messages to print. Consumed (cleared) the instant it's read.
 static bool8 sPokePvPShowDeclinedMessage;
+static u8 sPokePvPQueueRejectReason;
 // ADR-242: same shape and lifecycle as sPokePvPShowDeclinedMessage just
 // above, for the honest "Opponent is busy." case.
 static bool8 sPokePvPShowBusyMessage;
@@ -4319,6 +4337,7 @@ static void Task_PokePvPWaitForRealOpponent(u8 taskId)
         // and have declined, so `!ready` gates all three the same way.
         if (!ready && PokePvP_IsChallengeDeclined())
         {
+            sPokePvPQueueRejectReason = PokePvP_GetDeclineReason();
             PokePvP_ClearChallengeDeclined();
             PokePvP_ClearRealMatchPending();
             DebugPrintf("POKEPVP: AUTO-MATCH/INVITE challenge declined by target after %d frames", gTasks[taskId].tWaitFrames);
@@ -4459,7 +4478,10 @@ static void Task_PokePvPNoOpponentFound(u8 taskId)
         // way. Consumed immediately so a later, unrelated timeout never
         // shows the wrong message.
         PrintMessageOnWindow4(sPokePvPShowBusyMessage ? sText_OpponentBusy
+            : (sPokePvPShowDeclinedMessage && sPokePvPQueueRejectReason != 0
+               && sPokePvPQueueRejectReason < ARRAY_COUNT(sQueueRejectTexts)) ? sQueueRejectTexts[sPokePvPQueueRejectReason]
             : sPokePvPShowDeclinedMessage ? sText_ChallengeDeclined : sText_NoOpponentFound);
+        sPokePvPQueueRejectReason = 0;
         sPokePvPShowBusyMessage = FALSE;
         sPokePvPShowDeclinedMessage = FALSE;
         gTasks[taskId].tMGErrorMsgState++;
