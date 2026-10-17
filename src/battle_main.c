@@ -3914,6 +3914,7 @@ static void HandleEndTurn_BattleWon(void)
     if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
     {
         BattleStopLowHpSound();
+        PlayBGM(MUS_VICTORY_TRAINER); /* win jingle; loss keeps battle BGM */
         gBattleTextBuff1[0] = gBattleOutcome;
         gBattlerAttacker = GetBattlerAtPosition(B_POSITION_PLAYER_LEFT);
         gBattlescriptCurrInstr = BattleScript_PokePvPBattleEnd;
