@@ -1765,7 +1765,11 @@ static const u16 sOnlineBadgePal[] = {
     RGB(10, 27, 12),   // 4 live dot
     RGB(21, 31, 20),   // 5 dot highlight
     RGB(12, 20, 29),   // 6 badge rim (steel blue)
+    RGB(25, 4, 4),     // 7 offline fill (red)
+    RGB(14, 1, 1),     // 8 offline rim (dark red)
 };
+#define ONLINE_COUNT_OFFLINE 0xFFFF // launcher sentinel: gateway unreachable
+static const u8 sText_OfflineLabel[] = _("OFFLINE");
 // bg = 0 (transparent): the glyph cell must not repaint over the badge rim
 static const u8 sTextColorOnlineBadge[] = { 0, 2, 3 };
 
@@ -1787,6 +1791,17 @@ static void DrawOnlineCountItem(void)
         return;
     LoadPalette(sOnlineBadgePal, BG_PLTT_ID(14), sizeof(sOnlineBadgePal));
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_ONLINE_COUNT, PIXEL_FILL(0));
+    if (count == ONLINE_COUNT_OFFLINE)
+    {
+        textW = GetStringWidth(FONT_SMALL, sText_OfflineLabel, 0);
+        badgeW = textW + 10;
+        FillOnlinePill(8, bx, by, badgeW, bh);
+        FillOnlinePill(7, bx + 1, by + 1, badgeW - 2, bh - 2);
+        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_ONLINE_COUNT, FONT_SMALL, bx + 5, by - 1, sTextColorOnlineBadge, -1, sText_OfflineLabel);
+        PutWindowTilemap(MAIN_MENU_WINDOW_ONLINE_COUNT);
+        CopyWindowToVram(MAIN_MENU_WINDOW_ONLINE_COUNT, COPYWIN_FULL);
+        return;
+    }
     dst = ConvertIntToDecimalStringN(buf, count, STR_CONV_MODE_LEFT_ALIGN, 5);
     *dst++ = CHAR_SPACE;
     dst = StringCopy(dst, sText_OnlineCountLabel);
@@ -4693,6 +4708,7 @@ static void CB2_PokePvPTeamRenamed(void)
 {
     PokePvPTeamBuilder_SetNameString(sPokePvPRenameSlot, sPokePvPTeamNameBuffer);
     SendTeamRename(sPokePvPRenameSlot, sPokePvPTeamNameBuffer);
+    sPokePvPReturnToTeamList = TRUE; // land back on the team list, not the top menu
     CB2_InitMainMenu();
 }
 
@@ -4793,6 +4809,7 @@ static bool8 TickReadyCheckPrompt(u8 taskId)
         StringCopy(ptr, sText_ReadyPrompt);
         PrintMessageOnWindow4(sPokePvPReadyPromptBuf);
         sReadyPromptShown = TRUE;
+        PlaySE(SE_ITEMFINDER); // audible alert that a match was found
     }
 
     // POKEPVP (owner-reported live, 2026-09-10, ADR-191): PrintMessageOnWindow4
@@ -5092,6 +5109,9 @@ static void DrawPostMatchXp(void)
 static void FinishPostMatchXp(void)
 {
     PostMatchXpStopSound();
+    // Skipping the animation must not swallow the level-up jingle.
+    if (sPostMatchXp.level < sPostMatchXp.targetLevel)
+        PlayFanfare(MUS_LEVEL_UP);
     PostMatchXpPrintLevel(sPostMatchXp.targetLevel);
     PokePvPSetLevelBarFill(sPostMatchXp.targetFill);
     sPostMatchXp.phase = POSTMATCH_XP_IDLE;
@@ -9156,14 +9176,8 @@ static bool8 HandleMenuInput(u8 taskId)
         BeginNormalPaletteFade(PALETTES_ALL, 0, 0, 16, RGB_BLACK);
         gTasks[taskId].func = Task_ExecuteMainMenuSelection;
     }
-    else if (JOY_NEW(B_BUTTON))
-    {
-        PlaySE(SE_SELECT);
-        BeginNormalPaletteFade(PALETTES_ALL, 0, 0, 16, RGB_BLACK);
-        SetGpuReg(REG_OFFSET_WIN0H, WIN_RANGE(0, 240));
-        SetGpuReg(REG_OFFSET_WIN0V, WIN_RANGE(0, 160));
-        gTasks[taskId].func = Task_ReturnToTileScreen;
-    }
+    // B on the top menu does nothing (owner request, 2026-10-15): it used
+    // to fade out to the native FireRed title screen.
     else if (JOY_NEW(DPAD_UP) && gTasks[taskId].tCursorPos > 0)
     {
         gTasks[taskId].tCursorPos--;
