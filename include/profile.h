@@ -67,6 +67,7 @@ bool8 PokePvPProfile_Get(PokePvPProfile *out);
  * sprite picker confirms a pick -- does not wait on (or touch) whether a
  * real PROFILE record has ever arrived, so the PROFILE screen's own
  * render reflects the pick right away regardless of push timing. */
+bool8 PokePvPProfile_GetOwnName(u8 *dst, u8 maxLen);
 void PokePvPProfile_SetSpriteId(u8 spriteId);
 
 /* Handles a POKEPVP_MSG_RECENT_OPPONENT record (host -> ROM). A

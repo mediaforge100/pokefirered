@@ -20,6 +20,7 @@
 #include "constants/items.h"
 #include "constants/trainers.h"
 #include "constants/weather.h"
+#include "profile.h" // POKEPVP: account name for the player's own battle lines
 
 struct BattleWindowText
 {
@@ -2154,7 +2155,14 @@ u32 BattleStringExpandPlaceholders(const u8 *src, u8 *dst)
                 toCpy = gLinkPlayers[GetBattlerMultiplayerId(gBattleScripting.battler)].name;
                 break;
             case B_TXT_PLAYER_NAME: // player name
-                toCpy = gSaveBlock2Ptr->playerName;
+                // POKEPVP (playtest 2026-10-22): the save's playerName is
+                // empty on a fresh save, which left "  used HYPER POTION!"
+                // with no name. Use the account name the opponent sees.
+                if ((gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+                 && PokePvPProfile_GetOwnName(text, POKEPVP_PROFILE_MAX_TAG_LEN))
+                    toCpy = text;
+                else
+                    toCpy = gSaveBlock2Ptr->playerName;
                 break;
             case B_TXT_TRAINER1_LOSE_TEXT: // trainerA lose text
                 if (gBattleTypeFlags & BATTLE_TYPE_TRAINER_TOWER)
