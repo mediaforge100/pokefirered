@@ -202,7 +202,55 @@ void *AllocZeroed(u32 size)
 
 void Free(void *pointer)
 {
+    /* POKEPVP (2026-10-22 heap-corruption hunt, ADR-326 follow-up): a live
+     * crash hit FreeInternal's `pos->flag == TRUE` assertion (a double free
+     * or a stale pointer) with nothing naming the culprit. Log the pointer
+     * and the CALLER's return address first -- `arm-none-eabi-addr2line -f
+     * -e pokefirered.elf <lr>` then names the code that freed it. Diagnostic
+     * only: the assertion below still fires exactly as before. */
+    if (pointer != NULL)
+    {
+        struct MemBlock *block = (struct MemBlock *)((u8 *)pointer - sizeof(struct MemBlock));
+
+        if (block->magic_number != MALLOC_SYSTEM_ID || !block->flag)
+            DebugPrintf("POKEPVP: BAD FREE ptr=%x magic=%x flag=%d caller_lr=%x",
+                        (u32)pointer, block->magic_number, block->flag, (u32)__builtin_return_address(0));
+    }
     FreeInternal(sHeapStart, pointer);
+}
+
+/* POKEPVP (2026-10-22 heap-corruption hunt): walks every heap block and
+ * logs integrity plus allocated count/bytes, tagged by call site, so a
+ * leak or the first broken link shows up at the transition that caused it
+ * rather than at a later, unrelated Free. Bounded walk: a corrupted next
+ * pointer must not hang the ROM. */
+void PokePvP_HeapAudit(const char *tag)
+{
+    struct MemBlock *block = (struct MemBlock *)sHeapStart;
+    u32 used = 0, usedBytes = 0, freeBlocks = 0, n = 0;
+    bool32 ok = TRUE;
+
+    if (sHeapStart == NULL)
+        return;
+    do
+    {
+        if (!CheckMemBlockInternal(sHeapStart, block->data) || ++n > 2048)
+        {
+            ok = FALSE;
+            break;
+        }
+        if (block->flag)
+        {
+            used++;
+            usedBytes += block->size;
+        }
+        else
+        {
+            freeBlocks++;
+        }
+        block = block->next;
+    } while (block != (struct MemBlock *)sHeapStart);
+    DebugPrintf("POKEPVP: HEAP %s ok=%d used=%d usedBytes=%d freeBlocks=%d", tag, ok, used, usedBytes, freeBlocks);
 }
 
 bool32 CheckMemBlock(void *pointer)

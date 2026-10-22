@@ -27,5 +27,6 @@ void *Alloc(u32 size);
 void *AllocZeroed(u32 size);
 void Free(void *pointer);
 void InitHeap(void *pointer, u32 size);
+void PokePvP_HeapAudit(const char *tag); // POKEPVP (2026-10-22): heap-corruption hunt
 
 #endif // GUARD_MALLOC_H

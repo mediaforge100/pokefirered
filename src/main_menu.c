@@ -5323,6 +5323,7 @@ static void Task_PokePvPPostMatch(u8 taskId)
     switch (gTasks[taskId].tMGErrorMsgState)
     {
     case 0:
+        PokePvP_HeapAudit("post-match-screen"); // POKEPVP (2026-10-22): heap-corruption hunt
         /* First entry (from the menu-init chain): draw everything, then
          * fade in exactly like Task_WaitDma3AndFadeIn does for the top
          * menu (incl. the temp-tile-buffer release that prevents the

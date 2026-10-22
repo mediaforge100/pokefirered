@@ -42,6 +42,8 @@ void AllocateBattleResources(void)
 
 void FreeBattleResources(void)
 {
+    if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+        PokePvP_HeapAudit("free-battle-resources:before");
     if (gBattleTypeFlags & BATTLE_TYPE_TRAINER_TOWER)
         FreeTrainerTowerBattleStruct();
     if (gBattleTypeFlags & BATTLE_TYPE_POKEDUDE)
@@ -73,6 +75,8 @@ void FreeBattleResources(void)
         FREE_AND_SET_NULL(gBattleAnimBgTileBuffer);
         FREE_AND_SET_NULL(gBattleAnimBgTilemapBuffer);
     }
+    if (gBattleTypeFlags & BATTLE_TYPE_POKEPVP)
+        PokePvP_HeapAudit("free-battle-resources:after");
 }
 
 void AdjustFriendshipOnBattleFaint(u8 battlerId)

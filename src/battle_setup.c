@@ -1,4 +1,5 @@
 #include "global.h"
+#include "malloc.h"
 #include "task.h"
 #include "battle_setup.h"
 #include "help_system.h"
@@ -483,6 +484,8 @@ void StartPokePvPRealMatch(void)
     u16 species = PokePvP_GetRealOpponentSpecies();
     u8 level = PokePvP_GetRealOpponentLevel();
 
+    PokePvP_HeapAudit("battle-start"); // POKEPVP (2026-10-22): heap-corruption hunt
+
     // ADR-122: real fix for a real bug found live -- without this, battler
     // 1 (the opponent) fell through to FireRed's native AI whenever asked
     // to choose before the real remote opponent's own choice had arrived
@@ -937,6 +940,7 @@ static void CB2_EndWildBattle(void)
 // PC handoff already uses to return from a foreign CB2 (main_menu.c).
 static void CB2_EndPokePvPBattle(void)
 {
+    PokePvP_HeapAudit("battle-end");
     CpuFill16(0, (void *)BG_PLTT, BG_PLTT_SIZE);
     ResetOamRange(0, 128);
     // POKEPVP (ADR-222): StartPokePvPRealMatch sets this TRUE for every
