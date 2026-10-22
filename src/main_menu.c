@@ -4807,7 +4807,7 @@ static bool8 TickReadyCheckPrompt(u8 taskId)
         // existing READY?/CANCEL line, same 2-line-in-this-window shape
         // DrawSpritePickerPreview already uses (name \n prompt) -- sized
         // the same conservative way that call site's own comment
-        // documents (PLAYER_NAME_LENGTH=7 is the real worst case, plus
+        // documents (POKEPVP_OPPONENT_NAME_MAX=13 is the real worst case, plus
         // " LV." + up to 3 level digits is still far under this window's
         // proven-fitting width). PokePvP_GetOpponentTrainerName() already
         // falls back to "RIVAL" when no real name has arrived yet, so no
