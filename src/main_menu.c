@@ -2709,123 +2709,85 @@ static void Task_PokePvPReturnToTopMenuFromHistory(u8 taskId)
 // scrolling this now needs that it didn't at 5.
 // ---------------------------------------------------------------------------
 
-static const u8 sText_GuideConceptQueues[] = _("QUEUES");
-static const u8 sText_GuideConceptReadyCheck[] = _("READY CHECK");
-static const u8 sText_GuideConceptBattlePacks[] = _("BATTLE PACKS");
+// Owner-directed rework (2026-10-22): cut to the essentials a player can't
+// discover from the menus themselves -- entries that only restated what a
+// screen already shows (QUEUES, MATCH HISTORY, END OF MATCH, ACHIEVEMENTS,
+// BATTLE PACKS) were dropped, the rest bundled. Facts checked against
+// formats/*.yaml, gateway-server.ts (TURN_TIMEOUT_MS/TIME_BANK_MS/
+// RECONNECT_GRACE_MS), queue-manager.ts (ADR-334 holds), social schema
+// (rivals cap 3) and trainer-level.ts. Read as one continuous strip --
+// see Task_PokePvPGuideConceptDetail.
 static const u8 sText_GuideConceptMatchTypes[] = _("MATCH TYPES");
-static const u8 sText_GuideConceptMatchHistory[] = _("MATCH HISTORY");
-static const u8 sText_GuideConceptRivals[] = _("RIVALS");
-static const u8 sText_GuideConceptFriends[] = _("FRIENDS");
-static const u8 sText_GuideConceptAchievements[] = _("ACHIEVEMENTS");
-static const u8 sText_GuideConceptEndOfMatch[] = _("END OF MATCH");
+static const u8 sText_GuideConceptBattleRules[] = _("BATTLE RULES");
+static const u8 sText_GuideConceptTimeLimits[] = _("TIME LIMITS");
+static const u8 sText_GuideConceptMatchmaking[] = _("MATCHMAKING");
+static const u8 sText_GuideConceptFriendsRivals[] = _("FRIENDS & RIVALS");
+static const u8 sText_GuideConceptTrainerLevel[] = _("TRAINER LEVEL");
 static const u8 sText_GuideConceptYourAccount[] = _("YOUR ACCOUNT");
 
-static const u8 sText_GuideBodyQueues[] = _(
-    "A queue is a shared waiting room for "
-    "one match type. AUTO-MATCH joins the "
-    "queue for your chosen pack; PLAY "
-    "AGAIN rejoins the same one. "
-    "IN QUEUE shows how many players are "
-    "waiting with you right now.");
-static const u8 sText_GuideBodyReadyCheck[] = _(
-    "Once two players are matched, both "
-    "get a short window to confirm with "
-    "A before the battle starts. "
-    "Missing the window or pressing B "
-    "returns you to the queue. It does "
-    "not count as a loss, since no real "
-    "match was ever started.");
-static const u8 sText_GuideBodyBattlePacks[] = _(
-    "A battle pack is a ready-made team "
-    "for EARLY 4V4. Pick "
-    "a pack instead of building your own "
-    "team first. "
-    "CUSTOM 6V6 uses a team you built "
-    "yourself in TEAM BUILDER instead.");
 static const u8 sText_GuideBodyMatchTypes[] = _(
-    "FIND OPPONENT pairs you with anyone "
-    "waiting in the same queue. "
-    "INVITE PLAYER challenges one real "
-    "friend or rival by name instead of "
-    "matching with a stranger. "
-    "AI PRACTICE battles a local AI "
-    "opponent. It never affects your "
-    "record, your stats, or your "
-    "achievements.");
-static const u8 sText_GuideBodyMatchHistory[] = _(
-    "PROFILE's own stats line shows your "
-    "total matches, wins, losses, and "
-    "ties, plus your 3 most-used "
-    "Pokemon and most recent opponent. "
-    "MATCH HISTORY (PROFILE's 3rd row) "
-    "lists your real past matches one "
-    "at a time: who you played, whether "
-    "you won, lost, or tied, and whether "
-    "it was EARLY or ELITE. "
-    "AI PRACTICE matches appear in this "
-    "list, but never count toward your "
-    "stats or achievements.");
-static const u8 sText_GuideBodyRivals[] = _(
-    "After a real match ends, the END OF "
-    "MATCH screen's ADD RIVAL button "
-    "marks that opponent as a rival. "
-    "You can have up to 3 at once; "
-    "adding a 4th asks you to replace "
-    "one of the others instead of "
-    "dropping one silently. "
-    "Rivals show real-time ONLINE status "
-    "and can be challenged by name from "
-    "PROFILE, then SOCIAL, then RIVALS, "
-    "the same as a friend.");
-static const u8 sText_GuideBodyFriends[] = _(
-    "From PROFILE, then SOCIAL, then "
-    "FRIENDS, ADD FRIEND sends a friend "
-    "request by exact name. It takes "
-    "effect immediately for both "
-    "accounts; there is no accept step. "
-    "Friends show real-time ONLINE "
-    "status and can be challenged "
-    "directly from this same list, or "
-    "removed from it.");
-static const u8 sText_GuideBodyAchievements[] = _(
-    "ACHIEVEMENTS (PROFILE's 4th row) "
-    "tracks milestones: your first win, "
-    "50 or 100 total wins, winning "
-    "right after a loss, 10 flawless "
-    "wins, 10 wins against one rival, "
-    "and facing 20 or 100 different "
-    "opponents. "
-    "TEAM ACHIEVEMENTS instead rewards "
-    "team choices, like 10 wins with "
-    "one Pokemon on your team, or with "
-    "an all-one-type team. "
-    "AI PRACTICE never counts toward "
-    "either.");
-static const u8 sText_GuideBodyEndOfMatch[] = _(
-    "Right after a real match, this "
-    "screen shows who won, your match "
-    "length and turn count, and how "
-    "many Pokemon each side had left. "
-    "REMATCH challenges that same "
-    "opponent again directly. "
-    "PLAY AGAIN rejoins the queue "
-    "instead, open to anyone waiting. "
-    "ADD RIVAL marks that opponent as a "
-    "rival, and EXIT returns to the "
-    "top menu.");
+    "QUICK 4V4: four Pokemon at level 25, "
+    "picked from a ready-made pack. "
+    "CUSTOM 6V6: your own six from TEAM "
+    "BUILDER, at level 100. "
+    "Each match type has its own fixed "
+    "bag of items, refilled every match. "
+    "AI PRACTICE never counts.");
+static const u8 sText_GuideBodyBattleRules[] = _(
+    "No held items, and no two of the "
+    "same Pokemon on one team. Mewtwo "
+    "and Mew are not allowed. "
+    "Only one of your opponent's Pokemon "
+    "can be put to sleep at a time, and "
+    "only one can be frozen. "
+    "One-hit KO moves and moves that "
+    "raise evasion are banned.");
+static const u8 sText_GuideBodyTimeLimits[] = _(
+    "You get 60 seconds for each turn. "
+    "Any extra time comes out of a "
+    "3-minute reserve that lasts the "
+    "whole match. If your reserve runs "
+    "out, you forfeit. "
+    "If you disconnect, you have 30 "
+    "seconds to come back before the "
+    "match counts as a forfeit.");
+static const u8 sText_GuideBodyMatchmaking[] = _(
+    "Players looking for the same match "
+    "type share one queue and get paired "
+    "from it. The game avoids repeat matchups: the "
+    "player you just fought is held back "
+    "for a few minutes so you meet someone "
+    "new. Skip an opponent at the ready "
+    "check and you keep searching, and you "
+    "two won't be paired for 10 minutes. "
+    "To battle someone specific, invite "
+    "them by name instead.");
+static const u8 sText_GuideBodyFriendsRivals[] = _(
+    "Friends are people you know. Add one "
+    "by exact name; there is no request "
+    "to accept. "
+    "Rivals are opponents you want to "
+    "keep an eye on. After a match, ADD "
+    "RIVAL keeps that player on your list "
+    "with your record against them and "
+    "the Pokemon they use most. You can "
+    "have up to 3. Friends and rivals both "
+    "show when they are online, and you "
+    "can challenge them directly.");
+static const u8 sText_GuideBodyTrainerLevel[] = _(
+    "Your trainer level grows with every "
+    "real match you play, win or lose. "
+    "Wins earn more XP, CUSTOM matches "
+    "earn more than QUICK, and beating a "
+    "higher-level trainer earns a little "
+    "extra. AI PRACTICE earns nothing.");
 static const u8 sText_GuideBodyYourAccount[] = _(
-    "LOG IN or SIGN UP, shown before "
-    "the main menu appears, is what "
-    "makes your matches, teams, "
-    "friends, and achievements follow "
-    "this account instead of staying on "
-    "one machine. "
-    "Once logged in, this login is "
-    "saved here and you will not be "
-    "asked again on this computer. "
-    "CHANGE PASSWORD and LOG OUT live "
-    "on that same pre-game screen, not "
-    "inside the game itself.");
+    "Your matches, teams, friends and "
+    "progress belong to your account, not "
+    "to this computer. "
+    "Logging in, CHANGE PASSWORD and LOG "
+    "OUT all happen in the launcher, "
+    "before the game starts.");
 
 struct PokePvPGuideConcept
 {
@@ -2834,22 +2796,19 @@ struct PokePvPGuideConcept
 };
 
 static const struct PokePvPGuideConcept sGuideConcepts[] = {
-    { sText_GuideConceptQueues, sText_GuideBodyQueues },
-    { sText_GuideConceptReadyCheck, sText_GuideBodyReadyCheck },
-    { sText_GuideConceptBattlePacks, sText_GuideBodyBattlePacks },
     { sText_GuideConceptMatchTypes, sText_GuideBodyMatchTypes },
-    { sText_GuideConceptMatchHistory, sText_GuideBodyMatchHistory },
-    { sText_GuideConceptRivals, sText_GuideBodyRivals },
-    { sText_GuideConceptFriends, sText_GuideBodyFriends },
-    { sText_GuideConceptAchievements, sText_GuideBodyAchievements },
-    { sText_GuideConceptEndOfMatch, sText_GuideBodyEndOfMatch },
+    { sText_GuideConceptBattleRules, sText_GuideBodyBattleRules },
+    { sText_GuideConceptTimeLimits, sText_GuideBodyTimeLimits },
+    { sText_GuideConceptMatchmaking, sText_GuideBodyMatchmaking },
+    { sText_GuideConceptFriendsRivals, sText_GuideBodyFriendsRivals },
+    { sText_GuideConceptTrainerLevel, sText_GuideBodyTrainerLevel },
     { sText_GuideConceptYourAccount, sText_GuideBodyYourAccount },
 };
 #define POKEPVP_GUIDE_CONCEPT_COUNT (sizeof(sGuideConcepts) / sizeof(sGuideConcepts[0]))
 
 // Same 5-window/one-panel-border shape as DrawPokePvPMenuItems/
 // DrawProfileItems, but now a real scrolling window over
-// POKEPVP_GUIDE_CONCEPT_COUNT (10) entries instead of a flat 1:1 mapping
+// POKEPVP_GUIDE_CONCEPT_COUNT (7) entries instead of a flat 1:1 mapping
 // -- the content pass that grew this list past 5 needed this too. Same
 // "keep the selection visible, slide the window" math
 // DrawPackPickerItems already uses for its own 6-row pack+RANDOM list
@@ -2983,12 +2942,14 @@ static void DrawPokePvPErrorBandPage(const u8 *headerPrefix, const u8 *contentLi
 // real width (confirmed: the first line of sText_GuideBodyQueues alone is
 // 37 characters, far wider than this window can show on one row), so the
 // layout is rebuilt from scratch rather than trusted. Never splits a word.
-// POKEPVP_GUIDE_BODY_MAX_LINES (16) is a generous ceiling against the 5
-// real bodies in sGuideConcepts today (the longest, 229 characters, wraps
-// to roughly a dozen lines even at a conservative per-line estimate) --
-// not a real content limit silently eating text; a 6th, much longer
-// concept would need this raised, named here rather than silently
-// truncated.
+// POKEPVP_GUIDE_BODY_MAX_LINES (16) is a ceiling, not a content limit: the
+// longest body today wraps to ~13 lines -- a longer one needs this raised
+// (or splitting into two entries) rather than silently truncated. A NULL
+// outLines counts lines without storing them. Only lines [firstLine,
+// firstLine + POKEPVP_GUIDE_BOX_LINES_PER_PAGE) are stored, at outLines[0..]
+// -- one page's worth, so the caller's buffer stays 160 B (a 640 B
+// whole-body buffer made agbcc mis-address DrawPokePvPGuidePage's own
+// arguments: `page` read back as garbage).
 #define POKEPVP_GUIDE_BODY_MAX_LINES  16
 #define POKEPVP_GUIDE_LINE_BUF        40
 // Owner-directed feature (2026-10-02): widened from 150 to 190 now that
@@ -2998,10 +2959,10 @@ static void DrawPokePvPErrorBandPage(const u8 *headerPrefix, const u8 *contentLi
 #define POKEPVP_GUIDE_LINE_WIDTH_PX   190
 // 10 tiles (80px) at this file's established 16px-per-line convention is
 // 5 lines; 1 is reserved as a persistent footer (see
-// DrawPokePvPGuideBigBox), leaving 4 real lines of body per page.
+// DrawPokePvPGuidePage), leaving 4 real lines of body per page.
 #define POKEPVP_GUIDE_BOX_LINES_PER_PAGE 4
 
-static u8 WrapPokePvPGuideText(const u8 *src, u8 outLines[][POKEPVP_GUIDE_LINE_BUF])
+static u8 WrapPokePvPGuideText(const u8 *src, u8 outLines[][POKEPVP_GUIDE_LINE_BUF], u8 firstLine)
 {
     u8 word[POKEPVP_GUIDE_LINE_BUF];
     u8 line[POKEPVP_GUIDE_LINE_BUF];
@@ -3027,7 +2988,15 @@ static u8 WrapPokePvPGuideText(const u8 *src, u8 outLines[][POKEPVP_GUIDE_LINE_B
         }
         word[wordLen] = EOS;
 
-        if (lineLen == 0)
+        // A line plus the next word can exceed the 40 B buffers in bytes
+        // while still fitting in pixels -- treat that as a full line too,
+        // or `candidate` overruns into this frame's saved arguments (it
+        // did: outLines/firstLine came back garbage, 2026-10-22).
+        if (lineLen != 0 && lineLen + 1 + wordLen >= POKEPVP_GUIDE_LINE_BUF)
+        {
+            candidate[0] = EOS;
+        }
+        else if (lineLen == 0)
         {
             StringCopy(candidate, word);
         }
@@ -3039,11 +3008,12 @@ static u8 WrapPokePvPGuideText(const u8 *src, u8 outLines[][POKEPVP_GUIDE_LINE_B
             StringAppend(candidate, word);
         }
 
-        if (lineLen != 0 && GetStringWidth(FONT_NORMAL, candidate, 0) > POKEPVP_GUIDE_LINE_WIDTH_PX)
+        if (lineLen != 0 && (candidate[0] == EOS || GetStringWidth(FONT_NORMAL, candidate, 0) > POKEPVP_GUIDE_LINE_WIDTH_PX))
         {
             // Candidate overflows -- commit the line as it stood before
             // this word, start a fresh line with the word that didn't fit.
-            StringCopy(outLines[lineCount], line);
+            if (outLines != NULL && lineCount >= firstLine && lineCount < firstLine + POKEPVP_GUIDE_BOX_LINES_PER_PAGE)
+                StringCopy(outLines[lineCount - firstLine], line);
             lineCount++;
             if (lineCount >= POKEPVP_GUIDE_BODY_MAX_LINES)
                 break;
@@ -3059,76 +3029,91 @@ static u8 WrapPokePvPGuideText(const u8 *src, u8 outLines[][POKEPVP_GUIDE_LINE_B
 
     if (lineLen != 0 && lineCount < POKEPVP_GUIDE_BODY_MAX_LINES)
     {
-        StringCopy(outLines[lineCount], line);
+        if (outLines != NULL && lineCount >= firstLine && lineCount < firstLine + POKEPVP_GUIDE_BOX_LINES_PER_PAGE)
+            StringCopy(outLines[lineCount - firstLine], line);
         lineCount++;
     }
 
     return lineCount;
 }
 
-static const u8 sText_GuideBoxBackHint[] = _("B: BACK");
+static const u8 sText_GuidePageArrowL[] = _("<");
+static const u8 sText_GuidePageArrowR[] = _(">");
 
-// Owner-directed feature (2026-10-02): draws up to POKEPVP_GUIDE_BOX_
-// LINES_PER_PAGE body lines at once into MAIN_MENU_WINDOW_GUIDE_DETAIL,
-// plus a persistent footer row (B: BACK, and a "N/M" page indicator only
-// when the body doesn't fit on one page) -- replaces the old 1-line-at-a-
-// time DrawPokePvPErrorBandPage pager for this screen specifically (MATCH
-// HISTORY keeps using that helper; its own content shape is different).
-static void DrawPokePvPGuideBigBox(u8 lines[][POKEPVP_GUIDE_LINE_BUF], u8 lineCount, u8 pageNum0Based, u8 totalPages)
+static u8 GuideEntryPageCount(u8 entry)
 {
-    u8 i, firstLine;
-    u8 footer[32];
+    u8 lineCount = WrapPokePvPGuideText(sGuideConcepts[entry].body, NULL, 0);
+    u8 pages = (lineCount + POKEPVP_GUIDE_BOX_LINES_PER_PAGE - 1) / POKEPVP_GUIDE_BOX_LINES_PER_PAGE;
+
+    return pages == 0 ? 1 : pages;
+}
+
+// Owner-directed rework (2026-10-22): GUIDE reads as one continuous strip
+// -- DPAD_LEFT/RIGHT turn pages and run straight across entry boundaries,
+// and the footer shows the current entry's title plus a page number over
+// the whole guide. Draws page `page` of entry `entry`. The only line buffer
+// lives here and holds one page; page totals use WrapPokePvPGuideText's
+// count-only mode.
+static void DrawPokePvPGuidePage(u8 entry, u8 page)
+{
+    u8 lines[POKEPVP_GUIDE_BOX_LINES_PER_PAGE][POKEPVP_GUIDE_LINE_BUF];
+    u8 lineCount, i, firstLine;
+    u8 globalPage = 0, totalPages = 0;
+    u8 footer[16];
+    u8 *dst;
+    s32 x;
+
+    for (i = 0; i < POKEPVP_GUIDE_CONCEPT_COUNT; i++)
+    {
+        u8 pages = GuideEntryPageCount(i);
+
+        if (i < entry)
+            globalPage += pages;
+        totalPages += pages;
+    }
+    globalPage += page;
+
+    firstLine = page * POKEPVP_GUIDE_BOX_LINES_PER_PAGE;
+    lineCount = WrapPokePvPGuideText(sGuideConcepts[entry].body, lines, firstLine);
 
     FillWindowPixelBuffer(MAIN_MENU_WINDOW_GUIDE_DETAIL, PIXEL_FILL(10));
     MainMenu_DrawWindow(&sWindowTemplate[MAIN_MENU_WINDOW_GUIDE_DETAIL]);
 
-    firstLine = pageNum0Based * POKEPVP_GUIDE_BOX_LINES_PER_PAGE;
     for (i = 0; i < POKEPVP_GUIDE_BOX_LINES_PER_PAGE && firstLine + i < lineCount; i++)
     {
         AddTextPrinterParameterized3(MAIN_MENU_WINDOW_GUIDE_DETAIL, FONT_NORMAL, 2, 2 + i * 16,
-            sTextColor1, -1, lines[firstLine + i]);
+            sTextColor1, -1, lines[i]);
     }
 
-    if (totalPages > 1)
-    {
-        u8 *dst = StringCopy(footer, sText_GuideBoxBackHint);
-        *dst++ = CHAR_SPACE;
-        *dst++ = CHAR_SPACE;
-        *dst++ = CHAR_SPACE;
-        *dst++ = CHAR_SPACE;
-        dst = ConvertIntToDecimalStringN(dst, pageNum0Based + 1, STR_CONV_MODE_LEFT_ALIGN, 2);
-        *dst++ = CHAR_SLASH;
-        dst = ConvertIntToDecimalStringN(dst, totalPages, STR_CONV_MODE_LEFT_ALIGN, 2);
-        *dst = EOS;
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_GUIDE_DETAIL, FONT_NORMAL, 2, 2 + POKEPVP_GUIDE_BOX_LINES_PER_PAGE * 16,
-            sTextColor1, -1, footer);
-    }
-    else
-    {
-        AddTextPrinterParameterized3(MAIN_MENU_WINDOW_GUIDE_DETAIL, FONT_NORMAL, 2, 2 + POKEPVP_GUIDE_BOX_LINES_PER_PAGE * 16,
-            sTextColor1, -1, sText_GuideBoxBackHint);
-    }
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_GUIDE_DETAIL, FONT_NORMAL, 2, 2 + POKEPVP_GUIDE_BOX_LINES_PER_PAGE * 16,
+        sTextColorSelected, -1, sGuideConcepts[entry].label);
+
+    dst = footer;
+    if (globalPage > 0)
+        dst = StringCopy(dst, sText_GuidePageArrowL);
+    *dst++ = CHAR_SPACE;
+    dst = ConvertIntToDecimalStringN(dst, globalPage + 1, STR_CONV_MODE_LEFT_ALIGN, 2);
+    *dst++ = CHAR_SLASH;
+    dst = ConvertIntToDecimalStringN(dst, totalPages, STR_CONV_MODE_LEFT_ALIGN, 2);
+    *dst++ = CHAR_SPACE;
+    if (globalPage + 1 < totalPages)
+        dst = StringCopy(dst, sText_GuidePageArrowR);
+    *dst = EOS;
+    x = (s32)(sWindowTemplate[MAIN_MENU_WINDOW_GUIDE_DETAIL].width * 8) - GetStringWidth(FONT_NORMAL, footer, 0) - 4;
+    AddTextPrinterParameterized3(MAIN_MENU_WINDOW_GUIDE_DETAIL, FONT_NORMAL, x, 2 + POKEPVP_GUIDE_BOX_LINES_PER_PAGE * 16,
+        sTextColor1, -1, footer);
 
     PutWindowTilemap(MAIN_MENU_WINDOW_GUIDE_DETAIL);
     CopyWindowToVram(MAIN_MENU_WINDOW_GUIDE_DETAIL, COPYWIN_FULL);
 }
 
-// The detail view: the selected concept's body, word-wrapped into
-// MAIN_MENU_WINDOW_GUIDE_DETAIL's own wide static box, up to
-// POKEPVP_GUIDE_BOX_LINES_PER_PAGE (4) real lines visible at once instead
-// of the old 1-line-at-a-time pager -- most of the 5 real GUIDE bodies fit
-// in a single page now; only the longest still needs DPAD_LEFT/RIGHT to
-// turn to a 2nd page, by a whole screenful rather than one line. Word-wrap
-// is recomputed from the static body text on open and on every page turn
-// rather than cached in a task-persistent buffer -- EWRAM/IWRAM are
-// already at 99.66%/96.23% (docs/HANDOFF.md), so this intentionally
-// spends a few hundred bytes of transient stack per call instead of
-// adding new .bss.
+// The detail view: tSubCursorPos is the entry being read, tPageNum its
+// page. A from the list opens that entry's first page; B returns to the
+// list with whichever entry the reader ended up on selected.
 static void Task_PokePvPGuideConceptDetail(u8 taskId)
 {
-    u8 lines[POKEPVP_GUIDE_BODY_MAX_LINES][POKEPVP_GUIDE_LINE_BUF];
-    u8 lineCount;
-    u8 totalPages;
+    s16 *entry = &gTasks[taskId].tSubCursorPos;
+    s16 *page = &gTasks[taskId].tPageNum;
 
     if (gPaletteFade.active)
         return;
@@ -3136,18 +3121,12 @@ static void Task_PokePvPGuideConceptDetail(u8 taskId)
     switch (gTasks[taskId].tMGErrorMsgState)
     {
     case 0:
-        gTasks[taskId].tPageNum = 0;
-        // The new box overlaps the top menu panel's own rows (6-10 of its
-        // 6-15 span) but doesn't cover rows 11-15 -- erase the whole
-        // panel (content + border) in one shot rather than leave stale
-        // concept-list rows visible underneath/beside the box. Restored
-        // by DrawGuideConceptItems on the way back out (B-button below).
+        *page = 0;
+        // The box overlaps the top menu panel's rows 6-10 but not 11-15 --
+        // erase the whole panel so no stale list rows show beside it.
+        // Restored by DrawGuideConceptItems on the way back out.
         MainMenu_EraseWindow(&sPokePvPMenuPanelTemplate);
-        lineCount = WrapPokePvPGuideText(sGuideConcepts[gTasks[taskId].tSubCursorPos].body, lines);
-        totalPages = (lineCount + POKEPVP_GUIDE_BOX_LINES_PER_PAGE - 1) / POKEPVP_GUIDE_BOX_LINES_PER_PAGE;
-        if (totalPages == 0)
-            totalPages = 1;
-        DrawPokePvPGuideBigBox(lines, lineCount, 0, totalPages);
+        DrawPokePvPGuidePage(*entry, *page);
         gTasks[taskId].tMGErrorMsgState = 1;
         break;
     case 1:
@@ -3155,25 +3134,30 @@ static void Task_PokePvPGuideConceptDetail(u8 taskId)
         {
             PlaySE(SE_SELECT);
             MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_GUIDE_DETAIL]);
-            DrawGuideConceptItems(gTasks[taskId].tSubCursorPos);
+            DrawGuideConceptItems(*entry);
             gTasks[taskId].func = Task_PokePvPGuideConceptList;
-            break;
         }
-        lineCount = WrapPokePvPGuideText(sGuideConcepts[gTasks[taskId].tSubCursorPos].body, lines);
-        totalPages = (lineCount + POKEPVP_GUIDE_BOX_LINES_PER_PAGE - 1) / POKEPVP_GUIDE_BOX_LINES_PER_PAGE;
-        if (totalPages == 0)
-            totalPages = 1;
-        if (JOY_NEW(DPAD_LEFT) && gTasks[taskId].tPageNum > 0)
+        else if (JOY_NEW(DPAD_RIGHT))
         {
+            if (*page + 1 < GuideEntryPageCount(*entry))
+                (*page)++;
+            else if (*entry + 1 < (s16)POKEPVP_GUIDE_CONCEPT_COUNT)
+                (*entry)++, *page = 0;
+            else
+                break;
             PlaySE(SE_SELECT);
-            gTasks[taskId].tPageNum--;
-            DrawPokePvPGuideBigBox(lines, lineCount, gTasks[taskId].tPageNum, totalPages);
+            DrawPokePvPGuidePage(*entry, *page);
         }
-        else if (JOY_NEW(DPAD_RIGHT) && gTasks[taskId].tPageNum + 1 < totalPages)
+        else if (JOY_NEW(DPAD_LEFT))
         {
+            if (*page > 0)
+                (*page)--;
+            else if (*entry > 0)
+                (*entry)--, *page = GuideEntryPageCount(*entry) - 1;
+            else
+                break;
             PlaySE(SE_SELECT);
-            gTasks[taskId].tPageNum++;
-            DrawPokePvPGuideBigBox(lines, lineCount, gTasks[taskId].tPageNum, totalPages);
+            DrawPokePvPGuidePage(*entry, *page);
         }
         break;
     }
@@ -8590,7 +8574,14 @@ static u8 WrapMoveDescription(const u8 *src, u8 windowId, u8 skip)
         }
         word[wordLen] = EOS;
 
-        if (lineLen == 0)
+        // Length guard before building `candidate`, not after -- building
+        // it first overran the 48 B buffer (same bug as the GUIDE wrap,
+        // 2026-10-22).
+        if (lineLen != 0 && lineLen + 1 + wordLen >= POKEPVP_MOVE_DESC_LINE_BUF - 1)
+        {
+            candidate[0] = EOS;
+        }
+        else if (lineLen == 0)
         {
             StringCopy(candidate, word);
         }
@@ -8603,7 +8594,7 @@ static u8 WrapMoveDescription(const u8 *src, u8 windowId, u8 skip)
         }
 
         if (lineLen != 0
-            && (lineLen + 1 + wordLen >= POKEPVP_MOVE_DESC_LINE_BUF - 1
+            && (candidate[0] == EOS
                 || GetStringWidth(FONT_NORMAL, candidate, 0) > POKEPVP_MOVE_DESC_LINE_WIDTH_PX))
         {
             DrawMoveDescLine(windowId, lineCount, skip, line);

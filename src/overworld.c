@@ -1034,6 +1034,13 @@ void Overworld_PlaySpecialMapMusic(void)
     u16 music;
     s16 x, y;
 
+    // POKEPVP (2026-10-22): a match start warps into Pallet Town only as
+    // plumbing (StartPokePvPAutoMatch/StartPokePvPMenuMatch) -- its map
+    // music must not play between the ready check and the battle music.
+    // Leave the menu music running; the battle transition replaces it.
+    if (sPokePvPAutoMatchPending || sPokePvPMenuMatchPending)
+        return;
+
     if (gDisableMapMusicChangeOnMapLoad == MUSIC_DISABLE_STOP)
     {
         StopMapMusic();
