@@ -442,6 +442,7 @@ static void Task_PokePvPTeamSelector(u8 taskId);
 // POKEPVP (ADR-093): TEAM BUILDER -> team-slot list.
 static void DrawOneTeamRow(u8 windowId, u8 slot, bool8 selected);
 static void DrawTeamListItems(u8 selectedIdx);
+static void HideTeamListBand(void);
 static void Task_PokePvPTeamList(u8 taskId);
 static void Task_PokePvPReturnToTopMenuFromTeamList(u8 taskId);
 static void Task_PokePvPPrepareRoster(u8 taskId);
@@ -5408,6 +5409,12 @@ static void Task_PokePvPPostMatch(u8 taskId)
             }
             else
             {
+                /* POKEPVP (2026-10-24 playtest): REMATCH/PLAY AGAIN left the
+                 * heap-allocated XP level-bar live; the battle that follows
+                 * re-inits the heap, so the next post-match screen's
+                 * DrawPostMatchXp freed the dangling pointer (BAD FREE ->
+                 * black-screen crash on the forfeiting client). Free it now. */
+                PokePvPDestroyLevelBarObjs();
                 gTasks[taskId].tMGErrorMsgState = 0;
                 gTasks[taskId].func = Task_PokePvPPostMatchWait;
             }
@@ -7964,19 +7971,39 @@ static void DrawOneTeamRow(u8 windowId, u8 slot, bool8 selected)
 // list is exactly as long as the window row count, so B (not a sixth
 // "EXIT" row) is the way out, matching the START MATCH submenu's own
 // convention rather than inventing a second one.
+// TEAM BUILDER hover preview (owner ask 2026-10-24): same band + mon icons the
+// team selector shows under its list (DrawTeamSelectorItems). The band window
+// is erased and the icons destroyed on every exit from the list.
+static EWRAM_DATA bool8 sTeamListBandShown = FALSE;
+
+static void HideTeamListBand(void)
+{
+    DestroyPackIcons();
+    if (sTeamListBandShown)
+    {
+        sTeamListBandShown = FALSE;
+        MainMenu_EraseWindow(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    }
+}
+
 static void DrawTeamListItems(u8 selectedIdx)
 {
+    MainMenu_DrawWindowNoCommit(&sWindowTemplate[MAIN_MENU_WINDOW_ERROR]);
+    PutWindowTilemap(MAIN_MENU_WINDOW_ERROR);
+    sTeamListBandShown = TRUE;
     DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_0, 0, selectedIdx == 0);
     DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_1, 1, selectedIdx == 1);
     DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_2, 2, selectedIdx == 2);
     DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_3, 3, selectedIdx == 3);
     DrawOneTeamRow(MAIN_MENU_WINDOW_POKEPVP_4, 4, selectedIdx == 4);
-    MainMenu_DrawWindow(&sPokePvPMenuPanelTemplate);
+    MainMenu_DrawWindowNoCommit(&sPokePvPMenuPanelTemplate);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_0, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_1, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_2, COPYWIN_GFX);
     CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_3, COPYWIN_GFX);
-    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_FULL);
+    CopyWindowToVram(MAIN_MENU_WINDOW_POKEPVP_4, COPYWIN_GFX);
+    ShowTeamIconsBand(selectedIdx);
+    CopyBgTilemapBufferToVram(0);
 }
 
 // POKEPVP (ADR-093): drives the team-slot list. Identical input shape to
@@ -8000,6 +8027,7 @@ static void Task_PokePvPTeamList(u8 taskId)
         // choose its POKEMON (the PC) and change their moves -- so it opens
         // a submenu rather than one of them directly.
         gTasks[taskId].tTeamSlot = gTasks[taskId].tSubCursorPos;
+        HideTeamListBand();
         DrawSlotMenuItems(0, gTasks[taskId].tTeamSlot);
         gTasks[taskId].tSubCursorPos = 0;
         gTasks[taskId].func = Task_PokePvPSlotMenu;
@@ -8007,6 +8035,7 @@ static void Task_PokePvPTeamList(u8 taskId)
     else if (JOY_NEW(B_BUTTON))
     {
         PlaySE(SE_SELECT);
+        HideTeamListBand();
         BeginNormalPaletteFade(PALETTES_ALL, 0, 16, 0, RGB_BLACK);
         gTasks[taskId].func = Task_PokePvPReturnToTopMenuFromTeamList;
     }
@@ -8060,6 +8089,7 @@ static void Task_PokePvPTeamCopyPicker(u8 taskId)
         // emptiness (SlotMenuActionForRow), so look it up rather than
         // assuming row 3.
         gTasks[taskId].tSubCursorPos = SlotMenuRowForAction(gTasks[taskId].tTeamSlot, SLOT_ACTION_DUPLICATE);
+        HideTeamListBand();
         DrawSlotMenuItems(gTasks[taskId].tSubCursorPos, gTasks[taskId].tTeamSlot);
         gTasks[taskId].func = Task_PokePvPSlotMenu;
     }

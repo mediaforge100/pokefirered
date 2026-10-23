@@ -218,7 +218,7 @@ static const struct WindowTemplate sStandardBattleWindowTemplates[] = {
         .tilemapTop = 57,
         .width = 8,
         .height = 2,
-        .paletteNum = 5,
+        .paletteNum = 6, /* POKEPVP: {PALETTE n} is a no-op in text.c; the window's own bank is what text reads (per-type TYPE colour, ADR-221) */
         .baseBlock = 0x296
     },
     [B_WIN_PP_REMAINING] = {
